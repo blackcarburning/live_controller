@@ -298,7 +298,8 @@ class MidiSyncWorker(QThread):
     ipc_socket_path = pyqtSignal(str)# Emits the path to the mpv IPC socket.
 
     def __init__(self, video_file, bpm, display_num, preload_time, midi_offset_ms, 
-                 send_start_port1, send_start_port2, send_start_port3, timing_method):
+                 send_start_port1, send_start_port2, send_start_port3, timing_method,
+                 require_midi=True):
         super().__init__()
         # Store all playback parameters.
         self.video_file = video_file
@@ -310,6 +311,7 @@ class MidiSyncWorker(QThread):
         self.send_start_port2 = send_start_port2
         self.send_start_port3 = send_start_port3
         self.timing_method = timing_method
+        self.require_midi = require_midi
         self.mpv_process = None
         self._is_running = True
         self.midi_outputs = {}
@@ -328,19 +330,23 @@ class MidiSyncWorker(QThread):
             self.error.emit(f"File not found: '{self.video_file}'")
             return
         
-        # --- Open all MIDI ports ---
+        # --- Open MIDI ports (best-effort) ---
         all_ports = [1, 2, 3]
-        try:
-            for port_num in all_ports:
+        for port_num in all_ports:
+            try:
                 midiout = rtmidi.MidiOut()
                 midiout.open_port(port_num)
                 self.midi_outputs[port_num] = midiout
+            except rtmidi._rtmidi.RtMidiError as e:
+                self.status_update.emit(f"Warning: MIDI port {port_num} unavailable: {e}")
+
+        if self.midi_outputs:
             self.status_update.emit(f"MIDI ports opened: {list(self.midi_outputs.keys())}")
-        except rtmidi._rtmidi.RtMidiError as e:
-            self.error.emit(f"MIDI Error on port {port_num}: {e}")
-            # Clean up any opened ports before returning.
-            [out.close_port() for out in self.midi_outputs.values()]
+        elif self.require_midi:
+            self.error.emit("No MIDI ports available. Check connections.")
             return
+        else:
+            self.status_update.emit("Warning: No MIDI ports available. Playing without MIDI.")
 
         # --- Select and run the appropriate timing logic ---
         if self.timing_method == 'high_precision':
@@ -779,7 +785,11 @@ class LiveController(QWidget):
         self.count_in_test_checkbox = QCheckBox("Count In on Track 1 (Testing)")
         self.count_in_test_checkbox.setChecked(True) # Always start checked
         settings_layout.addWidget(self.count_in_test_checkbox, 3, 0, 1, 2)
-        
+
+        self.require_midi_checkbox = QCheckBox("Require MIDI Ports")
+        self.require_midi_checkbox.setChecked(True) # Always start checked; not persisted to session
+        settings_layout.addWidget(self.require_midi_checkbox, 4, 0, 1, 2)
+
         offset_layout = QHBoxLayout()
         self.midi_offset_slider = QSlider(Qt.Orientation.Horizontal)
         self.midi_offset_slider.setRange(-250, 250)
@@ -790,8 +800,8 @@ class LiveController(QWidget):
         self.midi_offset_spinbox.valueChanged.connect(self.midi_offset_slider.setValue)
         self.reset_offset_button = QPushButton("Reset"); self.reset_offset_button.clicked.connect(self.reset_midi_offset)
         offset_layout.addWidget(self.midi_offset_slider); offset_layout.addWidget(self.midi_offset_spinbox); offset_layout.addWidget(self.reset_offset_button)
-        settings_layout.addWidget(QLabel("MIDI Offset:"), 4, 0)
-        settings_layout.addLayout(offset_layout, 4, 1)
+        settings_layout.addWidget(QLabel("MIDI Offset:"), 5, 0)
+        settings_layout.addLayout(offset_layout, 5, 1)
 
         font_size_layout = QHBoxLayout()
         self.font_size_spinbox = QSpinBox()
@@ -799,8 +809,8 @@ class LiveController(QWidget):
         self.font_size_spinbox.setValue(self.current_table_font_size)
         self.apply_font_button = QPushButton("Apply"); self.apply_font_button.clicked.connect(self.apply_table_font_size)
         font_size_layout.addWidget(self.font_size_spinbox); font_size_layout.addWidget(self.apply_font_button)
-        settings_layout.addWidget(QLabel("List Font Size:"), 5, 0)
-        settings_layout.addLayout(font_size_layout, 5, 1)
+        settings_layout.addWidget(QLabel("List Font Size:"), 6, 0)
+        settings_layout.addLayout(font_size_layout, 6, 1)
 
         timing_group = QGroupBox("MIDI Timing Method")
         timing_layout = QHBoxLayout()
@@ -809,7 +819,7 @@ class LiveController(QWidget):
         timing_layout.addWidget(self.standard_timing_radio)
         timing_layout.addWidget(self.high_precision_timing_radio)
         timing_group.setLayout(timing_layout)
-        settings_layout.addWidget(timing_group, 6, 0, 1, 2)
+        settings_layout.addWidget(timing_group, 7, 0, 1, 2)
         settings_group.setLayout(settings_layout)
         
         # --- Test Track Group ---
@@ -940,6 +950,7 @@ class LiveController(QWidget):
         self.preload_combo.setEnabled(is_edit_mode)
         self.count_in_combo.setEnabled(is_edit_mode)
         self.count_in_test_checkbox.setEnabled(is_edit_mode)
+        self.require_midi_checkbox.setEnabled(is_edit_mode)
         self.midi_offset_slider.setEnabled(is_edit_mode)
         self.midi_offset_spinbox.setEnabled(is_edit_mode)
         self.reset_offset_button.setEnabled(is_edit_mode)
@@ -1562,8 +1573,10 @@ class LiveController(QWidget):
         self.active_flash_timer.start()
         
         # Create and start the worker thread.
+        require_midi = self.require_midi_checkbox.isChecked()
         self.worker = MidiSyncWorker(track_path, bpm, display_num, preload_time, midi_offset, 
-                                     send_start_port1, send_start_port2, send_start_port3, timing_method)
+                                     send_start_port1, send_start_port2, send_start_port3, timing_method,
+                                     require_midi)
         self.worker.status_update.connect(self.status_label.setText)
         self.worker.error.connect(lambda msg: self.status_label.setText(f"ERROR: {msg}"))
         self.worker.finished.connect(self.on_playback_finished)
