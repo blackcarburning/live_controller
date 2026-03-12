@@ -35,7 +35,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QTableWidget, QTableWidgetItem, QLineEdit, QHeaderView, 
                              QGroupBox, QLabel, QFileDialog, QSizePolicy, QComboBox,
                              QAbstractButton, QSlider, QAbstractItemView, QCheckBox,
-                             QGridLayout, QRadioButton, QSpinBox)
+                             QGridLayout, QRadioButton, QSpinBox, QScrollArea)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer
 from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen
 
@@ -893,8 +893,17 @@ class LiveController(QWidget):
         controls_area.addWidget(app_group)
         
         # --- Assemble Main Layout ---
+        # Wrap controls in a scroll area so all controls (including Quit) are accessible
+        controls_widget = QWidget()
+        controls_widget.setLayout(controls_area)
+        controls_scroll = QScrollArea()
+        controls_scroll.setWidget(controls_widget)
+        controls_scroll.setWidgetResizable(True)
+        controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        controls_scroll.setStyleSheet("QScrollArea { border: none; background-color: transparent; }")
+
         main_layout.addWidget(self.table, 4) # Table takes 4/5 of the width
-        main_layout.addLayout(controls_area, 1) # Controls take 1/5
+        main_layout.addWidget(controls_scroll, 1) # Controls take 1/5
         
         # --- Status Bar ---
         self.status_label = QLabel("Status: Welcome!")
@@ -1713,11 +1722,15 @@ class LiveController(QWidget):
             return False
 
     def show_no_midi_warning(self):
-        """Shows a prominent orange overlay warning that no MIDI device is detected."""
+        """Shows a warning overlay and fully resets the app to idle state."""
+        self.stop_all_activity()
+        self.clear_highlight()
+        self.active_flash_timer.stop()
+        self.active_label.hide()
         self.no_midi_label.raise_()
         self.no_midi_label.show()
-        self.status_label.setText("ERROR: No MIDI device detected. Connect a device or disable 'Require MIDI Ports'.")
         QTimer.singleShot(4000, self.no_midi_label.hide)
+        self.status_label.setText("Status: ERROR - No MIDI device detected! Connect a device or disable 'Require MIDI Ports'.")
     
     def toggle_active_label_visibility(self):
         """Toggles the visibility of the 'ACTIVE' label to create a flashing effect."""
