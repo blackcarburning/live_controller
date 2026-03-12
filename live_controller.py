@@ -697,7 +697,14 @@ class LiveController(QWidget):
         self.preparing_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preparing_label.setStyleSheet("background-color: rgba(0, 200, 0, 0.8); color: white; border-radius: 25px;")
         self.preparing_label.hide()
-        
+
+        self.no_midi_label = QLabel("NO MIDI DEVICE DETECTED!\n\nConnect a MIDI device or\ndisable 'Require MIDI Ports' in Settings.", self)
+        self.no_midi_label.setFont(QFont("Arial", 50, QFont.Weight.ExtraBold))
+        self.no_midi_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.no_midi_label.setStyleSheet("background-color: rgba(210, 105, 0, 0.9); color: white; border-radius: 25px;")
+        self.no_midi_label.setWordWrap(True)
+        self.no_midi_label.hide()
+
         self.save_notification_label = QLabel(self)
         self.save_notification_label.setStyleSheet("background-color: #27ae60; color: white; font-size: 18px; font-weight: bold; padding: 15px; border-radius: 10px;")
         self.save_notification_label.hide()
@@ -1502,6 +1509,9 @@ class LiveController(QWidget):
         if (self.worker and self.worker.isRunning()) or (self.test_worker and self.test_worker.isRunning()):
             self.show_danger_message(); return
         if self.tracks[row_index]['type'] == 'divider': return
+
+        if self.require_midi_checkbox.isChecked() and not self.check_midi_available():
+            self.show_no_midi_warning(); return
         
         is_countdown_track = (row_index == 0 and self.count_in_test_checkbox.isChecked())
 
@@ -1691,6 +1701,23 @@ class LiveController(QWidget):
         self.preparing_label.show()
         self.preparing_label.setText(f"PREPARING:\n{track_name}")
         QTimer.singleShot(PREPARING_OVERLAY_DURATION_MS, self.preparing_label.hide)
+
+    def check_midi_available(self):
+        """Returns True if at least one MIDI output port is available."""
+        try:
+            temp_midi = rtmidi.MidiOut()
+            port_count = temp_midi.get_port_count()
+            del temp_midi
+            return port_count > 0
+        except Exception:
+            return False
+
+    def show_no_midi_warning(self):
+        """Shows a prominent orange overlay warning that no MIDI device is detected."""
+        self.no_midi_label.raise_()
+        self.no_midi_label.show()
+        self.status_label.setText("ERROR: No MIDI device detected. Connect a device or disable 'Require MIDI Ports'.")
+        QTimer.singleShot(4000, self.no_midi_label.hide)
     
     def toggle_active_label_visibility(self):
         """Toggles the visibility of the 'ACTIVE' label to create a flashing effect."""
@@ -1711,6 +1738,9 @@ class LiveController(QWidget):
             self.show_danger_message(); return
         if not self.test_track_path:
             self.status_label.setText("Status: No test track selected."); return
+
+        if self.require_midi_checkbox.isChecked() and not self.check_midi_available():
+            self.show_no_midi_warning(); return
         
         self.show_preparing_message(os.path.basename(self.test_track_path))
         
@@ -1733,6 +1763,7 @@ class LiveController(QWidget):
         self.danger_label.setGeometry(0, 0, self.width(), self.height())
         self.countdown_label.setGeometry(0, 0, self.width(), self.height())
         self.preparing_label.setGeometry(0, 0, self.width(), self.height())
+        self.no_midi_label.setGeometry(0, 0, self.width(), self.height())
         if self.save_notification_label.isVisible():
             center_x = (self.width() - self.save_notification_label.width()) // 2
             center_y = (self.height() - self.save_notification_label.height()) // 2
