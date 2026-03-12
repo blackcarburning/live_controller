@@ -325,7 +325,7 @@ class MidiSyncWorker(QThread):
             self.error.emit(f"mpv not found at '{MPV_PATH}'")
             return
         if not os.path.exists(self.video_file):
-            self.error.emit(f"Video file not found: '{self.video_file}'")
+            self.error.emit(f"File not found: '{self.video_file}'")
             return
         
         # --- Open all MIDI ports ---
@@ -354,7 +354,37 @@ class MidiSyncWorker(QThread):
         socket_name = f"mpv_socket_{int(time.time())}"
         full_socket_path = fr'\\.\pipe\{socket_name}'
         # Construct the command to launch mpv with specific settings.
-        mpv_cmd = [ MPV_PATH, f"--input-ipc-server={full_socket_path}", "--pause", "--fullscreen", f"--fs-screen={self.display_num}", "--no-osd-bar", "--no-osc", "--no-input-default-bindings", "--no-border", "--really-quiet", "--video-sync=audio", "--keep-open=no", self.video_file ]
+        file_ext = os.path.splitext(self.video_file)[1].lower()
+        is_audio_only = file_ext == '.wav'
+
+        if is_audio_only:
+            # Audio-only: no video window needed
+            mpv_cmd = [
+                MPV_PATH,
+                f"--input-ipc-server={full_socket_path}",
+                "--pause",
+                "--no-video",
+                "--really-quiet",
+                "--keep-open=no",
+                self.video_file
+            ]
+        else:
+            # Video file: full screen on selected display
+            mpv_cmd = [
+                MPV_PATH,
+                f"--input-ipc-server={full_socket_path}",
+                "--pause",
+                "--fullscreen",
+                f"--fs-screen={self.display_num}",
+                "--no-osd-bar",
+                "--no-osc",
+                "--no-input-default-bindings",
+                "--no-border",
+                "--really-quiet",
+                "--video-sync=audio",
+                "--keep-open=no",
+                self.video_file
+            ]
         
         try:
             # --- Pre-roll Phase ---
@@ -1071,7 +1101,7 @@ class LiveController(QWidget):
 
     def add_tracks(self):
         """Opens a file dialog to add one or more video tracks to the setlist."""
-        files, _ = QFileDialog.getOpenFileNames(self, "Select MOV Files", "d:\\", "Video Files (*.mov)")
+        files, _ = QFileDialog.getOpenFileNames(self, "Select Track Files", "d:\\", "Media Files (*.mov *.wav);;Video Files (*.mov);;Audio Files (*.wav)")
         if not files: return
         for file_path in files:
             # Avoid adding duplicate tracks.
@@ -1101,7 +1131,7 @@ class LiveController(QWidget):
         self.populate_table()
 
     def get_track_duration(self, file_path):
-        """Uses mplayer to get the duration of a video file."""
+        """Uses mplayer to get the duration of a media file (video or audio)."""
         if not os.path.exists(MPLAYER_PATH):
             print(f"MPlayer executable not found at {MPLAYER_PATH}")
             return 0
@@ -1655,7 +1685,7 @@ class LiveController(QWidget):
 
     def select_test_file(self):
         """Opens a file dialog to select a video file for testing."""
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Test Video File", "d:\\", "Video Files (*.mov *.mp4)")
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Test File", "d:\\", "Media Files (*.mov *.mp4 *.wav);;Video Files (*.mov *.mp4);;Audio Files (*.wav)")
         if file_path:
             self.test_track_path = file_path
             self.test_file_label.setText(os.path.basename(file_path))
