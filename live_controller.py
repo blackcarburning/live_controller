@@ -632,8 +632,8 @@ class LiveController(QWidget):
     def setup_ui(self):
         """Constructs the entire user interface."""
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(20, 20, 20, 20)
-        self.layout.setSpacing(10)
+        self.layout.setContentsMargins(10, 10, 10, 10)
+        self.layout.setSpacing(5)
         
         # --- Top Bar (Title, Mode Switch) ---
         top_bar_layout = QHBoxLayout()
@@ -651,9 +651,9 @@ class LiveController(QWidget):
         title_layout = QVBoxLayout()
         title_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title_label = QLabel("Untitled Setlist")
-        self.title_label.setFont(QFont("Segoe UI", 28, QFont.Weight.Bold))
+        self.title_label.setFont(QFont("Segoe UI", 22, QFont.Weight.Bold))
         self.running_time_label = QLabel("Total Running Time (incl. 20s overhead/track): 00:00:00")
-        self.running_time_label.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        self.running_time_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         self.running_time_label.setStyleSheet("color: #888;")
         title_layout.addWidget(self.title_label)
         title_layout.addWidget(self.running_time_label)
@@ -724,18 +724,20 @@ class LiveController(QWidget):
         
         # --- Right-side Control Panel ---
         controls_area = QVBoxLayout()
-        controls_area.setSpacing(10)
+        controls_area.setSpacing(5)
         
         # --- Playback & Setlist Group ---
         main_controls_group = QGroupBox("Playback & Setlist")
         main_controls_layout = QVBoxLayout()
+        main_controls_layout.setSpacing(4)
+        main_controls_layout.setContentsMargins(6, 6, 6, 6)
         add_buttons_layout = QHBoxLayout()
         self.add_button = QPushButton("Add Track(s)")
-        self.add_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 16px;")
+        self.add_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 12px; padding: 4px;")
         self.add_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.add_button.clicked.connect(self.add_tracks)
         self.add_encore_button = QPushButton("Add Encore Divider")
-        self.add_encore_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 16px;")
+        self.add_encore_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 12px; padding: 4px;")
         self.add_encore_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.add_encore_button.clicked.connect(self.add_encore_divider)
         add_buttons_layout.addWidget(self.add_button)
@@ -746,7 +748,7 @@ class LiveController(QWidget):
         self.undo_button.setEnabled(False)
 
         self.stop_button = QPushButton("STOP (q)")
-        self.stop_button.setStyleSheet(f"background-color: #e74c3c; color: white; font-size: 20px; font-weight: bold;")
+        self.stop_button.setStyleSheet(f"background-color: #e74c3c; color: white; font-size: 16px; font-weight: bold;")
         self.stop_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.stop_button.clicked.connect(self.stop_all_activity)
         setlist_name_layout = QHBoxLayout()
@@ -757,15 +759,14 @@ class LiveController(QWidget):
         setlist_name_layout.addWidget(self.setlist_name_input)
         setlist_name_layout.addWidget(self.rename_button)
         self.save_button = QPushButton("Save Setlist")
-        self.save_button.setStyleSheet(f"background-color: #2980b9; color: white; font-size: 16px;")
+        self.save_button.setStyleSheet(f"background-color: #2980b9; color: white; font-size: 12px; padding: 4px;")
         self.save_button.clicked.connect(self.save_setlist)
         self.load_button = QPushButton("Load Setlist")
-        self.load_button.setStyleSheet(f"background-color: #27ae60; color: white; font-size: 16px;")
+        self.load_button.setStyleSheet(f"background-color: #27ae60; color: white; font-size: 12px; padding: 4px;")
         self.load_button.clicked.connect(self.load_setlist)
         main_controls_layout.addWidget(self.stop_button)
         main_controls_layout.addLayout(add_buttons_layout)
         main_controls_layout.addWidget(self.undo_button)
-        main_controls_layout.addSpacing(10)
         main_controls_layout.addLayout(setlist_name_layout)
         main_controls_layout.addWidget(self.save_button)
         main_controls_layout.addWidget(self.load_button)
@@ -774,6 +775,8 @@ class LiveController(QWidget):
         # --- Settings Group (Compact Grid Layout) ---
         settings_group = QGroupBox("Settings")
         settings_layout = QGridLayout()
+        settings_layout.setSpacing(4)
+        settings_layout.setContentsMargins(6, 6, 6, 6)
 
         self.display_combo = QComboBox(); self.display_combo.addItems([str(i) for i in range(1, 5)])
         self.display_combo.currentIndexChanged.connect(self.setting_changed)
@@ -852,6 +855,8 @@ class LiveController(QWidget):
         # --- MIDI Port Testing Group (Compact) ---
         midi_test_group = QGroupBox("MIDI Port Testing")
         midi_test_grid_layout = QGridLayout()
+        midi_test_grid_layout.setSpacing(4)
+        midi_test_grid_layout.setContentsMargins(6, 6, 6, 6)
         midi_test_grid_layout.addWidget(QLabel("<b>Port</b>"), 0, 0, Qt.AlignmentFlag.AlignCenter)
         midi_test_grid_layout.addWidget(QLabel("<b>Enabled</b>"), 0, 1, Qt.AlignmentFlag.AlignCenter)
         midi_test_grid_layout.addWidget(QLabel("<b>Send Start</b>"), 0, 2, Qt.AlignmentFlag.AlignCenter)
@@ -889,7 +894,6 @@ class LiveController(QWidget):
         controls_area.addWidget(settings_group)
         controls_area.addWidget(test_track_group)
         controls_area.addWidget(midi_test_group)
-        controls_area.addStretch(1) # Pushes the quit button to the bottom
         controls_area.addWidget(app_group)
         
         # --- Assemble Main Layout ---
@@ -902,8 +906,8 @@ class LiveController(QWidget):
         controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         controls_scroll.setStyleSheet("QScrollArea { border: none; background-color: transparent; }")
 
-        main_layout.addWidget(self.table, 4) # Table takes 4/5 of the width
-        main_layout.addWidget(controls_scroll, 1) # Controls take 1/5
+        main_layout.addWidget(self.table, 3) # Table takes 3/4 of the width
+        main_layout.addWidget(controls_scroll, 1) # Controls take 1/4
         
         # --- Status Bar ---
         self.status_label = QLabel("Status: Welcome!")
@@ -1671,6 +1675,10 @@ class LiveController(QWidget):
         # Don't allow multiple tests at once.
         if self.test_worker:
             self.show_danger_message(); return
+
+        # Verify MIDI is available when required.
+        if self.require_midi_checkbox.isChecked() and not self.check_midi_available():
+            self.show_no_midi_warning(); return
 
         is_enabled = self.test_port_enabled_cbs[port_num].isChecked()
         if not is_enabled:
