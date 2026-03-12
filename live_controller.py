@@ -906,8 +906,9 @@ class LiveController(QWidget):
         controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         controls_scroll.setStyleSheet("QScrollArea { border: none; background-color: transparent; }")
 
-        main_layout.addWidget(self.table, 3) # Table takes 3/4 of the width
-        main_layout.addWidget(controls_scroll, 1) # Controls take 1/4
+        main_layout.addWidget(self.table, 5) # Table takes 5/6 of the width
+        main_layout.addWidget(controls_scroll, 1) # Controls take 1/6
+        controls_scroll.setMaximumWidth(320)
         
         # --- Status Bar ---
         self.status_label = QLabel("Status: Welcome!")
@@ -917,6 +918,9 @@ class LiveController(QWidget):
         self.layout.addLayout(top_bar_layout)
         self.layout.addLayout(main_layout)
         self.layout.addWidget(self.status_label)
+        
+        # Add a visible border around the application window.
+        self.setStyleSheet("LiveController { border: 2px solid #555; }")
         
         # --- Initial UI State ---
         self.live_mode_slider.setChecked(True) # Default to LIVE mode
@@ -1571,6 +1575,10 @@ class LiveController(QWidget):
 
     def execute_playback(self, track_data, bpm, row_index=None):
         """Creates and starts a MidiSyncWorker to handle playback."""
+        if self.require_midi_checkbox.isChecked() and not self.check_midi_available():
+            self.show_no_midi_warning()
+            return
+
         try:
             # Gather all necessary parameters from the UI.
             display_num = int(self.display_combo.currentText())
