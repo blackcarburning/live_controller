@@ -632,8 +632,8 @@ class LiveController(QWidget):
     def setup_ui(self):
         """Constructs the entire user interface."""
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(20, 20, 20, 20)
-        self.layout.setSpacing(10)
+        self.layout.setContentsMargins(8, 8, 8, 8)
+        self.layout.setSpacing(4)
         
         # --- Top Bar (Title, Mode Switch) ---
         top_bar_layout = QHBoxLayout()
@@ -651,9 +651,9 @@ class LiveController(QWidget):
         title_layout = QVBoxLayout()
         title_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title_label = QLabel("Untitled Setlist")
-        self.title_label.setFont(QFont("Segoe UI", 28, QFont.Weight.Bold))
+        self.title_label.setFont(QFont("Segoe UI", 22, QFont.Weight.Bold))
         self.running_time_label = QLabel("Total Running Time (incl. 20s overhead/track): 00:00:00")
-        self.running_time_label.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        self.running_time_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         self.running_time_label.setStyleSheet("color: #888;")
         title_layout.addWidget(self.title_label)
         title_layout.addWidget(self.running_time_label)
@@ -726,11 +726,11 @@ class LiveController(QWidget):
         main_controls_layout.setSpacing(4)
         add_buttons_layout = QHBoxLayout()
         self.add_button = QPushButton("Add Track(s)")
-        self.add_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 13px;")
+        self.add_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 11px; padding: 3px 6px;")
         self.add_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.add_button.clicked.connect(self.add_tracks)
         self.add_encore_button = QPushButton("Add Encore Divider")
-        self.add_encore_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 13px;")
+        self.add_encore_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 11px; padding: 3px 6px;")
         self.add_encore_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.add_encore_button.clicked.connect(self.add_encore_divider)
         add_buttons_layout.addWidget(self.add_button)
@@ -741,7 +741,7 @@ class LiveController(QWidget):
         self.undo_button.setEnabled(False)
 
         self.stop_button = QPushButton("STOP (q)")
-        self.stop_button.setStyleSheet(f"background-color: #e74c3c; color: white; font-size: 14px; font-weight: bold;")
+        self.stop_button.setStyleSheet(f"background-color: #e74c3c; color: white; font-size: 12px; font-weight: bold; padding: 3px 6px;")
         self.stop_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.stop_button.clicked.connect(self.stop_all_activity)
         setlist_name_layout = QHBoxLayout()
@@ -752,10 +752,10 @@ class LiveController(QWidget):
         setlist_name_layout.addWidget(self.setlist_name_input)
         setlist_name_layout.addWidget(self.rename_button)
         self.save_button = QPushButton("Save Setlist")
-        self.save_button.setStyleSheet(f"background-color: #2980b9; color: white; font-size: 13px;")
+        self.save_button.setStyleSheet(f"background-color: #2980b9; color: white; font-size: 11px; padding: 3px 6px;")
         self.save_button.clicked.connect(self.save_setlist)
         self.load_button = QPushButton("Load Setlist")
-        self.load_button.setStyleSheet(f"background-color: #27ae60; color: white; font-size: 13px;")
+        self.load_button.setStyleSheet(f"background-color: #27ae60; color: white; font-size: 11px; padding: 3px 6px;")
         self.load_button.clicked.connect(self.load_setlist)
         main_controls_layout.addWidget(self.stop_button)
         main_controls_layout.addLayout(add_buttons_layout)
@@ -1201,11 +1201,18 @@ class LiveController(QWidget):
         index = last_deleted['index']
         item = last_deleted['item']
         
-        # If a track was restored, reclaim its hotkey
+        # If a track was restored, reclaim its hotkey if still valid, or assign a new one.
         if item.get('type') == 'track':
             hotkey = item.get('hotkey')
-            if hotkey in self.available_hotkeys:
+            valid_hotkeys = set(self._generate_hotkeys())
+            if hotkey in valid_hotkeys and hotkey in self.available_hotkeys:
                 self.available_hotkeys.remove(hotkey)
+            elif hotkey not in valid_hotkeys:
+                # Legacy/invalid hotkey — assign a new valid one.
+                if self.available_hotkeys:
+                    item['hotkey'] = self.available_hotkeys.pop(0)
+                else:
+                    item['hotkey'] = ''
 
         self.tracks.insert(index, item)
         self.rebuild_hotkey_map()
@@ -1450,10 +1457,11 @@ class LiveController(QWidget):
             if 'type' not in item:
                 item['type'] = 'track'
 
-        # Recalculate available hotkeys.
-        loaded_hotkeys = {item['hotkey'] for item in setlist_data if item['type'] == 'track'}
+        # Recalculate available hotkeys, only consuming valid keys from the loaded data.
+        valid_hotkeys = set(self._generate_hotkeys())
+        loaded_hotkeys = {item['hotkey'] for item in setlist_data if item['type'] == 'track' and item['hotkey'] in valid_hotkeys}
         self.available_hotkeys = [k for k in self.available_hotkeys if k not in loaded_hotkeys]
-        
+
         # Backwards compatibility and data validation.
         for item in setlist_data:
             if item['type'] == 'track':
@@ -1463,6 +1471,12 @@ class LiveController(QWidget):
                      item['send_start_port1'] = True
                 if 'send_start_port2' not in item: item['send_start_port2'] = False
                 if 'send_start_port3' not in item: item['send_start_port3'] = False
+                # Reassign hotkeys that are not in the valid set (e.g. legacy 'i' assignments).
+                if item['hotkey'] not in valid_hotkeys:
+                    if self.available_hotkeys:
+                        item['hotkey'] = self.available_hotkeys.pop(0)
+                    else:
+                        item['hotkey'] = ''
         
         self.tracks = setlist_data
         self.rebuild_hotkey_map()
