@@ -92,7 +92,7 @@ QGroupBox {
     font-weight: bold;
     border: 1px solid #444;
     border-radius: 8px;
-    margin-top: 10px;
+    margin-top: 6px;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
@@ -717,18 +717,20 @@ class LiveController(QWidget):
         
         # --- Right-side Control Panel ---
         controls_area = QVBoxLayout()
-        controls_area.setSpacing(10)
+        controls_area.setSpacing(4)
         
         # --- Playback & Setlist Group ---
         main_controls_group = QGroupBox("Playback & Setlist")
         main_controls_layout = QVBoxLayout()
+        main_controls_layout.setContentsMargins(6, 6, 6, 6)
+        main_controls_layout.setSpacing(4)
         add_buttons_layout = QHBoxLayout()
         self.add_button = QPushButton("Add Track(s)")
-        self.add_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 16px;")
+        self.add_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 13px;")
         self.add_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.add_button.clicked.connect(self.add_tracks)
         self.add_encore_button = QPushButton("Add Encore Divider")
-        self.add_encore_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 16px;")
+        self.add_encore_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 13px;")
         self.add_encore_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.add_encore_button.clicked.connect(self.add_encore_divider)
         add_buttons_layout.addWidget(self.add_button)
@@ -739,7 +741,7 @@ class LiveController(QWidget):
         self.undo_button.setEnabled(False)
 
         self.stop_button = QPushButton("STOP (q)")
-        self.stop_button.setStyleSheet(f"background-color: #e74c3c; color: white; font-size: 20px; font-weight: bold;")
+        self.stop_button.setStyleSheet(f"background-color: #e74c3c; color: white; font-size: 14px; font-weight: bold;")
         self.stop_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.stop_button.clicked.connect(self.stop_all_activity)
         setlist_name_layout = QHBoxLayout()
@@ -750,15 +752,14 @@ class LiveController(QWidget):
         setlist_name_layout.addWidget(self.setlist_name_input)
         setlist_name_layout.addWidget(self.rename_button)
         self.save_button = QPushButton("Save Setlist")
-        self.save_button.setStyleSheet(f"background-color: #2980b9; color: white; font-size: 16px;")
+        self.save_button.setStyleSheet(f"background-color: #2980b9; color: white; font-size: 13px;")
         self.save_button.clicked.connect(self.save_setlist)
         self.load_button = QPushButton("Load Setlist")
-        self.load_button.setStyleSheet(f"background-color: #27ae60; color: white; font-size: 16px;")
+        self.load_button.setStyleSheet(f"background-color: #27ae60; color: white; font-size: 13px;")
         self.load_button.clicked.connect(self.load_setlist)
         main_controls_layout.addWidget(self.stop_button)
         main_controls_layout.addLayout(add_buttons_layout)
         main_controls_layout.addWidget(self.undo_button)
-        main_controls_layout.addSpacing(10)
         main_controls_layout.addLayout(setlist_name_layout)
         main_controls_layout.addWidget(self.save_button)
         main_controls_layout.addWidget(self.load_button)
@@ -767,6 +768,8 @@ class LiveController(QWidget):
         # --- Settings Group (Compact Grid Layout) ---
         settings_group = QGroupBox("Settings")
         settings_layout = QGridLayout()
+        settings_layout.setContentsMargins(6, 6, 6, 6)
+        settings_layout.setSpacing(3)
 
         self.display_combo = QComboBox(); self.display_combo.addItems([str(i) for i in range(1, 5)])
         self.display_combo.currentIndexChanged.connect(self.setting_changed)
@@ -825,6 +828,8 @@ class LiveController(QWidget):
         # --- Test Track Group ---
         test_track_group = QGroupBox("Test Track")
         test_track_layout = QHBoxLayout()
+        test_track_layout.setContentsMargins(6, 6, 6, 6)
+        test_track_layout.setSpacing(4)
         self.test_file_button = QPushButton("Select Test File...")
         self.test_file_button.clicked.connect(self.select_test_file)
         self.test_file_label = QLabel("No file selected.")
@@ -845,6 +850,8 @@ class LiveController(QWidget):
         # --- MIDI Port Testing Group (Compact) ---
         midi_test_group = QGroupBox("MIDI Port Testing")
         midi_test_grid_layout = QGridLayout()
+        midi_test_grid_layout.setContentsMargins(6, 6, 6, 6)
+        midi_test_grid_layout.setSpacing(3)
         midi_test_grid_layout.addWidget(QLabel("<b>Port</b>"), 0, 0, Qt.AlignmentFlag.AlignCenter)
         midi_test_grid_layout.addWidget(QLabel("<b>Enabled</b>"), 0, 1, Qt.AlignmentFlag.AlignCenter)
         midi_test_grid_layout.addWidget(QLabel("<b>Send Start</b>"), 0, 2, Qt.AlignmentFlag.AlignCenter)
@@ -872,6 +879,8 @@ class LiveController(QWidget):
         # --- Application Group (Quit) ---
         app_group = QGroupBox("Application")
         app_layout = QVBoxLayout()
+        app_layout.setContentsMargins(6, 6, 6, 6)
+        app_layout.setSpacing(4)
         self.quit_button = QPushButton("Quit")
         self.quit_button.clicked.connect(self.close)
         app_layout.addWidget(self.quit_button)
@@ -882,7 +891,6 @@ class LiveController(QWidget):
         controls_area.addWidget(settings_group)
         controls_area.addWidget(test_track_group)
         controls_area.addWidget(midi_test_group)
-        controls_area.addStretch(1) # Pushes the quit button to the bottom
         controls_area.addWidget(app_group)
         
         # --- Assemble Main Layout ---
@@ -992,6 +1000,7 @@ class LiveController(QWidget):
         keys = [str(i) for i in range(1, 10)] + [chr(i) for i in range(ord('a'), ord('z') + 1)]
         keys.remove('q') # Reserved for STOP
         keys.remove('t') # Reserved for PLAY TEST
+        keys.remove('i') # Excluded: visually confused with '1'
         return keys
     
     def load_config(self):
