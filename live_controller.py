@@ -35,7 +35,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QTableWidget, QTableWidgetItem, QLineEdit, QHeaderView, 
                              QGroupBox, QLabel, QFileDialog, QSizePolicy, QComboBox,
                              QAbstractButton, QSlider, QAbstractItemView, QCheckBox,
-                             QGridLayout, QRadioButton, QSpinBox, QScrollArea)
+                             QGridLayout, QRadioButton, QSpinBox)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer
 from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen
 
@@ -632,8 +632,8 @@ class LiveController(QWidget):
     def setup_ui(self):
         """Constructs the entire user interface."""
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(10, 10, 10, 10)
-        self.layout.setSpacing(5)
+        self.layout.setContentsMargins(20, 20, 20, 20)
+        self.layout.setSpacing(10)
         
         # --- Top Bar (Title, Mode Switch) ---
         top_bar_layout = QHBoxLayout()
@@ -651,9 +651,9 @@ class LiveController(QWidget):
         title_layout = QVBoxLayout()
         title_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title_label = QLabel("Untitled Setlist")
-        self.title_label.setFont(QFont("Segoe UI", 22, QFont.Weight.Bold))
+        self.title_label.setFont(QFont("Segoe UI", 28, QFont.Weight.Bold))
         self.running_time_label = QLabel("Total Running Time (incl. 20s overhead/track): 00:00:00")
-        self.running_time_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        self.running_time_label.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
         self.running_time_label.setStyleSheet("color: #888;")
         title_layout.addWidget(self.title_label)
         title_layout.addWidget(self.running_time_label)
@@ -697,14 +697,7 @@ class LiveController(QWidget):
         self.preparing_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preparing_label.setStyleSheet("background-color: rgba(0, 200, 0, 0.8); color: white; border-radius: 25px;")
         self.preparing_label.hide()
-
-        self.no_midi_label = QLabel("NO MIDI DEVICE DETECTED!\n\nConnect a MIDI device or\ndisable 'Require MIDI Ports' in Settings.", self)
-        self.no_midi_label.setFont(QFont("Arial", 50, QFont.Weight.ExtraBold))
-        self.no_midi_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.no_midi_label.setStyleSheet("background-color: rgba(210, 105, 0, 0.9); color: white; border-radius: 25px;")
-        self.no_midi_label.setWordWrap(True)
-        self.no_midi_label.hide()
-
+        
         self.save_notification_label = QLabel(self)
         self.save_notification_label.setStyleSheet("background-color: #27ae60; color: white; font-size: 18px; font-weight: bold; padding: 15px; border-radius: 10px;")
         self.save_notification_label.hide()
@@ -724,20 +717,18 @@ class LiveController(QWidget):
         
         # --- Right-side Control Panel ---
         controls_area = QVBoxLayout()
-        controls_area.setSpacing(5)
+        controls_area.setSpacing(10)
         
         # --- Playback & Setlist Group ---
         main_controls_group = QGroupBox("Playback & Setlist")
         main_controls_layout = QVBoxLayout()
-        main_controls_layout.setSpacing(4)
-        main_controls_layout.setContentsMargins(6, 6, 6, 6)
         add_buttons_layout = QHBoxLayout()
         self.add_button = QPushButton("Add Track(s)")
-        self.add_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 12px; padding: 4px;")
+        self.add_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 16px;")
         self.add_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.add_button.clicked.connect(self.add_tracks)
         self.add_encore_button = QPushButton("Add Encore Divider")
-        self.add_encore_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 12px; padding: 4px;")
+        self.add_encore_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 16px;")
         self.add_encore_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.add_encore_button.clicked.connect(self.add_encore_divider)
         add_buttons_layout.addWidget(self.add_button)
@@ -748,7 +739,7 @@ class LiveController(QWidget):
         self.undo_button.setEnabled(False)
 
         self.stop_button = QPushButton("STOP (q)")
-        self.stop_button.setStyleSheet(f"background-color: #e74c3c; color: white; font-size: 16px; font-weight: bold;")
+        self.stop_button.setStyleSheet(f"background-color: #e74c3c; color: white; font-size: 20px; font-weight: bold;")
         self.stop_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.stop_button.clicked.connect(self.stop_all_activity)
         setlist_name_layout = QHBoxLayout()
@@ -759,14 +750,15 @@ class LiveController(QWidget):
         setlist_name_layout.addWidget(self.setlist_name_input)
         setlist_name_layout.addWidget(self.rename_button)
         self.save_button = QPushButton("Save Setlist")
-        self.save_button.setStyleSheet(f"background-color: #2980b9; color: white; font-size: 12px; padding: 4px;")
+        self.save_button.setStyleSheet(f"background-color: #2980b9; color: white; font-size: 16px;")
         self.save_button.clicked.connect(self.save_setlist)
         self.load_button = QPushButton("Load Setlist")
-        self.load_button.setStyleSheet(f"background-color: #27ae60; color: white; font-size: 12px; padding: 4px;")
+        self.load_button.setStyleSheet(f"background-color: #27ae60; color: white; font-size: 16px;")
         self.load_button.clicked.connect(self.load_setlist)
         main_controls_layout.addWidget(self.stop_button)
         main_controls_layout.addLayout(add_buttons_layout)
         main_controls_layout.addWidget(self.undo_button)
+        main_controls_layout.addSpacing(10)
         main_controls_layout.addLayout(setlist_name_layout)
         main_controls_layout.addWidget(self.save_button)
         main_controls_layout.addWidget(self.load_button)
@@ -775,8 +767,6 @@ class LiveController(QWidget):
         # --- Settings Group (Compact Grid Layout) ---
         settings_group = QGroupBox("Settings")
         settings_layout = QGridLayout()
-        settings_layout.setSpacing(4)
-        settings_layout.setContentsMargins(6, 6, 6, 6)
 
         self.display_combo = QComboBox(); self.display_combo.addItems([str(i) for i in range(1, 5)])
         self.display_combo.currentIndexChanged.connect(self.setting_changed)
@@ -855,8 +845,6 @@ class LiveController(QWidget):
         # --- MIDI Port Testing Group (Compact) ---
         midi_test_group = QGroupBox("MIDI Port Testing")
         midi_test_grid_layout = QGridLayout()
-        midi_test_grid_layout.setSpacing(4)
-        midi_test_grid_layout.setContentsMargins(6, 6, 6, 6)
         midi_test_grid_layout.addWidget(QLabel("<b>Port</b>"), 0, 0, Qt.AlignmentFlag.AlignCenter)
         midi_test_grid_layout.addWidget(QLabel("<b>Enabled</b>"), 0, 1, Qt.AlignmentFlag.AlignCenter)
         midi_test_grid_layout.addWidget(QLabel("<b>Send Start</b>"), 0, 2, Qt.AlignmentFlag.AlignCenter)
@@ -894,21 +882,12 @@ class LiveController(QWidget):
         controls_area.addWidget(settings_group)
         controls_area.addWidget(test_track_group)
         controls_area.addWidget(midi_test_group)
+        controls_area.addStretch(1) # Pushes the quit button to the bottom
         controls_area.addWidget(app_group)
         
         # --- Assemble Main Layout ---
-        # Wrap controls in a scroll area so all controls (including Quit) are accessible
-        controls_widget = QWidget()
-        controls_widget.setLayout(controls_area)
-        controls_scroll = QScrollArea()
-        controls_scroll.setWidget(controls_widget)
-        controls_scroll.setWidgetResizable(True)
-        controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        controls_scroll.setStyleSheet("QScrollArea { border: none; background-color: transparent; }")
-
-        main_layout.addWidget(self.table, 5) # Table takes 5/6 of the width
-        main_layout.addWidget(controls_scroll, 1) # Controls take 1/6
-        controls_scroll.setMaximumWidth(320)
+        main_layout.addWidget(self.table, 4) # Table takes 4/5 of the width
+        main_layout.addLayout(controls_area, 1) # Controls take 1/5
         
         # --- Status Bar ---
         self.status_label = QLabel("Status: Welcome!")
@@ -918,9 +897,6 @@ class LiveController(QWidget):
         self.layout.addLayout(top_bar_layout)
         self.layout.addLayout(main_layout)
         self.layout.addWidget(self.status_label)
-        
-        # Add a visible border around the application window.
-        self.setStyleSheet("LiveController { border: 2px solid #555; }")
         
         # --- Initial UI State ---
         self.live_mode_slider.setChecked(True) # Default to LIVE mode
@@ -1526,9 +1502,6 @@ class LiveController(QWidget):
         if (self.worker and self.worker.isRunning()) or (self.test_worker and self.test_worker.isRunning()):
             self.show_danger_message(); return
         if self.tracks[row_index]['type'] == 'divider': return
-
-        if self.require_midi_checkbox.isChecked() and not self.check_midi_available():
-            self.show_no_midi_warning(); return
         
         is_countdown_track = (row_index == 0 and self.count_in_test_checkbox.isChecked())
 
@@ -1575,10 +1548,6 @@ class LiveController(QWidget):
 
     def execute_playback(self, track_data, bpm, row_index=None):
         """Creates and starts a MidiSyncWorker to handle playback."""
-        if self.require_midi_checkbox.isChecked() and not self.check_midi_available():
-            self.show_no_midi_warning()
-            return
-
         try:
             # Gather all necessary parameters from the UI.
             display_num = int(self.display_combo.currentText())
@@ -1684,10 +1653,6 @@ class LiveController(QWidget):
         if self.test_worker:
             self.show_danger_message(); return
 
-        # Verify MIDI is available when required.
-        if self.require_midi_checkbox.isChecked() and not self.check_midi_available():
-            self.show_no_midi_warning(); return
-
         is_enabled = self.test_port_enabled_cbs[port_num].isChecked()
         if not is_enabled:
             self.status_label.setText(f"Status: Port {port_num} test is disabled.")
@@ -1726,27 +1691,6 @@ class LiveController(QWidget):
         self.preparing_label.show()
         self.preparing_label.setText(f"PREPARING:\n{track_name}")
         QTimer.singleShot(PREPARING_OVERLAY_DURATION_MS, self.preparing_label.hide)
-
-    def check_midi_available(self):
-        """Returns True if at least one MIDI output port is available."""
-        try:
-            temp_midi = rtmidi.MidiOut()
-            port_count = temp_midi.get_port_count()
-            del temp_midi
-            return port_count > 0
-        except Exception:
-            return False
-
-    def show_no_midi_warning(self):
-        """Shows a warning overlay and fully resets the app to idle state."""
-        self.stop_all_activity()
-        self.clear_highlight()
-        self.active_flash_timer.stop()
-        self.active_label.hide()
-        self.no_midi_label.raise_()
-        self.no_midi_label.show()
-        QTimer.singleShot(4000, self.no_midi_label.hide)
-        self.status_label.setText("Status: ERROR - No MIDI device detected! Connect a device or disable 'Require MIDI Ports'.")
     
     def toggle_active_label_visibility(self):
         """Toggles the visibility of the 'ACTIVE' label to create a flashing effect."""
@@ -1767,9 +1711,6 @@ class LiveController(QWidget):
             self.show_danger_message(); return
         if not self.test_track_path:
             self.status_label.setText("Status: No test track selected."); return
-
-        if self.require_midi_checkbox.isChecked() and not self.check_midi_available():
-            self.show_no_midi_warning(); return
         
         self.show_preparing_message(os.path.basename(self.test_track_path))
         
@@ -1792,7 +1733,6 @@ class LiveController(QWidget):
         self.danger_label.setGeometry(0, 0, self.width(), self.height())
         self.countdown_label.setGeometry(0, 0, self.width(), self.height())
         self.preparing_label.setGeometry(0, 0, self.width(), self.height())
-        self.no_midi_label.setGeometry(0, 0, self.width(), self.height())
         if self.save_notification_label.isVisible():
             center_x = (self.width() - self.save_notification_label.width()) // 2
             center_y = (self.height() - self.save_notification_label.height()) // 2
