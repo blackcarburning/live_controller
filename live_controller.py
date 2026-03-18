@@ -35,7 +35,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QTableWidget, QTableWidgetItem, QLineEdit, QHeaderView, 
                              QGroupBox, QLabel, QFileDialog, QSizePolicy, QComboBox,
                              QAbstractButton, QSlider, QAbstractItemView, QCheckBox,
-                             QGridLayout, QRadioButton, QSpinBox)
+                             QGridLayout, QRadioButton, QSpinBox, QColorDialog)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer
 from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen
 
@@ -59,6 +59,10 @@ DEFAULT_LOAD_DELAY_SECONDS = 5
 DEFAULT_MIDI_OFFSET_MS = 0
 DEFAULT_COUNT_IN_SECONDS = 20
 DEFAULT_TABLE_FONT_SIZE = 16
+DEFAULT_COUNT_IN_FONT_SIZE = 250
+DEFAULT_TRACK_PLAY_FONT_SIZE = 80
+DEFAULT_COUNT_IN_BG_COLOR = "#c80000"
+DEFAULT_TRACK_PLAY_BG_COLOR = "#00c800"
 TRACK_OVERHEAD_SECONDS = 20  # Extra time added to total running time per track for transitions
 MAX_UNDO_LEVELS = 30
 
@@ -610,6 +614,10 @@ class LiveController(QWidget):
         self.current_table_font_size = DEFAULT_TABLE_FONT_SIZE
         self.playing_color = QColor("#2ecc71") # Brighter Green for playing track
         self.default_color = QColor("#2a2a2a") # Default background
+        self.count_in_bg_color = DEFAULT_COUNT_IN_BG_COLOR
+        self.count_in_font_size = DEFAULT_COUNT_IN_FONT_SIZE
+        self.track_play_bg_color = DEFAULT_TRACK_PLAY_BG_COLOR
+        self.track_play_font_size = DEFAULT_TRACK_PLAY_FONT_SIZE
         
         # --- Timers for UI effects ---
         self.countdown_timer = QTimer(self)
@@ -687,13 +695,13 @@ class LiveController(QWidget):
         self.danger_label.hide()
         
         self.countdown_label = QLabel("", self)
-        self.countdown_label.setFont(QFont("Arial", 250, QFont.Weight.ExtraBold))
+        self.countdown_label.setFont(QFont("Arial", DEFAULT_COUNT_IN_FONT_SIZE, QFont.Weight.ExtraBold))
         self.countdown_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.countdown_label.setStyleSheet("background-color: rgba(200, 0, 0, 0.9); color: white; border-radius: 25px;")
         self.countdown_label.hide()
-        
+
         self.preparing_label = QLabel("", self)
-        self.preparing_label.setFont(QFont("Arial", 80, QFont.Weight.Bold))
+        self.preparing_label.setFont(QFont("Arial", DEFAULT_TRACK_PLAY_FONT_SIZE, QFont.Weight.Bold))
         self.preparing_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preparing_label.setStyleSheet("background-color: rgba(0, 200, 0, 0.8); color: white; border-radius: 25px;")
         self.preparing_label.hide()
@@ -847,7 +855,41 @@ class LiveController(QWidget):
         test_track_layout.addWidget(self.play_test_button)
         test_track_group.setLayout(test_track_layout)
 
-        # --- MIDI Port Testing Group (Compact) ---
+        # --- Overlay Colours Group ---
+        overlay_colours_group = QGroupBox("Overlay Colours")
+        overlay_colours_layout = QGridLayout()
+        overlay_colours_layout.setContentsMargins(6, 6, 6, 6)
+        overlay_colours_layout.setSpacing(4)
+
+        self.count_in_color_button = QPushButton()
+        self.count_in_color_button.setFixedSize(60, 25)
+        self.count_in_color_button.setStyleSheet(f"background-color: {DEFAULT_COUNT_IN_BG_COLOR};")
+        self.count_in_color_button.clicked.connect(self.pick_count_in_color)
+
+        self.count_in_font_spinbox = QSpinBox()
+        self.count_in_font_spinbox.setRange(20, 500)
+        self.count_in_font_spinbox.setValue(DEFAULT_COUNT_IN_FONT_SIZE)
+        self.count_in_font_spinbox.valueChanged.connect(self._on_count_in_font_changed)
+
+        self.track_play_color_button = QPushButton()
+        self.track_play_color_button.setFixedSize(60, 25)
+        self.track_play_color_button.setStyleSheet(f"background-color: {DEFAULT_TRACK_PLAY_BG_COLOR};")
+        self.track_play_color_button.clicked.connect(self.pick_track_play_color)
+
+        self.track_play_font_spinbox = QSpinBox()
+        self.track_play_font_spinbox.setRange(20, 500)
+        self.track_play_font_spinbox.setValue(DEFAULT_TRACK_PLAY_FONT_SIZE)
+        self.track_play_font_spinbox.valueChanged.connect(self._on_track_play_font_changed)
+
+        overlay_colours_layout.addWidget(QLabel("Count-In BG:"), 0, 0)
+        overlay_colours_layout.addWidget(self.count_in_color_button, 0, 1)
+        overlay_colours_layout.addWidget(QLabel("Font:"), 0, 2)
+        overlay_colours_layout.addWidget(self.count_in_font_spinbox, 0, 3)
+        overlay_colours_layout.addWidget(QLabel("Track Play BG:"), 1, 0)
+        overlay_colours_layout.addWidget(self.track_play_color_button, 1, 1)
+        overlay_colours_layout.addWidget(QLabel("Font:"), 1, 2)
+        overlay_colours_layout.addWidget(self.track_play_font_spinbox, 1, 3)
+        overlay_colours_group.setLayout(overlay_colours_layout)
         midi_test_group = QGroupBox("MIDI Port Testing")
         midi_test_grid_layout = QGridLayout()
         midi_test_grid_layout.setContentsMargins(6, 6, 6, 6)
@@ -890,6 +932,7 @@ class LiveController(QWidget):
         controls_area.addWidget(main_controls_group)
         controls_area.addWidget(settings_group)
         controls_area.addWidget(test_track_group)
+        controls_area.addWidget(overlay_colours_group)
         controls_area.addWidget(midi_test_group)
         controls_area.addWidget(app_group)
         
@@ -910,6 +953,49 @@ class LiveController(QWidget):
         self.live_mode_slider.setChecked(True) # Default to LIVE mode
         self.toggle_live_mode()
         self.populate_table()
+        self.apply_overlay_styles()
+
+    def apply_overlay_styles(self):
+        """Updates the stylesheet and font of both overlay labels based on current settings."""
+        count_in_c = QColor(self.count_in_bg_color)
+        self.countdown_label.setStyleSheet(
+            f"background-color: rgba({count_in_c.red()}, {count_in_c.green()}, {count_in_c.blue()}, 0.9); "
+            "color: white; border-radius: 25px;"
+        )
+        self.countdown_label.setFont(QFont("Arial", self.count_in_font_size, QFont.Weight.ExtraBold))
+
+        track_play_c = QColor(self.track_play_bg_color)
+        self.preparing_label.setStyleSheet(
+            f"background-color: rgba({track_play_c.red()}, {track_play_c.green()}, {track_play_c.blue()}, 0.8); "
+            "color: white; border-radius: 25px;"
+        )
+        self.preparing_label.setFont(QFont("Arial", self.track_play_font_size, QFont.Weight.Bold))
+
+    def pick_count_in_color(self):
+        """Opens a colour picker dialog for the count-in overlay background."""
+        color = QColorDialog.getColor(QColor(self.count_in_bg_color), self, "Count-In Background Colour")
+        if color.isValid():
+            self.count_in_bg_color = color.name()
+            self.count_in_color_button.setStyleSheet(f"background-color: {self.count_in_bg_color};")
+            self.apply_overlay_styles()
+
+    def pick_track_play_color(self):
+        """Opens a colour picker dialog for the track play overlay background."""
+        color = QColorDialog.getColor(QColor(self.track_play_bg_color), self, "Track Play Background Colour")
+        if color.isValid():
+            self.track_play_bg_color = color.name()
+            self.track_play_color_button.setStyleSheet(f"background-color: {self.track_play_bg_color};")
+            self.apply_overlay_styles()
+
+    def _on_count_in_font_changed(self, value):
+        """Handles count-in font size spinbox changes."""
+        self.count_in_font_size = value
+        self.apply_overlay_styles()
+
+    def _on_track_play_font_changed(self, value):
+        """Handles track play font size spinbox changes."""
+        self.track_play_font_size = value
+        self.apply_overlay_styles()
 
     def apply_table_font_size(self):
         """Applies the selected font size to all items in the table."""
@@ -973,6 +1059,10 @@ class LiveController(QWidget):
         self.high_precision_timing_radio.setEnabled(is_edit_mode)
         self.font_size_spinbox.setEnabled(is_edit_mode)
         self.apply_font_button.setEnabled(is_edit_mode)
+        self.count_in_color_button.setEnabled(is_edit_mode)
+        self.count_in_font_spinbox.setEnabled(is_edit_mode)
+        self.track_play_color_button.setEnabled(is_edit_mode)
+        self.track_play_font_spinbox.setEnabled(is_edit_mode)
 
         # Enable/disable the widgets inside the table rows.
         for i in range(self.table.rowCount()):
@@ -1065,6 +1155,10 @@ class LiveController(QWidget):
             'timing_method': "high_precision" if self.high_precision_timing_radio.isChecked() else "standard",
             'count_in_duration': int(self.count_in_combo.currentText()),
             'table_font_size': self.current_table_font_size,
+            'count_in_bg_color': self.count_in_bg_color,
+            'count_in_font_size': self.count_in_font_size,
+            'track_play_bg_color': self.track_play_bg_color,
+            'track_play_font_size': self.track_play_font_size,
         }
         with open(SESSION_FILE, 'w') as f:
             json.dump(session_data, f, indent=4)
@@ -1094,6 +1188,16 @@ class LiveController(QWidget):
             self.current_table_font_size = session_data.get('table_font_size', DEFAULT_TABLE_FONT_SIZE)
             self.font_size_spinbox.setValue(self.current_table_font_size)
             
+            self.count_in_bg_color = session_data.get('count_in_bg_color', DEFAULT_COUNT_IN_BG_COLOR)
+            self.count_in_font_size = session_data.get('count_in_font_size', DEFAULT_COUNT_IN_FONT_SIZE)
+            self.track_play_bg_color = session_data.get('track_play_bg_color', DEFAULT_TRACK_PLAY_BG_COLOR)
+            self.track_play_font_size = session_data.get('track_play_font_size', DEFAULT_TRACK_PLAY_FONT_SIZE)
+            self.count_in_color_button.setStyleSheet(f"background-color: {self.count_in_bg_color};")
+            self.count_in_font_spinbox.setValue(self.count_in_font_size)
+            self.track_play_color_button.setStyleSheet(f"background-color: {self.track_play_bg_color};")
+            self.track_play_font_spinbox.setValue(self.track_play_font_size)
+            self.apply_overlay_styles()
+
             self.undo_history = deque(session_data.get('undo_history', []), maxlen=MAX_UNDO_LEVELS)
 
             self._apply_setlist_data(session_data.get('tracks', []), session_data.get('setlist_name', 'Untitled Setlist'))
@@ -1396,7 +1500,11 @@ class LiveController(QWidget):
             'undo_history': list(self.undo_history),
             'midi_offset': self.midi_offset_slider.value(),
             'timing_method': "high_precision" if self.high_precision_timing_radio.isChecked() else "standard",
-            'count_in_duration': int(self.count_in_combo.currentText())
+            'count_in_duration': int(self.count_in_combo.currentText()),
+            'count_in_bg_color': self.count_in_bg_color,
+            'count_in_font_size': self.count_in_font_size,
+            'track_play_bg_color': self.track_play_bg_color,
+            'track_play_font_size': self.track_play_font_size,
         }
         
         with open(file_path, 'w') as f:
@@ -1440,6 +1548,15 @@ class LiveController(QWidget):
                 self.high_precision_timing_radio.setChecked(True)
             else:
                 self.standard_timing_radio.setChecked(True)
+            self.count_in_bg_color = loaded_data.get('count_in_bg_color', DEFAULT_COUNT_IN_BG_COLOR)
+            self.count_in_font_size = loaded_data.get('count_in_font_size', DEFAULT_COUNT_IN_FONT_SIZE)
+            self.track_play_bg_color = loaded_data.get('track_play_bg_color', DEFAULT_TRACK_PLAY_BG_COLOR)
+            self.track_play_font_size = loaded_data.get('track_play_font_size', DEFAULT_TRACK_PLAY_FONT_SIZE)
+            self.count_in_color_button.setStyleSheet(f"background-color: {self.count_in_bg_color};")
+            self.count_in_font_spinbox.setValue(self.count_in_font_size)
+            self.track_play_color_button.setStyleSheet(f"background-color: {self.track_play_bg_color};")
+            self.track_play_font_spinbox.setValue(self.track_play_font_size)
+            self.apply_overlay_styles()
         else:
             tracks_data = loaded_data
             self.undo_history.clear()
