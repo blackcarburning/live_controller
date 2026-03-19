@@ -713,12 +713,12 @@ class LiveController(QWidget):
         # --- Main Content Area (Table and Controls) ---
         main_layout = QHBoxLayout()
         self.table = DraggableTableWidget()
-        self.table.setColumnCount(7)
-        self.table.setHorizontalHeaderLabels(["Hotkey", "Track Name", "BPM", "Click", "Rich1", "Rich2", "Actions"])
+        self.table.setColumnCount(8)
+        self.table.setHorizontalHeaderLabels(["Hotkey", "Track Name", "Linked", "BPM", "Click", "Rich1", "Rich2", "Actions"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(0, 80); self.table.setColumnWidth(2, 80); 
-        self.table.setColumnWidth(3, 80); self.table.setColumnWidth(4, 80); 
-        self.table.setColumnWidth(5, 80); self.table.setColumnWidth(6, 100)
+        self.table.setColumnWidth(0, 80); self.table.setColumnWidth(2, 50)
+        self.table.setColumnWidth(3, 80); self.table.setColumnWidth(4, 80)
+        self.table.setColumnWidth(5, 80); self.table.setColumnWidth(6, 80); self.table.setColumnWidth(7, 100)
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(False)
         self.table.rows_reordered.connect(self.reorder_tracks)
@@ -1013,7 +1013,7 @@ class LiveController(QWidget):
                 item.setFont(new_font)
             
             # Apply to QWidgets in cells
-            for col in [1, 2]: # Track Name, BPM
+            for col in [1, 3]: # Track Name, BPM
                 widget = self.table.cellWidget(row, col)
                 if isinstance(widget, QLineEdit):
                     widget.setFont(new_font)
@@ -1069,8 +1069,8 @@ class LiveController(QWidget):
             if i < len(self.tracks):
                 item = self.tracks[i]
                 if item['type'] == 'track':
-                    # Columns with widgets: TrackName, BPM, Ports, Actions
-                    for col in [1, 2, 3, 4, 5, 6]: 
+                    # Columns with widgets: TrackName, Linked, BPM, Ports, Actions
+                    for col in [1, 2, 3, 4, 5, 6, 7]: 
                         if widget := self.table.cellWidget(i, col):
                             widget.setEnabled(is_edit_mode)
         
@@ -1241,6 +1241,7 @@ class LiveController(QWidget):
                 'path': file_path, 
                 'hotkey': hotkey, 
                 'duration': duration, 
+                'linked': False,
                 'send_start_port1': True,
                 'send_start_port2': False,
                 'send_start_port3': False,
@@ -1358,7 +1359,7 @@ class LiveController(QWidget):
                 button_layout.addWidget(remove_button)
                 button_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 button_layout.setContentsMargins(0,0,0,0)
-                self.table.setCellWidget(i, 6, button_container)
+                self.table.setCellWidget(i, 7, button_container)
             else: 
                 # --- Create Track Row ---
                 table_font = QFont("Segoe UI", self.current_table_font_size)
@@ -1376,11 +1377,26 @@ class LiveController(QWidget):
                 track_name_input.setToolTip(tooltip_text)
                 self.table.setCellWidget(i, 1, track_name_input)
                 
+                def create_linked_checkbox(row_idx, track_item):
+                    linked_container = QWidget()
+                    linked_layout = QHBoxLayout(linked_container)
+                    linked_cb = QCheckBox()
+                    linked_cb.setStyleSheet("QCheckBox::indicator { width: 12px; height: 12px; }")
+                    linked_cb.setChecked(track_item.get('linked', False))
+                    linked_cb.toggled.connect(lambda checked, r=row_idx: self.update_linked_setting(checked, r))
+                    linked_layout.addWidget(linked_cb)
+                    linked_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    linked_layout.setContentsMargins(0,0,0,0)
+                    linked_container.setToolTip(tooltip_text)
+                    return linked_container
+
+                self.table.setCellWidget(i, 2, create_linked_checkbox(i, item))
+                
                 bpm_input = QLineEdit(str(self.bpm_data.get(item['path'], 120)))
                 bpm_input.setFont(table_font)
                 bpm_input.textChanged.connect(lambda text, path=item['path']: self.update_bpm(path, text))
                 bpm_input.setToolTip(tooltip_text)
-                self.table.setCellWidget(i, 2, bpm_input)
+                self.table.setCellWidget(i, 3, bpm_input)
                 
                 def create_port_checkbox(port_num):
                     checkbox_container = QWidget()
@@ -1396,9 +1412,9 @@ class LiveController(QWidget):
                     checkbox_container.setToolTip(tooltip_text)
                     return checkbox_container
 
-                self.table.setCellWidget(i, 3, create_port_checkbox(1))
-                self.table.setCellWidget(i, 4, create_port_checkbox(2))
-                self.table.setCellWidget(i, 5, create_port_checkbox(3))
+                self.table.setCellWidget(i, 4, create_port_checkbox(1))
+                self.table.setCellWidget(i, 5, create_port_checkbox(2))
+                self.table.setCellWidget(i, 6, create_port_checkbox(3))
 
                 remove_button = QPushButton("X"); remove_button.clicked.connect(lambda checked, i=i: self.remove_item(i))
                 remove_button.setFixedSize(20, 20)
@@ -1409,7 +1425,7 @@ class LiveController(QWidget):
                 button_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 button_layout.setContentsMargins(0,0,0,0)
                 button_container.setToolTip(tooltip_text)
-                self.table.setCellWidget(i, 6, button_container)
+                self.table.setCellWidget(i, 7, button_container)
         
         self.apply_table_font_size()
         self.update_total_running_time()
@@ -1449,7 +1465,7 @@ class LiveController(QWidget):
             if widget:
                 # For containers with buttons or checkboxes, only set the background color
                 # to avoid breaking the child widget's intrinsic styling.
-                if col in [3, 4, 5, 6]:
+                if col in [2, 4, 5, 6, 7]:
                     widget.setStyleSheet(f"background-color: {bg_color.name()};")
                 else: # For other widgets like QLineEdit, apply full style.
                     style_sheet = f"background-color: {bg_color.name()}; color: {fg_color.name()}; font-size: {font_size}pt; border: none;"
@@ -1483,6 +1499,11 @@ class LiveController(QWidget):
         """Updates the MIDI port setting for a track."""
         if 0 <= row_index < len(self.tracks) and self.tracks[row_index]['type'] == 'track':
             self.tracks[row_index][f'send_start_port{port_num}'] = is_checked
+
+    def update_linked_setting(self, is_checked, row_index):
+        """Updates the linked setting for a track."""
+        if 0 <= row_index < len(self.tracks) and self.tracks[row_index]['type'] == 'track':
+            self.tracks[row_index]['linked'] = is_checked
 
     def save_setlist(self):
         """Saves the current setlist to a named JSON file."""
@@ -1588,6 +1609,7 @@ class LiveController(QWidget):
                      item['send_start_port1'] = True
                 if 'send_start_port2' not in item: item['send_start_port2'] = False
                 if 'send_start_port3' not in item: item['send_start_port3'] = False
+                if 'linked' not in item: item['linked'] = False
                 # Reassign hotkeys that are not in the valid set (e.g. legacy 'i' assignments).
                 if item['hotkey'] not in valid_hotkeys:
                     if self.available_hotkeys:
@@ -1654,7 +1676,7 @@ class LiveController(QWidget):
             self.start_countdown(row_index)
         else:
             track = self.tracks[row_index]
-            bpm_widget = self.table.cellWidget(row_index, 2)
+            bpm_widget = self.table.cellWidget(row_index, 3)
             bpm = int(bpm_widget.text())
             self.execute_playback(track, bpm, row_index)
 
@@ -1682,7 +1704,7 @@ class LiveController(QWidget):
             self.countdown_label.hide()
             
             track = self.tracks[row_index]
-            bpm_widget = self.table.cellWidget(row_index, 2)
+            bpm_widget = self.table.cellWidget(row_index, 3)
             bpm = int(bpm_widget.text())
             self.execute_playback(track, bpm, row_index)
 
@@ -1758,6 +1780,7 @@ class LiveController(QWidget):
 
     def on_playback_finished(self):
         """Cleans up the UI and state after playback finishes."""
+        finished_row = self.currently_playing_row
         self.clear_highlight()
         self.test_file_label.setStyleSheet("font-style: italic; color: #888;") # Reset test label style
         self.status_label.setText("Status: Ready. Press a hotkey to play a track.")
@@ -1767,6 +1790,26 @@ class LiveController(QWidget):
             self.worker.deleteLater()
         self.worker = None
         self.current_ipc_socket = None
+
+        # Auto-play next track if the finished track was linked.
+        if finished_row is not None and finished_row < len(self.tracks):
+            finished_track = self.tracks[finished_row]
+            if finished_track.get('type') == 'track' and finished_track.get('linked', False):
+                # Find the next track in the setlist (skip dividers).
+                next_row = finished_row + 1
+                while next_row < len(self.tracks) and self.tracks[next_row].get('type') == 'divider':
+                    next_row += 1
+                if next_row < len(self.tracks) and self.tracks[next_row].get('type') == 'track':
+                    next_track = self.tracks[next_row]
+                    track_name_widget = self.table.cellWidget(next_row, 1)
+                    if track_name_widget:
+                        self.show_preparing_message(track_name_widget.text())
+                    bpm_widget = self.table.cellWidget(next_row, 3)
+                    try:
+                        bpm = int(bpm_widget.text()) if bpm_widget else 120
+                    except (ValueError, AttributeError):
+                        bpm = 120
+                    self.execute_playback(next_track, bpm, next_row)
 
     def on_test_finished(self, port_num):
         """Resets the UI for the MIDI port test controls."""
