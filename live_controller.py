@@ -716,7 +716,7 @@ class LiveController(QWidget):
         self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels(["Hotkey", "Track Name", "Linked", "BPM", "Click", "Rich1", "Rich2", "Actions"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(0, 80); self.table.setColumnWidth(2, 50)
+        self.table.setColumnWidth(0, 80); self.table.setColumnWidth(2, 120)
         self.table.setColumnWidth(3, 80); self.table.setColumnWidth(4, 80)
         self.table.setColumnWidth(5, 80); self.table.setColumnWidth(6, 80); self.table.setColumnWidth(7, 100)
         self.table.verticalHeader().setVisible(False)
@@ -728,7 +728,7 @@ class LiveController(QWidget):
         controls_area.setSpacing(4)
         
         # --- Playback & Setlist Group ---
-        main_controls_group = QGroupBox("Playback & Setlist")
+        main_controls_group = QGroupBox("")
         main_controls_layout = QVBoxLayout()
         main_controls_layout.setContentsMargins(6, 6, 6, 6)
         main_controls_layout.setSpacing(4)
