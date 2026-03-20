@@ -29,6 +29,9 @@ from collections import deque
 import rtmidi                  # For sending MIDI messages
 import keyboard                # For global hotkey listening
 import psutil                  # For setting process priority
+from StreamDeck.DeviceManager import DeviceManager
+from StreamDeck.ImageHelpers import PILHelper
+from PIL import Image, ImageDraw, ImageFont
 
 # --- PyQt6 Imports ---
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
@@ -619,6 +622,21 @@ class LiveController(QWidget):
         self.track_play_bg_color = DEFAULT_TRACK_PLAY_BG_COLOR
         self.track_play_font_size = DEFAULT_TRACK_PLAY_FONT_SIZE
         
+        # --- Stream Deck Initialization ---
+        self.streamdeck = None
+        try:
+            streamdecks = DeviceManager().enumerate()
+            if streamdecks:
+                self.streamdeck = streamdecks[0]
+                self.streamdeck.open()
+                self.streamdeck.reset()
+                print(f"Stream Deck connected: {self.streamdeck.deck_type()} ({self.streamdeck.key_count()} keys)")
+            else:
+                print("No Stream Deck devices found.")
+        except Exception as e:
+            print(f"Stream Deck initialization failed: {e}")
+            self.streamdeck = None
+
         # --- Timers for UI effects ---
         self.countdown_timer = QTimer(self)
         self.countdown_seconds = 0
@@ -1680,6 +1698,38 @@ class LiveController(QWidget):
             bpm = int(bpm_widget.text())
             self.execute_playback(track, bpm, row_index)
 
+    def set_streamdeck_button(self, key_index, text, bg_color=(0, 0, 0), text_color=(255, 255, 255)):
+        """Sets a Stream Deck button to show the given text with specified colors."""
+        if not self.streamdeck:
+            return
+        try:
+            image_format = self.streamdeck.key_image_format()
+            width = image_format['size'][0]
+            height = image_format['size'][1]
+
+            img = Image.new('RGB', (width, height), bg_color)
+            draw = ImageDraw.Draw(img)
+
+            # Try to use a reasonable font size
+            try:
+                font = ImageFont.truetype("arial.ttf", 14)
+            except (OSError, IOError):
+                font = ImageFont.load_default()
+
+            # Center the text
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            x = (width - text_width) // 2
+            y = (height - text_height) // 2
+            draw.text((x, y), text, font=font, fill=text_color)
+
+            # Convert to the format the Stream Deck expects
+            native_image = PILHelper.to_native_format(self.streamdeck, img)
+            self.streamdeck.set_key_image(key_index, native_image)
+        except Exception as e:
+            print(f"Stream Deck button update failed: {e}")
+
     def start_countdown(self, row_index):
         """Starts the visual countdown timer for the first track."""
         self.countdown_seconds = int(self.count_in_combo.currentText())
@@ -1687,6 +1737,9 @@ class LiveController(QWidget):
         self.countdown_label.raise_()
         self.countdown_label.show()
         
+        # Signal Stream Deck that countdown has started
+        self.set_streamdeck_button(0, "STARTED", bg_color=(0, 200, 0), text_color=(0, 0, 0))
+
         self.countdown_connection = self.countdown_timer.timeout.connect(lambda: self._update_countdown(row_index))
         self.countdown_timer.start(1000)
 
@@ -1778,6 +1831,9 @@ class LiveController(QWidget):
         self.active_flash_timer.stop()
         self.active_label.hide()
 
+        # Reset Stream Deck button 0
+        self.set_streamdeck_button(0, "", bg_color=(0, 0, 0))
+
     def on_playback_finished(self):
         """Cleans up the UI and state after playback finishes."""
         finished_row = self.currently_playing_row
@@ -1790,6 +1846,9 @@ class LiveController(QWidget):
             self.worker.deleteLater()
         self.worker = None
         self.current_ipc_socket = None
+
+        # Reset Stream Deck button 0
+        self.set_streamdeck_button(0, "", bg_color=(0, 0, 0))
 
         # Auto-play next track if the finished track was linked.
         if finished_row is not None and finished_row < len(self.tracks):
@@ -1931,7 +1990,15 @@ class LiveController(QWidget):
         self.hotkey_listener.stop()
         self.hotkey_listener.wait()
         self.stop_all_activity()
-        
+
+        # Clean up Stream Deck
+        if self.streamdeck:
+            try:
+                self.streamdeck.reset()
+                self.streamdeck.close()
+            except Exception as e:
+                print(f"Stream Deck cleanup error: {e}")
+
         event.accept()
 
 # --- Main Execution Block ---
