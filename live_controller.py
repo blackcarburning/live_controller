@@ -623,7 +623,8 @@ class LiveController(QWidget):
         self.track_play_font_size = DEFAULT_TRACK_PLAY_FONT_SIZE
         
         # --- Stream Deck ---
-        self.selected_streamdeck_index = None  # Index into DeviceManager().enumerate() list
+        self.selected_streamdeck_index = None
+        self._streamdeck_manager = DeviceManager()
 
         # --- Timers for UI effects ---
         self.countdown_timer = QTimer(self)
@@ -904,7 +905,7 @@ class LiveController(QWidget):
         streamdeck_layout.setSpacing(4)
         self.streamdeck_combo = QComboBox()
         self.streamdeck_combo.addItem("None")
-        self._populate_streamdeck_combo()
+        # Don't auto-scan on startup to avoid locking the device
         self.streamdeck_combo.currentIndexChanged.connect(self._on_streamdeck_selected)
         self.streamdeck_refresh_button = QPushButton("Refresh")
         self.streamdeck_refresh_button.setFixedWidth(60)
@@ -1711,8 +1712,9 @@ class LiveController(QWidget):
         """Opens the selected Stream Deck, sets a button image, then immediately closes it."""
         if self.selected_streamdeck_index is None:
             return
+        deck = None
         try:
-            decks = DeviceManager().enumerate()
+            decks = self._streamdeck_manager.enumerate()
             if self.selected_streamdeck_index >= len(decks):
                 print(f"Stream Deck index {self.selected_streamdeck_index} no longer available.")
                 self.selected_streamdeck_index = None
@@ -1720,33 +1722,37 @@ class LiveController(QWidget):
                 return
             deck = decks[self.selected_streamdeck_index]
             deck.open()
+
+            image_format = deck.key_image_format()
+            width = image_format['size'][0]
+            height = image_format['size'][1]
+
+            img = Image.new('RGB', (width, height), bg_color)
+            draw = ImageDraw.Draw(img)
+
             try:
-                image_format = deck.key_image_format()
-                width = image_format['size'][0]
-                height = image_format['size'][1]
+                font = ImageFont.truetype("arial.ttf", 14)
+            except (OSError, IOError):
+                font = ImageFont.load_default()
 
-                img = Image.new('RGB', (width, height), bg_color)
-                draw = ImageDraw.Draw(img)
+            if text:
+                bbox = draw.textbbox((0, 0), text, font=font)
+                text_width = bbox[2] - bbox[0]
+                text_height = bbox[3] - bbox[1]
+                x = (width - text_width) // 2
+                y = (height - text_height) // 2
+                draw.text((x, y), text, font=font, fill=text_color)
 
-                try:
-                    font = ImageFont.truetype("arial.ttf", 14)
-                except (OSError, IOError):
-                    font = ImageFont.load_default()
-
-                if text:
-                    bbox = draw.textbbox((0, 0), text, font=font)
-                    text_width = bbox[2] - bbox[0]
-                    text_height = bbox[3] - bbox[1]
-                    x = (width - text_width) // 2
-                    y = (height - text_height) // 2
-                    draw.text((x, y), text, font=font, fill=text_color)
-
-                native_image = PILHelper.to_native_format(deck, img)
-                deck.set_key_image(key_index, native_image)
-            finally:
-                deck.close()
+            native_image = PILHelper.to_native_format(deck, img)
+            deck.set_key_image(key_index, native_image)
         except Exception as e:
             print(f"Stream Deck button update failed: {e}")
+        finally:
+            if deck:
+                try:
+                    deck.close()
+                except Exception:
+                    pass
 
     def _populate_streamdeck_combo(self):
         """Scans for connected Stream Deck devices and populates the combo box."""
@@ -1755,11 +1761,14 @@ class LiveController(QWidget):
         self.streamdeck_combo.clear()
         self.streamdeck_combo.addItem("None")
         try:
-            decks = DeviceManager().enumerate()
+            decks = self._streamdeck_manager.enumerate()
             for i, deck in enumerate(decks):
-                deck.open()
-                label = f"{deck.deck_type()} ({deck.key_count()} keys)"
-                deck.close()
+                try:
+                    deck.open()
+                    label = f"{deck.deck_type()} ({deck.key_count()} keys)"
+                    deck.close()
+                except Exception:
+                    label = f"Stream Deck {i + 1}"
                 self.streamdeck_combo.addItem(label, userData=i)
         except Exception as e:
             print(f"Stream Deck enumeration failed: {e}")
