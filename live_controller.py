@@ -622,20 +622,8 @@ class LiveController(QWidget):
         self.track_play_bg_color = DEFAULT_TRACK_PLAY_BG_COLOR
         self.track_play_font_size = DEFAULT_TRACK_PLAY_FONT_SIZE
         
-        # --- Stream Deck Initialization ---
-        self.streamdeck = None
-        try:
-            streamdecks = DeviceManager().enumerate()
-            if streamdecks:
-                self.streamdeck = streamdecks[0]
-                self.streamdeck.open()
-                self.streamdeck.reset()
-                print(f"Stream Deck connected: {self.streamdeck.deck_type()} ({self.streamdeck.key_count()} keys)")
-            else:
-                print("No Stream Deck devices found.")
-        except Exception as e:
-            print(f"Stream Deck initialization failed: {e}")
-            self.streamdeck = None
+        # --- Stream Deck ---
+        self.selected_streamdeck_index = None  # Index into DeviceManager().enumerate() list
 
         # --- Timers for UI effects ---
         self.countdown_timer = QTimer(self)
@@ -908,6 +896,24 @@ class LiveController(QWidget):
         overlay_colours_layout.addWidget(QLabel("Font:"), 1, 2)
         overlay_colours_layout.addWidget(self.track_play_font_spinbox, 1, 3)
         overlay_colours_group.setLayout(overlay_colours_layout)
+
+        # --- Stream Deck Group ---
+        streamdeck_group = QGroupBox("Stream Deck")
+        streamdeck_layout = QHBoxLayout()
+        streamdeck_layout.setContentsMargins(6, 6, 6, 6)
+        streamdeck_layout.setSpacing(4)
+        self.streamdeck_combo = QComboBox()
+        self.streamdeck_combo.addItem("None")
+        self._populate_streamdeck_combo()
+        self.streamdeck_combo.currentIndexChanged.connect(self._on_streamdeck_selected)
+        self.streamdeck_refresh_button = QPushButton("Refresh")
+        self.streamdeck_refresh_button.setFixedWidth(60)
+        self.streamdeck_refresh_button.clicked.connect(self._populate_streamdeck_combo)
+        streamdeck_layout.addWidget(QLabel("Device:"))
+        streamdeck_layout.addWidget(self.streamdeck_combo, 1)
+        streamdeck_layout.addWidget(self.streamdeck_refresh_button)
+        streamdeck_group.setLayout(streamdeck_layout)
+
         midi_test_group = QGroupBox("MIDI Port Testing")
         midi_test_grid_layout = QGridLayout()
         midi_test_grid_layout.setContentsMargins(6, 6, 6, 6)
@@ -951,6 +957,7 @@ class LiveController(QWidget):
         controls_area.addWidget(settings_group)
         controls_area.addWidget(test_track_group)
         controls_area.addWidget(overlay_colours_group)
+        controls_area.addWidget(streamdeck_group)
         controls_area.addWidget(midi_test_group)
         controls_area.addWidget(app_group)
         
@@ -1081,6 +1088,8 @@ class LiveController(QWidget):
         self.count_in_font_spinbox.setEnabled(is_edit_mode)
         self.track_play_color_button.setEnabled(is_edit_mode)
         self.track_play_font_spinbox.setEnabled(is_edit_mode)
+        self.streamdeck_combo.setEnabled(is_edit_mode)
+        self.streamdeck_refresh_button.setEnabled(is_edit_mode)
 
         # Enable/disable the widgets inside the table rows.
         for i in range(self.table.rowCount()):
@@ -1699,36 +1708,78 @@ class LiveController(QWidget):
             self.execute_playback(track, bpm, row_index)
 
     def set_streamdeck_button(self, key_index, text, bg_color=(0, 0, 0), text_color=(255, 255, 255)):
-        """Sets a Stream Deck button to show the given text with specified colors."""
-        if not self.streamdeck:
+        """Opens the selected Stream Deck, sets a button image, then immediately closes it."""
+        if self.selected_streamdeck_index is None:
             return
         try:
-            image_format = self.streamdeck.key_image_format()
-            width = image_format['size'][0]
-            height = image_format['size'][1]
-
-            img = Image.new('RGB', (width, height), bg_color)
-            draw = ImageDraw.Draw(img)
-
-            # Try to use a reasonable font size
+            decks = DeviceManager().enumerate()
+            if self.selected_streamdeck_index >= len(decks):
+                print(f"Stream Deck index {self.selected_streamdeck_index} no longer available.")
+                self.selected_streamdeck_index = None
+                self.status_label.setText("Status: Stream Deck no longer available.")
+                return
+            deck = decks[self.selected_streamdeck_index]
+            deck.open()
             try:
-                font = ImageFont.truetype("arial.ttf", 14)
-            except (OSError, IOError):
-                font = ImageFont.load_default()
+                image_format = deck.key_image_format()
+                width = image_format['size'][0]
+                height = image_format['size'][1]
 
-            # Center the text
-            bbox = draw.textbbox((0, 0), text, font=font)
-            text_width = bbox[2] - bbox[0]
-            text_height = bbox[3] - bbox[1]
-            x = (width - text_width) // 2
-            y = (height - text_height) // 2
-            draw.text((x, y), text, font=font, fill=text_color)
+                img = Image.new('RGB', (width, height), bg_color)
+                draw = ImageDraw.Draw(img)
 
-            # Convert to the format the Stream Deck expects
-            native_image = PILHelper.to_native_format(self.streamdeck, img)
-            self.streamdeck.set_key_image(key_index, native_image)
+                try:
+                    font = ImageFont.truetype("arial.ttf", 14)
+                except (OSError, IOError):
+                    font = ImageFont.load_default()
+
+                if text:
+                    bbox = draw.textbbox((0, 0), text, font=font)
+                    text_width = bbox[2] - bbox[0]
+                    text_height = bbox[3] - bbox[1]
+                    x = (width - text_width) // 2
+                    y = (height - text_height) // 2
+                    draw.text((x, y), text, font=font, fill=text_color)
+
+                native_image = PILHelper.to_native_format(deck, img)
+                deck.set_key_image(key_index, native_image)
+            finally:
+                deck.close()
         except Exception as e:
             print(f"Stream Deck button update failed: {e}")
+
+    def _populate_streamdeck_combo(self):
+        """Scans for connected Stream Deck devices and populates the combo box."""
+        current_selection = self.streamdeck_combo.currentText()
+        self.streamdeck_combo.blockSignals(True)
+        self.streamdeck_combo.clear()
+        self.streamdeck_combo.addItem("None")
+        try:
+            decks = DeviceManager().enumerate()
+            for i, deck in enumerate(decks):
+                deck.open()
+                label = f"{deck.deck_type()} ({deck.key_count()} keys)"
+                deck.close()
+                self.streamdeck_combo.addItem(label, userData=i)
+        except Exception as e:
+            print(f"Stream Deck enumeration failed: {e}")
+        self.streamdeck_combo.blockSignals(False)
+        # Try to restore previous selection
+        idx = self.streamdeck_combo.findText(current_selection)
+        if idx >= 0:
+            self.streamdeck_combo.setCurrentIndex(idx)
+        else:
+            self.streamdeck_combo.setCurrentIndex(0)
+            self.selected_streamdeck_index = None
+
+    def _on_streamdeck_selected(self, combo_index):
+        """Handles Stream Deck combo box selection changes."""
+        if combo_index <= 0:
+            self.selected_streamdeck_index = None
+            self.status_label.setText("Status: Stream Deck disconnected.")
+        else:
+            self.selected_streamdeck_index = self.streamdeck_combo.itemData(combo_index)
+            self.status_label.setText(f"Status: Stream Deck selected: {self.streamdeck_combo.currentText()}")
 
     def start_countdown(self, row_index):
         """Starts the visual countdown timer for the first track."""
@@ -1982,23 +2033,11 @@ class LiveController(QWidget):
     
     def closeEvent(self, event):
         """Handles the application close event."""
-        # Save the current session and config.
         self.save_session()
         self.save_config()
-        
-        # Stop background threads gracefully.
         self.hotkey_listener.stop()
         self.hotkey_listener.wait()
         self.stop_all_activity()
-
-        # Clean up Stream Deck
-        if self.streamdeck:
-            try:
-                self.streamdeck.reset()
-                self.streamdeck.close()
-            except Exception as e:
-                print(f"Stream Deck cleanup error: {e}")
-
         event.accept()
 
 # --- Main Execution Block ---
