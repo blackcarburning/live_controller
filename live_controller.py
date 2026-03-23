@@ -736,6 +736,12 @@ class LiveController(QWidget):
         self.preparing_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preparing_label.setStyleSheet("background-color: rgba(0, 200, 0, 0.8); color: white; border-radius: 25px;")
         self.preparing_label.hide()
+
+        self.no_midi_label = QLabel("NO MIDI INTERFACE\nDETECTED", self)
+        self.no_midi_label.setFont(QFont("Arial", 60, QFont.Weight.ExtraBold))
+        self.no_midi_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.no_midi_label.setStyleSheet("background-color: rgba(255, 165, 0, 0.9); color: white; border-radius: 25px;")
+        self.no_midi_label.hide()
         
         self.save_notification_label = QLabel(self)
         self.save_notification_label.setStyleSheet("background-color: #27ae60; color: white; font-size: 18px; font-weight: bold; padding: 15px; border-radius: 10px;")
@@ -1740,6 +1746,7 @@ class LiveController(QWidget):
         if self.require_midi_checkbox.isChecked() and not self.midi_available:
             self.status_label.setText("ERROR: No MIDI hardware detected. Cannot start playback.")
             self.send_led_command("1")
+            self.show_no_midi_message()
             return
         
         is_countdown_track = (row_index == 0 and self.count_in_test_checkbox.isChecked())
@@ -1791,6 +1798,7 @@ class LiveController(QWidget):
         if self.require_midi_checkbox.isChecked() and not self.midi_available:
             self.status_label.setText("ERROR: No MIDI hardware detected. Cannot start playback.")
             self.send_led_command("1")  # LED 1: no MIDI device connected
+            self.show_no_midi_message()
             return
         try:
             # Gather all necessary parameters from the UI.
@@ -1954,6 +1962,12 @@ class LiveController(QWidget):
         self.danger_label.show()
         QTimer.singleShot(2500, self.danger_label.hide)
 
+    def show_no_midi_message(self):
+        """Shows a large, temporary warning overlay when MIDI is not connected."""
+        self.no_midi_label.raise_()
+        self.no_midi_label.show()
+        QTimer.singleShot(2500, self.no_midi_label.hide)
+
     def show_preparing_message(self, track_name):
         """Shows a temporary "Preparing" overlay."""
         self.preparing_label.raise_()
@@ -1983,6 +1997,7 @@ class LiveController(QWidget):
         if self.require_midi_checkbox.isChecked() and not self.midi_available:
             self.status_label.setText("ERROR: No MIDI hardware detected. Cannot start test track.")
             self.send_led_command("1")
+            self.show_no_midi_message()
             return
         
         self.show_preparing_message(os.path.basename(self.test_track_path))
@@ -2006,6 +2021,7 @@ class LiveController(QWidget):
         self.danger_label.setGeometry(0, 0, self.width(), self.height())
         self.countdown_label.setGeometry(0, 0, self.width(), self.height())
         self.preparing_label.setGeometry(0, 0, self.width(), self.height())
+        self.no_midi_label.setGeometry(0, 0, self.width(), self.height())
         if self.save_notification_label.isVisible():
             center_x = (self.width() - self.save_notification_label.width()) // 2
             center_y = (self.height() - self.save_notification_label.height()) // 2
