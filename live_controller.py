@@ -649,11 +649,7 @@ class LiveController(QWidget):
         self.arduino_serial = self._connect_arduino()
         midi_available = False
         try:
-            port_names = rtmidi.MidiOut().get_ports()
-            # Attempt to open one of the first 3 ports (the ports this app uses).
-            # Simply listing ports is not enough — virtual/system ports may appear
-            # even when the physical USB MIDI interface is disconnected.
-            for port_index in range(min(3, len(port_names))):
+            for port_index in [1, 2, 3]:
                 test_out = rtmidi.MidiOut()
                 try:
                     test_out.open_port(port_index)
