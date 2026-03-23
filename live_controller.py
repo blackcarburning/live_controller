@@ -29,6 +29,8 @@ from collections import deque
 import rtmidi                  # For sending MIDI messages
 import keyboard                # For global hotkey listening
 import psutil                  # For setting process priority
+import serial                  # For Arduino serial communication
+from serial.tools import list_ports  # For discovering serial ports
 
 # --- PyQt6 Imports ---
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
@@ -77,6 +79,11 @@ START_BYTE = 0xFA    # MIDI System Real-Time Message: Start
 STOP_BYTE = 0xFC     # MIDI System Real-Time Message: Stop
 CLOCK_BYTE = 0xF8    # MIDI System Real-Time Message: Timing Clock
 SPP_BYTE = 0xF2      # MIDI System Common Message: Song Position Pointer
+
+# --- Arduino LED Controller Constants ---
+ARDUINO_BAUD = 9600
+ARDUINO_TARGET_ID = "LED_TEST_PRO_MINI_01"
+ARDUINO_PROBE_CMD = b'?\n'
 
 # --- Windows Multimedia Timer API ---
 # Used for high-precision timing on Windows to ensure accurate MIDI clock signals.
@@ -635,7 +642,18 @@ class LiveController(QWidget):
         self.hotkey_listener = GlobalHotkeyListener()
         self.hotkey_listener.hotkey_pressed.connect(self.on_global_hotkey)
         self.hotkey_listener.start()
-        self.load_session() 
+        self.load_session()
+
+        # --- Arduino LED Controller Setup ---
+        self.arduino_serial = self._connect_arduino()
+        try:
+            midi_ports = rtmidi.MidiOut().get_ports()
+        except Exception:
+            midi_ports = []
+        if not midi_ports:
+            self.send_led_command("1")  # LED 1: no MIDI device connected
+        else:
+            self.send_led_command("4")  # "4" turns all LEDs off
 
     def setup_ui(self):
         """Constructs the entire user interface."""
@@ -1086,12 +1104,47 @@ class LiveController(QWidget):
         self.midi_offset_slider.setValue(0)
 
     def _generate_hotkeys(self):
-        """Generates a list of available hotkeys (1-9, a-z, excluding q and t)."""
+        """Generates a list of available hotkeys (1-9, a-z, excluding q, t, i, and z)."""
         keys = [str(i) for i in range(1, 10)] + [chr(i) for i in range(ord('a'), ord('z') + 1)]
         keys.remove('q') # Reserved for STOP
         keys.remove('t') # Reserved for PLAY TEST
         keys.remove('i') # Excluded: visually confused with '1'
+        keys.remove('z') # Reserved for Arduino LED 2 control
         return keys
+
+    def _connect_arduino(self):
+        """Probes serial ports to find and connect to the Arduino LED controller."""
+        for port in list_ports.comports():
+            try:
+                ser = serial.Serial(port.device, ARDUINO_BAUD, timeout=1.2)
+                time.sleep(2.0)
+                ser.reset_input_buffer()
+                ser.write(ARDUINO_PROBE_CMD)
+                ser.flush()
+                time.sleep(0.3)
+                identity = None
+                end_time = time.time() + 1.2
+                while time.time() < end_time:
+                    if ser.in_waiting:
+                        line = ser.readline().decode(errors="ignore").strip()
+                        if line:
+                            identity = line
+                if identity == ARDUINO_TARGET_ID:
+                    print(f"Arduino LED controller connected on {port.device}")
+                    return ser
+                ser.close()
+            except Exception:
+                continue
+        print("Arduino LED controller not found. LED feedback will be disabled.")
+        return None
+
+    def send_led_command(self, command):
+        """Sends a single-character LED command to the Arduino."""
+        if self.arduino_serial is not None and self.arduino_serial.is_open:
+            try:
+                self.arduino_serial.write(command.encode("utf-8"))
+            except serial.SerialException as e:
+                print(f"Arduino serial error: {e}")
     
     def load_config(self):
         """Loads general application configuration from config.json."""
@@ -1642,6 +1695,12 @@ class LiveController(QWidget):
     def on_global_hotkey(self, key):
         """Handles key presses from the global hotkey listener."""
         lower_key = key.lower()
+
+        # 'z' key sends LED 2 command regardless of playback state or mode.
+        if lower_key == 'z':
+            self.send_led_command("2")  # LED 2: 'z' key pressed
+            return
+
         # If playback is active, only 'q' (STOP) is allowed.
         if self.worker and self.worker.isRunning() or self.countdown_timer.isActive() or (self.test_worker and self.test_worker.isRunning()):
             if lower_key == 'q':
@@ -1682,6 +1741,7 @@ class LiveController(QWidget):
 
     def start_countdown(self, row_index):
         """Starts the visual countdown timer for the first track."""
+        self.send_led_command("3")  # LED 3: track 1 count-in started
         self.countdown_seconds = int(self.count_in_combo.currentText())
         self.countdown_label.setText(str(self.countdown_seconds))
         self.countdown_label.raise_()
@@ -1790,6 +1850,10 @@ class LiveController(QWidget):
             self.worker.deleteLater()
         self.worker = None
         self.current_ipc_socket = None
+
+        # Turn off LED 3 when track 1 (row 0) finishes.
+        if finished_row == 0:
+            self.send_led_command("4")  # "4" turns all LEDs off
 
         # Auto-play next track if the finished track was linked.
         if finished_row is not None and finished_row < len(self.tracks):
@@ -1931,6 +1995,10 @@ class LiveController(QWidget):
         self.hotkey_listener.stop()
         self.hotkey_listener.wait()
         self.stop_all_activity()
+
+        # Close the Arduino serial connection if open.
+        if self.arduino_serial is not None and self.arduino_serial.is_open:
+            self.arduino_serial.close()
         
         event.accept()
 
