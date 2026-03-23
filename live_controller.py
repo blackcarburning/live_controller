@@ -645,12 +645,26 @@ class LiveController(QWidget):
         self.load_session()
 
         # --- Arduino LED Controller Setup ---
+        self.led2_on = False
         self.arduino_serial = self._connect_arduino()
+        midi_available = False
         try:
-            midi_ports = rtmidi.MidiOut().get_ports()
+            port_names = rtmidi.MidiOut().get_ports()
+            # Attempt to open one of the first 3 ports (the ports this app uses).
+            # Simply listing ports is not enough — virtual/system ports may appear
+            # even when the physical USB MIDI interface is disconnected.
+            for port_index in range(min(3, len(port_names))):
+                test_out = rtmidi.MidiOut()
+                try:
+                    test_out.open_port(port_index)
+                    midi_available = True
+                    test_out.close_port()
+                    break
+                except Exception:
+                    pass
         except Exception:
-            midi_ports = []
-        if not midi_ports:
+            pass
+        if not midi_available:
             self.send_led_command("1")  # LED 1: no MIDI device connected
         else:
             self.send_led_command("4")  # "4" turns all LEDs off
@@ -1696,9 +1710,10 @@ class LiveController(QWidget):
         """Handles key presses from the global hotkey listener."""
         lower_key = key.lower()
 
-        # 'z' key sends LED 2 command regardless of playback state or mode.
+        # 'z' key toggles LED 2 on/off regardless of playback state or mode.
         if lower_key == 'z':
-            self.send_led_command("2")  # LED 2: 'z' key pressed
+            self.led2_on = not self.led2_on
+            self.send_led_command("2" if self.led2_on else "4")
             return
 
         # If playback is active, only 'q' (STOP) is allowed.
@@ -1998,6 +2013,7 @@ class LiveController(QWidget):
 
         # Close the Arduino serial connection if open.
         if self.arduino_serial is not None and self.arduino_serial.is_open:
+            self.send_led_command("4")  # Turn all LEDs off before closing
             self.arduino_serial.close()
         
         event.accept()
