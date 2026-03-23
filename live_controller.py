@@ -650,20 +650,20 @@ class LiveController(QWidget):
         if self.arduino_serial is not None:
             self.send_led_command("5")  # Chase test: cycle through all LEDs to confirm they work
             time.sleep(2.5)             # Wait for chase animation to complete
-        midi_available = False
+        self.midi_available = False
         try:
             for port_index in [1, 2, 3]:
                 test_out = rtmidi.MidiOut()
                 try:
                     test_out.open_port(port_index)
-                    midi_available = True
+                    self.midi_available = True
                     test_out.close_port()
                     break
                 except Exception:
                     pass
         except Exception:
             pass
-        if not midi_available:
+        if not self.midi_available:
             self.send_led_command("1")  # LED 1: no MIDI device connected
         else:
             self.send_led_command("4")  # "4" turns all LEDs off
@@ -1737,6 +1737,10 @@ class LiveController(QWidget):
         if (self.worker and self.worker.isRunning()) or (self.test_worker and self.test_worker.isRunning()):
             self.show_danger_message(); return
         if self.tracks[row_index]['type'] == 'divider': return
+        if self.require_midi_checkbox.isChecked() and not self.midi_available:
+            self.status_label.setText("ERROR: No MIDI hardware detected. Cannot start playback.")
+            self.send_led_command("1")
+            return
         
         is_countdown_track = (row_index == 0 and self.count_in_test_checkbox.isChecked())
 
@@ -1784,6 +1788,10 @@ class LiveController(QWidget):
 
     def execute_playback(self, track_data, bpm, row_index=None):
         """Creates and starts a MidiSyncWorker to handle playback."""
+        if self.require_midi_checkbox.isChecked() and not self.midi_available:
+            self.status_label.setText("ERROR: No MIDI hardware detected. Cannot start playback.")
+            self.send_led_command("1")  # LED 1: no MIDI device connected
+            return
         try:
             # Gather all necessary parameters from the UI.
             display_num = int(self.display_combo.currentText())
@@ -1972,6 +1980,10 @@ class LiveController(QWidget):
             self.show_danger_message(); return
         if not self.test_track_path:
             self.status_label.setText("Status: No test track selected."); return
+        if self.require_midi_checkbox.isChecked() and not self.midi_available:
+            self.status_label.setText("ERROR: No MIDI hardware detected. Cannot start test track.")
+            self.send_led_command("1")
+            return
         
         self.show_preparing_message(os.path.basename(self.test_track_path))
         
