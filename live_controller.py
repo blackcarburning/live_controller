@@ -647,6 +647,9 @@ class LiveController(QWidget):
         # --- Arduino LED Controller Setup ---
         self.led2_on = False
         self.arduino_serial = self._connect_arduino()
+        if self.arduino_serial is not None:
+            self.send_led_command("5")  # Chase test: cycle through all LEDs to confirm they work
+            time.sleep(2.5)             # Wait for chase animation to complete
         midi_available = False
         try:
             for port_index in [1, 2, 3]:
