@@ -75,6 +75,7 @@ def show_menu():
     print("3 - Turn on LED 3")
     print("4 - Turn all LEDs off")
     print("5 - Run chase test")
+    print("6 - Turn on LED 4")
     print("q - Quit")
 
 def main():
@@ -99,7 +100,7 @@ def main():
                 print("Exiting.")
                 break
 
-            if choice in ["1", "2", "3", "4", "5"]:
+            if choice in ["1", "2", "3", "4", "5", "6"]:
                 ser.write(choice.encode("utf-8"))
                 time.sleep(0.2)
 
