@@ -1833,7 +1833,8 @@ class LiveController(QWidget):
         self.worker.error.connect(lambda msg: self.status_label.setText(f"ERROR: {msg}"))
         self.worker.finished.connect(self.on_playback_finished)
         self.worker.ipc_socket_path.connect(self.set_ipc_socket)
-        self.send_led_command("6")  # LED 4 (orange): song is playing
+        self.send_led_command("3")  # LED 3 (orange): song is playing
+        self.send_led_command("6")  # LED 6 (green): track active indicator
         self.worker.start()
 
     def set_ipc_socket(self, path):
