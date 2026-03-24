@@ -1833,6 +1833,7 @@ class LiveController(QWidget):
         self.worker.error.connect(lambda msg: self.status_label.setText(f"ERROR: {msg}"))
         self.worker.finished.connect(self.on_playback_finished)
         self.worker.ipc_socket_path.connect(self.set_ipc_socket)
+        self.send_led_command("6")  # LED 4 (orange): song is playing
         self.worker.start()
 
     def set_ipc_socket(self, path):
@@ -1867,6 +1868,7 @@ class LiveController(QWidget):
 
         self.active_flash_timer.stop()
         self.active_label.hide()
+        self.send_led_command("4")  # Turn off all LEDs when playback is manually stopped.
 
     def on_playback_finished(self):
         """Cleans up the UI and state after playback finishes."""
@@ -1881,9 +1883,8 @@ class LiveController(QWidget):
         self.worker = None
         self.current_ipc_socket = None
 
-        # Turn off LED 3 when track 1 (row 0) finishes.
-        if finished_row == 0:
-            self.send_led_command("4")  # "4" turns all LEDs off
+        # Turn off all LEDs when any track finishes.
+        self.send_led_command("4")  # "4" turns all LEDs off
 
         # Auto-play next track if the finished track was linked.
         if finished_row is not None and finished_row < len(self.tracks):
