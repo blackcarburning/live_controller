@@ -1779,6 +1779,11 @@ class LiveController(QWidget):
                 self.show_danger_message() # Warn user about pressing keys during playback.
             return
         
+        # '^' key toggles between EDIT and LIVE modes (for Stream Deck control).
+        if lower_key == '^':
+            self.live_mode_slider.setChecked(not self.live_mode_slider.isChecked())
+            return
+
         if not self.is_live_mode: return # Ignore hotkeys in EDIT mode.
         
         if lower_key in self.hotkey_map:
