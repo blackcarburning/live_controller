@@ -13,6 +13,7 @@
 # --- Standard Library Imports ---
 import sys
 import os
+import re
 import subprocess
 import time
 import json
@@ -694,8 +695,12 @@ class LiveController(QWidget):
         self.running_time_label = QLabel("Total Running Time (incl. 20s overhead/track): 00:00:00")
         self.running_time_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         self.running_time_label.setStyleSheet("color: #888;")
+        self.export_setlist_button = QPushButton("Export Set List")
+        self.export_setlist_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
+        self.export_setlist_button.clicked.connect(self.export_setlist)
         title_layout.addWidget(self.title_label)
         title_layout.addWidget(self.running_time_label)
+        title_layout.addWidget(self.export_setlist_button)
         # Right side for mode switch
         right_container = QWidget()
         right_layout = QHBoxLayout(right_container)
@@ -1086,6 +1091,7 @@ class LiveController(QWidget):
         self.midi_offset_spinbox.setEnabled(is_edit_mode)
         self.reset_offset_button.setEnabled(is_edit_mode)
         self.quit_button.setEnabled(is_edit_mode)
+        self.export_setlist_button.setEnabled(is_edit_mode)
         self.setlist_name_input.setEnabled(is_edit_mode)
         self.table.setDragEnabled(is_edit_mode)
         self.rename_button.setEnabled(is_edit_mode)
@@ -1694,6 +1700,47 @@ class LiveController(QWidget):
         self.title_label.setText(setlist_name)
         self.setlist_name_input.setText(setlist_name)
         self.populate_table()
+
+    def export_setlist(self):
+        """Exports the current setlist as a plain text file to the user's Downloads folder."""
+        tracks_only = [item for item in self.tracks if item['type'] == 'track']
+        if not tracks_only:
+            self.status_label.setText("Status: No tracks to export.")
+            return
+
+        lines = []
+        total_seconds = 0
+        for row_index, item in enumerate(self.tracks):
+            if item['type'] == 'divider':
+                lines.append("")
+                lines.append(item.get('text', 'ENCORE'))
+                lines.append("")
+            else:
+                duration = item.get('duration', 0)
+                total_seconds += duration
+                name_widget = self.table.cellWidget(row_index, 1)
+                bpm_widget = self.table.cellWidget(row_index, 3)
+                track_name = (name_widget.text() if name_widget else "").replace('_', ' ')
+                bpm = bpm_widget.text() if bpm_widget else ""
+                duration_str = self.format_duration(duration)
+                lines.append(f"{track_name} ({duration_str}/{bpm})")
+
+        lines.append("")
+        lines.append(f"Total Time: {self.format_duration(total_seconds, show_hours=True)}")
+
+        setlist_name = self.title_label.text()
+        safe_name = re.sub(r'[\\/*?:"<>|]', '', setlist_name).strip()
+        if not safe_name:
+            safe_name = "setlist"
+        filename = f"{safe_name}_setlist.txt"
+        downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+        os.makedirs(downloads_dir, exist_ok=True)
+        file_path = os.path.join(downloads_dir, filename)
+
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
+
+        self.status_label.setText(f"Status: Set list exported to {file_path}")
 
     def update_total_running_time(self):
         """Calculates and displays the total running time for the setlist."""
