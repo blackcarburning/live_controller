@@ -66,7 +66,7 @@ DEFAULT_COUNT_IN_FONT_SIZE = 250
 DEFAULT_TRACK_PLAY_FONT_SIZE = 80
 DEFAULT_COUNT_IN_BG_COLOR = "#c80000"
 DEFAULT_TRACK_PLAY_BG_COLOR = "#00c800"
-TRACK_OVERHEAD_SECONDS = 20  # Extra time added to total running time per track for transitions
+TRACK_OVERHEAD_SECONDS = 15  # Extra time added to total running time per track for transitions
 MAX_UNDO_LEVELS = 30
 
 # UI and timing constants
@@ -692,7 +692,7 @@ class LiveController(QWidget):
         title_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title_label = QLabel("Untitled Setlist")
         self.title_label.setFont(QFont("Segoe UI", 22, QFont.Weight.Bold))
-        self.running_time_label = QLabel("Total Running Time (incl. 20s overhead/track): 00:00:00")
+        self.running_time_label = QLabel(f"Total Running Time (incl. {TRACK_OVERHEAD_SECONDS}s overhead/track): 00:00:00")
         self.running_time_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         self.running_time_label.setStyleSheet("color: #888;")
         self.export_setlist_button = QPushButton("Export Set List")
@@ -1727,6 +1727,9 @@ class LiveController(QWidget):
 
         lines.append("")
         lines.append(f"Total Time: {self.format_duration(total_seconds, show_hours=True)}")
+        track_count = len([t for t in self.tracks if t['type'] == 'track'])
+        total_with_overhead = total_seconds + (track_count * TRACK_OVERHEAD_SECONDS)
+        lines.append(f"Total Time (incl. {TRACK_OVERHEAD_SECONDS}s gap between songs): {self.format_duration(total_with_overhead, show_hours=True)}")
 
         setlist_name = self.title_label.text()
         safe_name = re.sub(r'[\\/*?:"<>|]', '', setlist_name).strip()
