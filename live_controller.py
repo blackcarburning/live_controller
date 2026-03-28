@@ -681,7 +681,7 @@ class LiveController(QWidget):
         left_layout = QHBoxLayout(left_container)
         left_layout.setContentsMargins(0,0,0,0)
         self.active_label = QLabel("ACTIVE", self)
-        self.active_label.setFont(QFont("Segoe UI", 36, QFont.Weight.Bold))
+        self.active_label.setFont(QFont("Segoe UI", 30, QFont.Weight.Bold))
         self.active_label.setStyleSheet("color: #27ae60;")
         self.active_label.hide()
         left_layout.addWidget(self.active_label)
