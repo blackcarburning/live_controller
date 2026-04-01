@@ -926,6 +926,20 @@ class LiveController(QWidget):
         calib_loop_layout.addWidget(self.calib_loop_duration_spinbox)
         self.calib_loop_button = QPushButton("Start Calib Loop")
         self.calib_loop_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
+        self.calib_loop_button.setToolTip(
+            "Repeatedly plays the first X seconds of the test track so you can dial in the MIDI offset.\n"
+            "\n"
+            "If the MIDI feels late (audio hits before the MIDI-triggered gear responds):\n"
+            "  → move the offset more negative (MIDI fires earlier, before the audio starts).\n"
+            "\n"
+            "If the MIDI feels early/fast (MIDI-triggered gear fires before the audio hits):\n"
+            "  → move the offset more positive (audio starts first, then MIDI fires after the delay).\n"
+            "\n"
+            "Positive offset = audio/video unpauses first, MIDI start is delayed.\n"
+            "Negative offset = MIDI start fires first, audio/video starts later.\n"
+            "\n"
+            "Changes to the offset apply on the next loop restart."
+        )
         self.calib_loop_button.setEnabled(False)
         self.calib_loop_button.clicked.connect(self.toggle_calib_loop)
         calib_loop_layout.addWidget(self.calib_loop_button)
