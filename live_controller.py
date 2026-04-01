@@ -311,7 +311,7 @@ class MidiSyncWorker(QThread):
 
     def __init__(self, video_file, bpm, display_num, preload_time, midi_offset_ms, 
                  send_start_port1, send_start_port2, send_start_port3, timing_method,
-                 require_midi=True):
+                 require_midi=True, max_duration_sec=0):
         super().__init__()
         # Store all playback parameters.
         self.video_file = video_file
@@ -324,6 +324,7 @@ class MidiSyncWorker(QThread):
         self.send_start_port3 = send_start_port3
         self.timing_method = timing_method
         self.require_midi = require_midi
+        self.max_duration_sec = max_duration_sec  # If > 0, limits playback via mpv --length
         self.mpv_process = None
         self._is_running = True
         self.midi_outputs = {}
@@ -403,6 +404,9 @@ class MidiSyncWorker(QThread):
                 "--keep-open=no",
                 self.video_file
             ]
+        # If a maximum duration is set (e.g. for calibration loops), limit playback via mpv.
+        if self.max_duration_sec > 0:
+            mpv_cmd.insert(-1, f"--length={self.max_duration_sec}")
         
         try:
             # --- Pre-roll Phase ---
@@ -617,6 +621,11 @@ class LiveController(QWidget):
         self.test_port_start_cbs = {}
         self.test_port_bpm_inputs = {}
         self.test_port_buttons = {}
+
+        # --- Sync Calibration Loop State ---
+        self.calib_loop_active = False
+        self.calib_loop_worker = None
+        self.calib_loop_ipc_socket = None
         
         # --- FONT & COLOR DEFINITIONS ---
         self.current_table_font_size = DEFAULT_TABLE_FONT_SIZE
@@ -635,6 +644,12 @@ class LiveController(QWidget):
         self.active_flash_timer = QTimer(self)
         self.active_flash_timer.setInterval(ACTIVE_FLASH_INTERVAL_MS)
         self.active_flash_timer.timeout.connect(self.toggle_active_label_visibility)
+
+        # Timer that fires once to restart the calibration loop iteration after a short gap.
+        self.calib_loop_restart_timer = QTimer(self)
+        self.calib_loop_restart_timer.setSingleShot(True)
+        self.calib_loop_restart_timer.setInterval(500)  # 500 ms gap between iterations
+        self.calib_loop_restart_timer.timeout.connect(self._start_calib_iteration)
 
         # --- Build UI and start background services ---
         self.setup_ui()
@@ -897,6 +912,25 @@ class LiveController(QWidget):
         test_track_layout.addWidget(self.play_test_button)
         test_track_group.setLayout(test_track_layout)
 
+        # --- Sync Calibration Loop Group ---
+        calib_loop_group = QGroupBox("Sync Calibration Loop (Edit Mode)")
+        calib_loop_layout = QHBoxLayout()
+        calib_loop_layout.setContentsMargins(6, 6, 6, 6)
+        calib_loop_layout.setSpacing(4)
+        calib_loop_layout.addWidget(QLabel("Loop:"))
+        self.calib_loop_duration_spinbox = QSpinBox()
+        self.calib_loop_duration_spinbox.setRange(1, 20)
+        self.calib_loop_duration_spinbox.setValue(5)
+        self.calib_loop_duration_spinbox.setSuffix(" s")
+        self.calib_loop_duration_spinbox.setToolTip("Duration of each calibration loop (1–20 seconds)")
+        calib_loop_layout.addWidget(self.calib_loop_duration_spinbox)
+        self.calib_loop_button = QPushButton("Start Calib Loop")
+        self.calib_loop_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
+        self.calib_loop_button.setEnabled(False)
+        self.calib_loop_button.clicked.connect(self.toggle_calib_loop)
+        calib_loop_layout.addWidget(self.calib_loop_button)
+        calib_loop_group.setLayout(calib_loop_layout)
+
         # --- Overlay Colours Group ---
         overlay_colours_group = QGroupBox("Overlay Colours")
         overlay_colours_layout = QGridLayout()
@@ -974,6 +1008,7 @@ class LiveController(QWidget):
         controls_area.addWidget(main_controls_group)
         controls_area.addWidget(settings_group)
         controls_area.addWidget(test_track_group)
+        controls_area.addWidget(calib_loop_group)
         controls_area.addWidget(overlay_colours_group)
         controls_area.addWidget(midi_test_group)
         controls_area.addWidget(app_group)
@@ -1106,6 +1141,12 @@ class LiveController(QWidget):
         self.count_in_font_spinbox.setEnabled(is_edit_mode)
         self.track_play_color_button.setEnabled(is_edit_mode)
         self.track_play_font_spinbox.setEnabled(is_edit_mode)
+        self.calib_loop_duration_spinbox.setEnabled(is_edit_mode and not self.calib_loop_active)
+        self.calib_loop_button.setEnabled(is_edit_mode and self.test_track_path is not None)
+
+        # Stop the calibration loop if switching to LIVE mode.
+        if self.is_live_mode and self.calib_loop_active:
+            self.stop_calib_loop()
 
         # Enable/disable the widgets inside the table rows.
         for i in range(self.table.rowCount()):
@@ -1922,6 +1963,10 @@ class LiveController(QWidget):
             self.test_worker.stop()
             self.test_worker.wait()
 
+        # Stop the calibration loop if it is active.
+        if self.calib_loop_active:
+            self.stop_calib_loop()
+
         self.active_flash_timer.stop()
         self.active_label.hide()
         self.send_led_command("4")  # Turn off all LEDs when playback is manually stopped.
@@ -2044,6 +2089,9 @@ class LiveController(QWidget):
             self.test_file_label.setText(os.path.basename(file_path))
             self.test_file_label.setStyleSheet("font-style: normal; color: #d4d4d4;")
             self.play_test_button.setEnabled(True)
+            # Also enable the calibration loop button now that a test file is available.
+            if not self.is_live_mode:
+                self.calib_loop_button.setEnabled(True)
 
     def play_test_track(self):
         """Plays the selected test track with all MIDI ports enabled."""
@@ -2071,6 +2119,124 @@ class LiveController(QWidget):
             'send_start_port3': True,
         }
         self.execute_playback(test_track_data, bpm)
+
+    # --- Sync Calibration Loop Methods ---
+
+    def toggle_calib_loop(self):
+        """Starts or stops the sync calibration loop."""
+        if self.calib_loop_active:
+            self.stop_calib_loop()
+        else:
+            self._start_calib_loop()
+
+    def _start_calib_loop(self):
+        """Validates preconditions and starts the calibration loop."""
+        if not self.test_track_path:
+            self.status_label.setText("Status: No test track selected for calibration.")
+            return
+        if self.require_midi_checkbox.isChecked() and not self.midi_available:
+            self.status_label.setText("ERROR: No MIDI hardware detected. Cannot start calibration loop.")
+            self.show_no_midi_message()
+            return
+        if (self.worker and self.worker.isRunning()) or (self.test_worker and self.test_worker.isRunning()):
+            self.show_danger_message()
+            return
+        try:
+            int(self.test_track_bpm_input.text())
+        except ValueError:
+            self.status_label.setText("Status: Invalid BPM for calibration loop.")
+            return
+
+        self.calib_loop_active = True
+        self.calib_loop_button.setText("Stop Calib Loop")
+        self.calib_loop_button.setStyleSheet("background-color: #e74c3c; color: white; font-size: 11px; padding: 3px 6px;")
+        # Lock the duration spinbox while the loop is running.
+        self.calib_loop_duration_spinbox.setEnabled(False)
+        self._start_calib_iteration()
+
+    def _start_calib_iteration(self):
+        """Launches a single iteration of the calibration loop."""
+        if not self.calib_loop_active or not self.test_track_path:
+            return
+        try:
+            bpm = int(self.test_track_bpm_input.text())
+        except ValueError:
+            self.stop_calib_loop()
+            self.status_label.setText("Status: Invalid BPM, calibration loop stopped.")
+            return
+
+        duration = self.calib_loop_duration_spinbox.value()
+        display_num = int(self.display_combo.currentText())
+        preload_time = int(self.preload_combo.currentText())
+        midi_offset = self.midi_offset_slider.value()
+        timing_method = "high_precision" if self.high_precision_timing_radio.isChecked() else "standard"
+        require_midi = self.require_midi_checkbox.isChecked()
+
+        self.calib_loop_worker = MidiSyncWorker(
+            self.test_track_path, bpm, display_num, preload_time, midi_offset,
+            True, True, True, timing_method, require_midi,
+            max_duration_sec=duration
+        )
+        self.calib_loop_worker.status_update.connect(self.status_label.setText)
+        self.calib_loop_worker.error.connect(self._on_calib_error)
+        self.calib_loop_worker.finished.connect(self._on_calib_iteration_finished)
+        self.calib_loop_worker.ipc_socket_path.connect(self._set_calib_loop_ipc)
+        self.active_flash_timer.start()
+        self.calib_loop_worker.start()
+        self.status_label.setText(
+            f"Status: Calib loop playing ({duration}s, offset {midi_offset:+d} ms)..."
+        )
+
+    def _set_calib_loop_ipc(self, path):
+        """Stores the IPC socket path for the active calibration loop mpv instance."""
+        self.calib_loop_ipc_socket = path
+
+    def _on_calib_error(self, msg):
+        """Handles errors emitted by the calibration loop worker."""
+        self.status_label.setText(f"Calibration error: {msg}")
+        self.stop_calib_loop()
+
+    def _on_calib_iteration_finished(self):
+        """Called when one calibration loop iteration finishes."""
+        if self.calib_loop_worker:
+            self.calib_loop_worker.deleteLater()
+        self.calib_loop_worker = None
+        self.calib_loop_ipc_socket = None
+
+        if self.calib_loop_active:
+            # Schedule the next iteration after a brief gap so the event loop stays responsive.
+            self.calib_loop_restart_timer.start()
+        else:
+            self.active_flash_timer.stop()
+            self.active_label.hide()
+
+    def stop_calib_loop(self):
+        """Stops the calibration loop and cleans up all related resources."""
+        self.calib_loop_active = False
+        self.calib_loop_restart_timer.stop()
+
+        if self.calib_loop_worker and self.calib_loop_worker.isRunning():
+            self.calib_loop_worker.stop()
+            if self.calib_loop_ipc_socket:
+                try:
+                    with open(self.calib_loop_ipc_socket, "w", encoding='utf-8') as ipc:
+                        ipc.write('{ "command": ["quit"] }\n')
+                except Exception as e:
+                    print(f"Calib loop stop: Error sending quit to mpv: {e}")
+            self.calib_loop_worker.wait()
+
+        if self.calib_loop_worker:
+            self.calib_loop_worker.deleteLater()
+        self.calib_loop_worker = None
+        self.calib_loop_ipc_socket = None
+
+        self.active_flash_timer.stop()
+        self.active_label.hide()
+        self.calib_loop_button.setText("Start Calib Loop")
+        self.calib_loop_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
+        self.calib_loop_duration_spinbox.setEnabled(True)
+        self.status_label.setText("Status: Calibration loop stopped.")
+        self.send_led_command("4")
 
     def resizeEvent(self, event):
         """Ensures the overlay labels resize with the main window."""
