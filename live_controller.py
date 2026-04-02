@@ -1764,15 +1764,12 @@ class LiveController(QWidget):
             self.status_label.setText("Status: No tracks to export.")
             return
 
-        lines = []
-        total_seconds = 0
+        # First pass: collect all track data to determine the max prefix length for alignment
+        track_data = []
         track_number = 0
+        total_seconds = 0
         for row_index, item in enumerate(self.tracks):
-            if item['type'] == 'divider':
-                lines.append("")
-                lines.append(item.get('text', 'ENCORE'))
-                lines.append("")
-            else:
+            if item['type'] != 'divider':
                 track_number += 1
                 duration = item.get('duration', 0)
                 total_seconds += duration
@@ -1781,7 +1778,22 @@ class LiveController(QWidget):
                 track_name = (name_widget.text() if name_widget else "").replace('_', ' ').upper()
                 bpm = bpm_widget.text() if bpm_widget else ""
                 duration_str = self.format_duration(duration)
-                lines.append(f"{track_number}. {track_name} ({duration_str}/{bpm})")
+                track_data.append((track_number, track_name, duration_str, bpm))
+
+        max_prefix_len = max(len(f"{n}. {name}") for n, name, _, _ in track_data)
+
+        # Second pass: build lines with tab-aligned columns
+        lines = []
+        track_data_iter = iter(track_data)
+        for item in self.tracks:
+            if item['type'] == 'divider':
+                lines.append("")
+                lines.append(item.get('text', 'ENCORE'))
+                lines.append("")
+            else:
+                n, track_name, duration_str, bpm = next(track_data_iter)
+                prefix = f"{n}. {track_name}".ljust(max_prefix_len)
+                lines.append(f"{prefix}\t{duration_str}\t{bpm}")
 
         lines.append("")
         lines.append(f"Total Time: {self.format_duration(total_seconds, show_hours=True)}")
