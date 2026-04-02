@@ -18,6 +18,7 @@ import subprocess
 import time
 import json
 import ctypes
+import datetime
 from collections import deque
 
 # --- Third-Party Library Imports ---
@@ -1765,20 +1766,22 @@ class LiveController(QWidget):
 
         lines = []
         total_seconds = 0
+        track_number = 0
         for row_index, item in enumerate(self.tracks):
             if item['type'] == 'divider':
                 lines.append("")
                 lines.append(item.get('text', 'ENCORE'))
                 lines.append("")
             else:
+                track_number += 1
                 duration = item.get('duration', 0)
                 total_seconds += duration
                 name_widget = self.table.cellWidget(row_index, 1)
                 bpm_widget = self.table.cellWidget(row_index, 3)
-                track_name = (name_widget.text() if name_widget else "").replace('_', ' ')
+                track_name = (name_widget.text() if name_widget else "").replace('_', ' ').upper()
                 bpm = bpm_widget.text() if bpm_widget else ""
                 duration_str = self.format_duration(duration)
-                lines.append(f"{track_name} ({duration_str}/{bpm})")
+                lines.append(f"{track_number}. {track_name} ({duration_str}/{bpm})")
 
         lines.append("")
         lines.append(f"Total Time: {self.format_duration(total_seconds, show_hours=True)}")
@@ -1790,7 +1793,8 @@ class LiveController(QWidget):
         safe_name = re.sub(r'[\\/*?:"<>|]', '', setlist_name).strip()
         if not safe_name:
             safe_name = "setlist"
-        filename = f"{safe_name}_setlist.txt"
+        date_str = datetime.date.today().strftime("%Y-%m-%d")
+        filename = f"{safe_name}_setlist_{date_str}.txt"
         downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
         os.makedirs(downloads_dir, exist_ok=True)
         file_path = os.path.join(downloads_dir, filename)
