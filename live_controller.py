@@ -1264,8 +1264,7 @@ class LiveController(QWidget):
 
         # --- Build UI and start background services ---
         self.setup_ui()
-        self.apply_config_to_ui() 
-        self.showFullScreen()
+        self.apply_config_to_ui()
         self.hotkey_listener = GlobalHotkeyListener()
         self.hotkey_listener.hotkey_pressed.connect(self.on_global_hotkey)
         self.hotkey_listener.start()
