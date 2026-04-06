@@ -1640,7 +1640,7 @@ class LiveController(QWidget):
             "When unchecked (default), video plays without any zoom/scale transform.\n"
             "Check this box to apply the saved crop/scale settings during playback."
         )
-        self.apply_zoom_checkbox.toggled.connect(lambda _: self._update_zoom_status_label())
+        self.apply_zoom_checkbox.toggled.connect(self._update_zoom_status_label)
         self.zoom_scale_button = QPushButton("Configure Zoom / Scale…")
         self.zoom_scale_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
         self.zoom_scale_button.setToolTip(
