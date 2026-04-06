@@ -41,8 +41,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QTableWidget, QTableWidgetItem, QLineEdit, QHeaderView, 
                              QGroupBox, QLabel, QFileDialog, QSizePolicy, QComboBox,
                              QAbstractButton, QSlider, QAbstractItemView, QCheckBox,
-                             QGridLayout, QRadioButton, QSpinBox, QColorDialog, QDialog,
-                             QScrollArea)
+                             QGridLayout, QRadioButton, QSpinBox, QColorDialog, QDialog)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer, QRect
 from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen, QPixmap
 
@@ -1299,8 +1298,8 @@ class LiveController(QWidget):
     def setup_ui(self):
         """Constructs the entire user interface."""
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(8, 8, 8, 8)
-        self.layout.setSpacing(4)
+        self.layout.setContentsMargins(6, 4, 6, 4)
+        self.layout.setSpacing(3)
         
         # --- Top Bar (Title, Mode Switch) ---
         top_bar_layout = QHBoxLayout()
@@ -1309,7 +1308,7 @@ class LiveController(QWidget):
         left_layout = QHBoxLayout(left_container)
         left_layout.setContentsMargins(0,0,0,0)
         self.active_label = QLabel("ACTIVE", self)
-        self.active_label.setFont(QFont("Segoe UI", 24, QFont.Weight.Bold))
+        self.active_label.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
         self.active_label.setStyleSheet("color: #27ae60;")
         self.active_label.hide()
         left_layout.addWidget(self.active_label)
@@ -1318,9 +1317,9 @@ class LiveController(QWidget):
         title_layout = QVBoxLayout()
         title_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title_label = QLabel("Untitled Setlist")
-        self.title_label.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+        self.title_label.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         self.running_time_label = QLabel(f"Total Running Time (incl. {TRACK_OVERHEAD_SECONDS}s overhead/track): 00:00:00")
-        self.running_time_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        self.running_time_label.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         self.running_time_label.setStyleSheet("color: #888;")
         self.export_setlist_button = QPushButton("Export Set List")
         self.export_setlist_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
@@ -1336,11 +1335,11 @@ class LiveController(QWidget):
         mode_layout = QHBoxLayout()
         mode_layout.setSpacing(10)
         self.edit_mode_label = QLabel("EDIT")
-        self.edit_mode_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        self.edit_mode_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self.live_mode_slider = Switch()
         self.live_mode_slider.toggled.connect(self.toggle_live_mode)
         self.live_mode_label = QLabel("LIVE")
-        self.live_mode_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        self.live_mode_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         mode_layout.addWidget(self.edit_mode_label)
         mode_layout.addWidget(self.live_mode_slider)
         mode_layout.addWidget(self.live_mode_label)
@@ -1398,8 +1397,8 @@ class LiveController(QWidget):
         # --- Playback & Setlist Group ---
         main_controls_group = QGroupBox("")
         main_controls_layout = QVBoxLayout()
-        main_controls_layout.setContentsMargins(6, 6, 6, 6)
-        main_controls_layout.setSpacing(4)
+        main_controls_layout.setContentsMargins(4, 4, 4, 4)
+        main_controls_layout.setSpacing(3)
         add_buttons_layout = QHBoxLayout()
         self.add_button = QPushButton("Add Track(s)")
         self.add_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 11px; padding: 3px 6px;")
@@ -1417,9 +1416,16 @@ class LiveController(QWidget):
         self.undo_button.setEnabled(False)
 
         self.stop_button = QPushButton("STOP (q)")
-        self.stop_button.setStyleSheet(f"background-color: #e74c3c; color: white; font-size: 12px; font-weight: bold; padding: 3px 6px;")
+        self.stop_button.setStyleSheet(f"background-color: #e74c3c; color: white; font-size: 11px; font-weight: bold; padding: 3px 6px;")
         self.stop_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.stop_button.clicked.connect(self.stop_all_activity)
+        self.quit_button = QPushButton("Quit")
+        self.quit_button.setStyleSheet("font-size: 11px; padding: 3px 6px;")
+        self.quit_button.clicked.connect(self.close)
+        stop_quit_layout = QHBoxLayout()
+        stop_quit_layout.setSpacing(4)
+        stop_quit_layout.addWidget(self.stop_button, 3)
+        stop_quit_layout.addWidget(self.quit_button, 1)
         setlist_name_layout = QHBoxLayout()
         self.setlist_name_input = QLineEdit()
         self.setlist_name_input.setPlaceholderText("Enter Setlist Name...")
@@ -1433,19 +1439,22 @@ class LiveController(QWidget):
         self.load_button = QPushButton("Load Setlist")
         self.load_button.setStyleSheet(f"background-color: #27ae60; color: white; font-size: 11px; padding: 3px 6px;")
         self.load_button.clicked.connect(self.load_setlist)
-        main_controls_layout.addWidget(self.stop_button)
+        save_load_layout = QHBoxLayout()
+        save_load_layout.setSpacing(4)
+        save_load_layout.addWidget(self.save_button)
+        save_load_layout.addWidget(self.load_button)
+        main_controls_layout.addLayout(stop_quit_layout)
         main_controls_layout.addLayout(add_buttons_layout)
         main_controls_layout.addWidget(self.undo_button)
         main_controls_layout.addLayout(setlist_name_layout)
-        main_controls_layout.addWidget(self.save_button)
-        main_controls_layout.addWidget(self.load_button)
+        main_controls_layout.addLayout(save_load_layout)
         main_controls_group.setLayout(main_controls_layout)
         
         # --- Settings Group (Compact Grid Layout) ---
         settings_group = QGroupBox("Settings")
         settings_layout = QGridLayout()
-        settings_layout.setContentsMargins(6, 6, 6, 6)
-        settings_layout.setSpacing(3)
+        settings_layout.setContentsMargins(4, 4, 4, 4)
+        settings_layout.setSpacing(2)
 
         self.display_combo = QComboBox(); self.display_combo.addItems([str(i) for i in range(1, 5)])
         self.display_combo.currentIndexChanged.connect(self.setting_changed)
@@ -1619,21 +1628,11 @@ class LiveController(QWidget):
             midi_test_grid_layout.addWidget(test_button, i, 4)
         midi_test_group.setLayout(midi_test_grid_layout)
 
-        # --- Application Group (Quit) ---
-        app_group = QGroupBox("Application")
-        app_layout = QVBoxLayout()
-        app_layout.setContentsMargins(4, 4, 4, 4)
-        app_layout.setSpacing(2)
-        self.quit_button = QPushButton("Quit")
-        self.quit_button.clicked.connect(self.close)
-        app_layout.addWidget(self.quit_button)
-        app_group.setLayout(app_layout)
-
         # --- Video Zoom / Scale Group (Edit Mode Only) ---
         zoom_group = QGroupBox("Video Zoom / Scale (Edit Mode)")
         zoom_layout = QVBoxLayout()
-        zoom_layout.setContentsMargins(6, 6, 6, 6)
-        zoom_layout.setSpacing(4)
+        zoom_layout.setContentsMargins(4, 4, 4, 4)
+        zoom_layout.setSpacing(3)
         self.apply_zoom_checkbox = QCheckBox("Apply zoom/scale during playback")
         self.apply_zoom_checkbox.setChecked(False)  # Default: unscaled on startup
         self.apply_zoom_checkbox.setToolTip(
@@ -1658,37 +1657,51 @@ class LiveController(QWidget):
         zoom_group.setLayout(zoom_layout)
         self._update_zoom_status_label()
 
-        # --- Right-side panel: wrap in a QScrollArea so controls are never off-screen ---
+        # --- Right-side panel: 2-column layout, no scroll needed at 1920×1080 ---
         controls_widget = QWidget()
         controls_vbox = QVBoxLayout(controls_widget)
         controls_vbox.setContentsMargins(0, 0, 0, 0)
         controls_vbox.setSpacing(3)
 
-        # Application (Quit) goes first so it is always visible at the top.
-        controls_vbox.addWidget(app_group)
-        controls_vbox.addWidget(main_controls_group)
-        controls_vbox.addWidget(zoom_group)
-        controls_vbox.addWidget(settings_group)
-        controls_vbox.addWidget(test_track_group)
-        controls_vbox.addWidget(calib_loop_group)
-        controls_vbox.addWidget(overlay_colours_group)
-        controls_vbox.addWidget(midi_test_group)
-        controls_vbox.addStretch(1)
+        # Upper row: left column (playback + zoom) | right column (settings + overlay colours)
+        upper_row = QHBoxLayout()
+        upper_row.setSpacing(4)
 
-        controls_scroll = QScrollArea()
-        controls_scroll.setWidget(controls_widget)
-        controls_scroll.setWidgetResizable(True)
-        controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        controls_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        controls_scroll.setMinimumWidth(360)
+        left_col = QVBoxLayout()
+        left_col.setSpacing(3)
+        left_col.addWidget(main_controls_group)
+        left_col.addWidget(zoom_group)
+        left_col.addStretch(1)
+
+        right_col = QVBoxLayout()
+        right_col.setSpacing(3)
+        right_col.addWidget(settings_group)
+        right_col.addWidget(overlay_colours_group)
+        right_col.addStretch(1)
+
+        upper_row.addLayout(left_col, 1)
+        upper_row.addLayout(right_col, 1)
+        controls_vbox.addLayout(upper_row)
+
+        # Lower row: test track | calib loop  (side by side — both are small horizontal groups)
+        lower_row = QHBoxLayout()
+        lower_row.setSpacing(4)
+        lower_row.addWidget(test_track_group, 2)
+        lower_row.addWidget(calib_loop_group, 1)
+        controls_vbox.addLayout(lower_row)
+
+        # MIDI Port Testing spans full width at the bottom
+        controls_vbox.addWidget(midi_test_group)
 
         # --- Assemble Main Layout ---
-        main_layout.addWidget(self.table, 3) # Table takes 3/5 of the width
-        main_layout.addWidget(controls_scroll, 2) # Scrollable controls take 2/5
+        # Give the controls side more width (3/5) so they don't feel cramped;
+        # the track table takes 2/5.
+        main_layout.addWidget(self.table, 2)
+        main_layout.addWidget(controls_widget, 3)
         
         # --- Status Bar ---
         self.status_label = QLabel("Status: Welcome!")
-        self.status_label.setStyleSheet("font-style: italic; color: #888; font-size: 14px;")
+        self.status_label.setStyleSheet("font-style: italic; color: #888; font-size: 11px;")
         
         # --- Final Layout Assembly ---
         self.layout.addLayout(top_bar_layout)
@@ -3012,8 +3025,9 @@ if __name__ == '__main__':
     # Set a base style and apply the custom dark stylesheet.
     app.setStyle("Fusion")
     app.setStyleSheet(DARK_STYLESHEET)
-    # Create and show the main window.
+    # Create and show the main window maximised so all controls are visible on
+    # a 1920×1080 laptop display without any scrolling.
     controller = LiveController()
-    controller.show()
+    controller.showMaximized()
     # Start the application's event loop.
     sys.exit(app.exec())
