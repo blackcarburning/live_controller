@@ -19,6 +19,8 @@ import time
 import json
 import ctypes
 import datetime
+import tempfile
+import shutil
 from collections import deque
 
 # --- Third-Party Library Imports ---
@@ -39,9 +41,9 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QTableWidget, QTableWidgetItem, QLineEdit, QHeaderView, 
                              QGroupBox, QLabel, QFileDialog, QSizePolicy, QComboBox,
                              QAbstractButton, QSlider, QAbstractItemView, QCheckBox,
-                             QGridLayout, QRadioButton, QSpinBox, QColorDialog)
-from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer
-from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen
+                             QGridLayout, QRadioButton, QSpinBox, QColorDialog, QDialog)
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer, QRect
+from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen, QPixmap
 
 # --- Core Application Configuration ---
 # File paths for external media players
@@ -55,6 +57,7 @@ TRACK_NAME_STORE_FILE = "track_names.json"
 # Configuration and session files for the application state
 CONFIG_FILE = "config.json"
 SESSION_FILE = "session.json"
+ZOOM_CONFIG_FILE = "zoom_config.json"
 SETLISTS_DIR = "setlists"
 
 # Default settings for playback and display
@@ -312,7 +315,7 @@ class MidiSyncWorker(QThread):
 
     def __init__(self, video_file, bpm, display_num, preload_time, midi_offset_ms, 
                  send_start_port1, send_start_port2, send_start_port3, timing_method,
-                 require_midi=True, max_duration_sec=0):
+                 require_midi=True, max_duration_sec=0, zoom_config=None):
         super().__init__()
         # Store all playback parameters.
         self.video_file = video_file
@@ -326,6 +329,7 @@ class MidiSyncWorker(QThread):
         self.timing_method = timing_method
         self.require_midi = require_midi
         self.max_duration_sec = max_duration_sec  # If > 0, limits playback via mpv --length
+        self.zoom_config = zoom_config or {}
         self.mpv_process = None
         self._is_running = True
         self.midi_outputs = {}
@@ -408,6 +412,18 @@ class MidiSyncWorker(QThread):
         # If a maximum duration is set (e.g. for calibration loops), limit playback via mpv.
         if self.max_duration_sec > 0:
             mpv_cmd.insert(-1, f"--length={self.max_duration_sec}")
+        # If a zoom/crop/scale transform is configured, apply it as an mpv video filter.
+        if not is_audio_only and self.zoom_config.get('enabled') and self.zoom_config.get('crop_w', 0) > 0:
+            crop_x = self.zoom_config.get('crop_x', 0)
+            crop_y = self.zoom_config.get('crop_y', 0)
+            crop_w = self.zoom_config.get('crop_w', 0)
+            crop_h = self.zoom_config.get('crop_h', 0)
+            scale_w = self.zoom_config.get('scale_w', -1)
+            scale_h = self.zoom_config.get('scale_h', -1)
+            vf = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}"
+            if scale_w > 0 and scale_h > 0:
+                vf += f",scale={scale_w}:{scale_h}"
+            mpv_cmd.insert(-1, f"--vf={vf}")
         
         try:
             # --- Pre-roll Phase ---
@@ -544,6 +560,599 @@ class MidiSyncWorker(QThread):
             self.mpv_process.terminate()
         self.finished.emit()
 
+class ZoomCropCanvas(QWidget):
+    """A canvas widget for visually defining a crop region on a captured video frame.
+    
+    The user can drag to create a new selection, move the selection,
+    or resize it by dragging the corner/edge handles. Pixel coordinates
+    are reported live via the region_changed signal.
+    """
+    region_changed = pyqtSignal(int, int, int, int)  # x, y, w, h in source pixels
+
+    HANDLE_SIZE = 9  # Half-size of resize handles in canvas pixels
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.pixmap = None
+        self.scale_factor = 1.0
+        self.offset_x = 0.0
+        self.offset_y = 0.0
+        self.source_w = 0
+        self.source_h = 0
+
+        # Selection rectangle in source-pixel coordinates
+        self._sel = QRect()
+        self._drag_start = None
+        self._drag_mode = None
+        self._drag_orig_rect = QRect()
+
+        self.setMinimumSize(480, 270)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def load_frame(self, image_path):
+        """Load a video frame image from *image_path* and display it."""
+        pm = QPixmap(image_path)
+        if pm.isNull():
+            return
+        self.pixmap = pm
+        self.source_w = pm.width()
+        self.source_h = pm.height()
+        if self._sel.isNull():
+            self._sel = QRect(0, 0, self.source_w, self.source_h)
+        self._update_transform()
+        self.update()
+
+    def set_region(self, x, y, w, h):
+        """Set the selection region in source-pixel coordinates."""
+        self._sel = QRect(x, y, max(1, w), max(1, h))
+        self.update()
+        self.region_changed.emit(self._sel.x(), self._sel.y(),
+                                 self._sel.width(), self._sel.height())
+
+    def get_region(self):
+        """Return (x, y, w, h) of the selection in source-pixel coordinates."""
+        return self._sel.x(), self._sel.y(), self._sel.width(), self._sel.height()
+
+    # ------------------------------------------------------------------
+    # Coordinate helpers
+    # ------------------------------------------------------------------
+
+    def _update_transform(self):
+        if not self.pixmap:
+            return
+        sx = self.width() / max(1, self.source_w)
+        sy = self.height() / max(1, self.source_h)
+        self.scale_factor = min(sx, sy)
+        self.offset_x = (self.width() - self.source_w * self.scale_factor) / 2.0
+        self.offset_y = (self.height() - self.source_h * self.scale_factor) / 2.0
+
+    def _to_canvas(self, sx, sy):
+        return QPoint(int(sx * self.scale_factor + self.offset_x),
+                      int(sy * self.scale_factor + self.offset_y))
+
+    def _to_source(self, cx, cy):
+        sx = (cx - self.offset_x) / max(1e-6, self.scale_factor)
+        sy = (cy - self.offset_y) / max(1e-6, self.scale_factor)
+        return int(sx), int(sy)
+
+    def _sel_canvas(self):
+        """Return the selection rect in canvas coordinates."""
+        if self._sel.isNull():
+            return QRect()
+        tl = self._to_canvas(self._sel.left(), self._sel.top())
+        br = self._to_canvas(self._sel.right(), self._sel.bottom())
+        return QRect(tl, br)
+
+    def _handle_rects(self):
+        """Return list of (QRect, name) for the eight resize handles."""
+        cr = self._sel_canvas()
+        if cr.isNull():
+            return []
+        h = self.HANDLE_SIZE
+        cx, cy = cr.center().x(), cr.center().y()
+        points = [
+            (cr.left(),   cr.top(),    'tl'),
+            (cr.right(),  cr.top(),    'tr'),
+            (cr.left(),   cr.bottom(), 'bl'),
+            (cr.right(),  cr.bottom(), 'br'),
+            (cx,          cr.top(),    't'),
+            (cx,          cr.bottom(), 'b'),
+            (cr.left(),   cy,          'l'),
+            (cr.right(),  cy,          'r'),
+        ]
+        return [(QRect(px - h, py - h, h * 2, h * 2), name)
+                for px, py, name in points]
+
+    def _hit_mode(self, pos):
+        """Return the drag mode string based on where *pos* lands."""
+        cr = self._sel_canvas()
+        for rect, name in self._handle_rects():
+            if rect.contains(pos):
+                return f'resize_{name}'
+        if not cr.isNull() and cr.contains(pos):
+            return 'move'
+        return 'new'
+
+    # ------------------------------------------------------------------
+    # Paint
+    # ------------------------------------------------------------------
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("#1e1e1e"))
+        if not self.pixmap:
+            painter.setPen(QColor("#555"))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                             "Load a video and click 'Capture Frame'")
+            return
+
+        # Draw scaled video frame
+        dest_w = int(self.source_w * self.scale_factor)
+        dest_h = int(self.source_h * self.scale_factor)
+        dest_rect = QRect(int(self.offset_x), int(self.offset_y), dest_w, dest_h)
+        painter.drawPixmap(dest_rect, self.pixmap)
+
+        cr = self._sel_canvas()
+        if not cr.isNull():
+            # Semi-transparent dark overlay outside the selection
+            painter.setBrush(QBrush(QColor(0, 0, 0, 120)))
+            painter.setPen(Qt.PenStyle.NoPen)
+            # top strip
+            painter.drawRect(dest_rect.left(), dest_rect.top(),
+                             dest_rect.width(), cr.top() - dest_rect.top())
+            # bottom strip
+            painter.drawRect(dest_rect.left(), cr.bottom(),
+                             dest_rect.width(), dest_rect.bottom() - cr.bottom())
+            # left strip
+            painter.drawRect(dest_rect.left(), cr.top(),
+                             cr.left() - dest_rect.left(), cr.height())
+            # right strip
+            painter.drawRect(cr.right(), cr.top(),
+                             dest_rect.right() - cr.right(), cr.height())
+
+            # Selection border
+            painter.setPen(QPen(QColor("#00e676"), 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(cr)
+
+            # Resize handles
+            painter.setPen(QPen(QColor("#00e676"), 1))
+            painter.setBrush(QBrush(QColor("#00e676")))
+            for rect, _ in self._handle_rects():
+                painter.drawRect(rect)
+
+    # ------------------------------------------------------------------
+    # Mouse interaction
+    # ------------------------------------------------------------------
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton or not self.pixmap:
+            return
+        self._drag_start = event.pos()
+        self._drag_mode = self._hit_mode(event.pos())
+        self._drag_orig_rect = QRect(self._sel)
+
+    def mouseMoveEvent(self, event):
+        if not self.pixmap:
+            return
+
+        # Update cursor
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            mode = self._hit_mode(event.pos())
+            cursors = {
+                'move': Qt.CursorShape.SizeAllCursor,
+                'resize_tl': Qt.CursorShape.SizeFDiagCursor,
+                'resize_br': Qt.CursorShape.SizeFDiagCursor,
+                'resize_tr': Qt.CursorShape.SizeBDiagCursor,
+                'resize_bl': Qt.CursorShape.SizeBDiagCursor,
+                'resize_t': Qt.CursorShape.SizeVerCursor,
+                'resize_b': Qt.CursorShape.SizeVerCursor,
+                'resize_l': Qt.CursorShape.SizeHorCursor,
+                'resize_r': Qt.CursorShape.SizeHorCursor,
+            }
+            self.setCursor(cursors.get(mode, Qt.CursorShape.CrossCursor))
+            return
+
+        if not self._drag_start:
+            return
+
+        # Delta in source pixels
+        dx_c = event.pos().x() - self._drag_start.x()
+        dy_c = event.pos().y() - self._drag_start.y()
+        dx_s = int(dx_c / max(1e-6, self.scale_factor))
+        dy_s = int(dy_c / max(1e-6, self.scale_factor))
+
+        r = QRect(self._drag_orig_rect)
+
+        if self._drag_mode == 'move':
+            r.translate(dx_s, dy_s)
+        elif self._drag_mode == 'new':
+            sx0, sy0 = self._to_source(self._drag_start.x(), self._drag_start.y())
+            sx1, sy1 = self._to_source(event.pos().x(), event.pos().y())
+            r = QRect(min(sx0, sx1), min(sy0, sy1),
+                      abs(sx1 - sx0), abs(sy1 - sy0))
+        elif self._drag_mode == 'resize_tl':
+            r.setTopLeft(r.topLeft() + QPoint(dx_s, dy_s))
+        elif self._drag_mode == 'resize_tr':
+            r.setTopRight(r.topRight() + QPoint(dx_s, dy_s))
+        elif self._drag_mode == 'resize_bl':
+            r.setBottomLeft(r.bottomLeft() + QPoint(dx_s, dy_s))
+        elif self._drag_mode == 'resize_br':
+            r.setBottomRight(r.bottomRight() + QPoint(dx_s, dy_s))
+        elif self._drag_mode == 'resize_t':
+            r.setTop(r.top() + dy_s)
+        elif self._drag_mode == 'resize_b':
+            r.setBottom(r.bottom() + dy_s)
+        elif self._drag_mode == 'resize_l':
+            r.setLeft(r.left() + dx_s)
+        elif self._drag_mode == 'resize_r':
+            r.setRight(r.right() + dx_s)
+
+        r = r.normalized()
+        # Clamp to source image bounds
+        r.setLeft(max(0, r.left()))
+        r.setTop(max(0, r.top()))
+        r.setRight(min(self.source_w, r.right()))
+        r.setBottom(min(self.source_h, r.bottom()))
+        if r.width() < 1:
+            r.setWidth(1)
+        if r.height() < 1:
+            r.setHeight(1)
+
+        self._sel = r
+        self.update()
+        self.region_changed.emit(r.x(), r.y(), r.width(), r.height())
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = None
+            self._drag_mode = None
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_transform()
+        self.update()
+
+
+class ZoomScaleDialog(QDialog):
+    """Edit-mode dialog for configuring video crop/scale for mpv playback.
+
+    Workflow:
+    1. Select a test video  →  mpv opens in a separate windowed preview.
+    2. Use Play/Pause to navigate to the desired frame.
+    3. Click 'Capture Frame' to snapshot the frame into the canvas.
+    4. Drag / resize the green selection rectangle to define the crop region.
+    5. Optionally enter output scale dimensions (for non-uniform stretch).
+    6. Click OK to persist the settings.
+    """
+
+    def __init__(self, current_config, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Video Zoom / Scale Configuration (Edit Mode)")
+        self.setModal(True)
+        self.resize(1100, 720)
+
+        self._current_config = dict(current_config)
+        self.result_config = None
+
+        # mpv state
+        self._mpv_process = None
+        self._ipc_path = None
+        self._temp_dir = tempfile.mkdtemp(prefix="lc_zoom_")
+        self._frame_path = os.path.join(self._temp_dir, "frame.png")
+
+        self._updating_spinboxes = False  # Guard for circular signal updates
+
+        self._setup_ui()
+        self._apply_config(current_config)
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+
+    def _setup_ui(self):
+        root = QVBoxLayout(self)
+        root.setSpacing(6)
+
+        # --- Video file and playback controls ---
+        file_bar = QHBoxLayout()
+        self._select_btn = QPushButton("Select Video…")
+        self._select_btn.clicked.connect(self._select_video)
+        self._video_label = QLabel("No video selected.")
+        self._video_label.setStyleSheet("font-style: italic; color: #888;")
+
+        self._play_btn = QPushButton("▶  Play")
+        self._play_btn.clicked.connect(self._play)
+        self._pause_btn = QPushButton("⏸  Pause / Freeze")
+        self._pause_btn.clicked.connect(self._pause)
+        self._capture_btn = QPushButton("📷  Capture Frame  →")
+        self._capture_btn.setStyleSheet("background-color: #007acc; color: white; font-weight: bold; padding: 4px 8px;")
+        self._capture_btn.clicked.connect(self._capture_frame)
+        self._capture_btn.setToolTip(
+            "Pause the mpv preview and snapshot the current frame into the canvas.\n"
+            "Then drag the green rectangle to define your crop region."
+        )
+
+        for btn in (self._play_btn, self._pause_btn, self._capture_btn):
+            btn.setEnabled(False)
+
+        file_bar.addWidget(self._select_btn)
+        file_bar.addWidget(self._video_label, 1)
+        file_bar.addWidget(self._play_btn)
+        file_bar.addWidget(self._pause_btn)
+        file_bar.addWidget(self._capture_btn)
+        root.addLayout(file_bar)
+
+        # --- Canvas + right panel ---
+        body = QHBoxLayout()
+        body.setSpacing(8)
+
+        self._canvas = ZoomCropCanvas()
+        self._canvas.region_changed.connect(self._on_region_changed)
+        body.addWidget(self._canvas, 3)
+
+        right = QVBoxLayout()
+        right.setSpacing(6)
+
+        # Crop region spinboxes
+        crop_group = QGroupBox("Source Crop Region")
+        crop_grid = QGridLayout()
+        crop_grid.setSpacing(4)
+
+        self._x_sb = QSpinBox(); self._x_sb.setRange(0, 99999); self._x_sb.setSuffix(" px")
+        self._y_sb = QSpinBox(); self._y_sb.setRange(0, 99999); self._y_sb.setSuffix(" px")
+        self._w_sb = QSpinBox(); self._w_sb.setRange(1, 99999); self._w_sb.setSuffix(" px")
+        self._h_sb = QSpinBox(); self._h_sb.setRange(1, 99999); self._h_sb.setSuffix(" px")
+
+        for sb in (self._x_sb, self._y_sb, self._w_sb, self._h_sb):
+            sb.setFixedWidth(110)
+            sb.valueChanged.connect(self._on_spinbox_changed)
+
+        crop_grid.addWidget(QLabel("X:"), 0, 0)
+        crop_grid.addWidget(self._x_sb, 0, 1)
+        crop_grid.addWidget(QLabel("Y:"), 1, 0)
+        crop_grid.addWidget(self._y_sb, 1, 1)
+        crop_grid.addWidget(QLabel("Width:"), 2, 0)
+        crop_grid.addWidget(self._w_sb, 2, 1)
+        crop_grid.addWidget(QLabel("Height:"), 3, 0)
+        crop_grid.addWidget(self._h_sb, 3, 1)
+        crop_group.setLayout(crop_grid)
+
+        # Output scale spinboxes
+        scale_group = QGroupBox("Output Scale (optional stretch)")
+        scale_group.setToolTip(
+            "Leave at -1 (auto) to let mpv fill the screen while preserving aspect ratio.\n"
+            "Set explicit pixel dimensions to force non-uniform stretching."
+        )
+        scale_grid = QGridLayout()
+        scale_grid.setSpacing(4)
+
+        self._sw_sb = QSpinBox()
+        self._sw_sb.setRange(-1, 99999)
+        self._sw_sb.setSpecialValueText("auto")
+        self._sw_sb.setSuffix(" px")
+        self._sw_sb.setFixedWidth(110)
+
+        self._sh_sb = QSpinBox()
+        self._sh_sb.setRange(-1, 99999)
+        self._sh_sb.setSpecialValueText("auto")
+        self._sh_sb.setSuffix(" px")
+        self._sh_sb.setFixedWidth(110)
+
+        scale_grid.addWidget(QLabel("Scale W:"), 0, 0)
+        scale_grid.addWidget(self._sw_sb, 0, 1)
+        scale_grid.addWidget(QLabel("Scale H:"), 1, 0)
+        scale_grid.addWidget(self._sh_sb, 1, 1)
+        scale_group.setLayout(scale_grid)
+
+        # Reset button
+        self._reset_btn = QPushButton("Reset Selection to Full Frame")
+        self._reset_btn.clicked.connect(self._reset_selection)
+
+        # Enable checkbox
+        self._enable_cb = QCheckBox("Enable crop/scale during playback")
+        self._enable_cb.setChecked(True)
+
+        # OK / Cancel
+        btn_row = QHBoxLayout()
+        self._ok_btn = QPushButton("✔  OK — Save Settings")
+        self._ok_btn.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold; padding: 6px;")
+        self._ok_btn.clicked.connect(self._ok)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.clicked.connect(self._cancel)
+        btn_row.addWidget(self._ok_btn)
+        btn_row.addWidget(self._cancel_btn)
+
+        right.addWidget(crop_group)
+        right.addWidget(scale_group)
+        right.addWidget(self._reset_btn)
+        right.addStretch()
+        right.addWidget(self._enable_cb)
+        right.addLayout(btn_row)
+
+        body.addLayout(right, 1)
+        root.addLayout(body, 1)
+
+        # Status bar
+        self._status = QLabel("Select a video to begin, or adjust the values directly.")
+        self._status.setStyleSheet("font-style: italic; color: #888; font-size: 12px;")
+        root.addWidget(self._status)
+
+    # ------------------------------------------------------------------
+    # Config helpers
+    # ------------------------------------------------------------------
+
+    def _apply_config(self, cfg):
+        self._updating_spinboxes = True
+        self._x_sb.setValue(cfg.get('crop_x', 0))
+        self._y_sb.setValue(cfg.get('crop_y', 0))
+        self._w_sb.setValue(max(1, cfg.get('crop_w', 1920)))
+        self._h_sb.setValue(max(1, cfg.get('crop_h', 1080)))
+        self._sw_sb.setValue(cfg.get('scale_w', -1))
+        self._sh_sb.setValue(cfg.get('scale_h', -1))
+        self._enable_cb.setChecked(cfg.get('enabled', True))
+        self._updating_spinboxes = False
+        self._canvas.set_region(
+            cfg.get('crop_x', 0), cfg.get('crop_y', 0),
+            max(1, cfg.get('crop_w', 1920)), max(1, cfg.get('crop_h', 1080)),
+        )
+
+    # ------------------------------------------------------------------
+    # Video / mpv control
+    # ------------------------------------------------------------------
+
+    def _select_video(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Test Video", "d:\\",
+            "Media Files (*.mov *.mp4 *.avi *.mkv *.wmv *.m4v);;All Files (*)"
+        )
+        if not path:
+            return
+        self._video_label.setText(os.path.basename(path))
+        self._video_label.setStyleSheet("color: #d4d4d4;")
+        self._launch_mpv(path)
+
+    def _launch_mpv(self, video_path):
+        self._stop_mpv()
+        socket_name = f"mpv_zoom_{int(time.time())}"
+        self._ipc_path = fr'\\.\pipe\{socket_name}'
+        cmd = [
+            MPV_PATH,
+            f"--input-ipc-server={self._ipc_path}",
+            "--pause",
+            "--no-fullscreen",
+            "--geometry=800x600",
+            "--title=Zoom/Scale Preview — navigate then click Capture Frame",
+            "--no-osd-bar",
+            "--no-osc",
+            "--no-input-default-bindings",
+            "--loop-file=inf",
+            "--really-quiet",
+            video_path,
+        ]
+        try:
+            self._mpv_process = subprocess.Popen(cmd)
+            for btn in (self._play_btn, self._pause_btn, self._capture_btn):
+                btn.setEnabled(True)
+            self._status.setText("mpv opened. Navigate to the desired frame, then click 'Capture Frame'.")
+        except Exception as exc:
+            self._status.setText(f"Error launching mpv: {exc}")
+
+    def _send_ipc(self, json_str):
+        if not self._ipc_path:
+            return
+        try:
+            with open(self._ipc_path, "w", encoding="utf-8") as f:
+                f.write(json_str + "\n")
+        except Exception as exc:
+            self._status.setText(f"IPC error: {exc}")
+
+    def _play(self):
+        self._send_ipc('{ "command": ["set_property", "pause", false] }')
+
+    def _pause(self):
+        self._send_ipc('{ "command": ["set_property", "pause", true] }')
+
+    def _capture_frame(self):
+        """Pause the preview and schedule a frame capture after a short delay."""
+        self._pause()
+        QTimer.singleShot(350, self._do_capture)
+
+    def _do_capture(self):
+        # mpv uses forward slashes in screenshot-to-file path
+        safe_path = self._frame_path.replace("\\", "/")
+        self._send_ipc(f'{{ "command": ["screenshot-to-file", "{safe_path}", "video"] }}')
+        QTimer.singleShot(600, self._load_frame)
+
+    def _load_frame(self):
+        if not os.path.exists(self._frame_path):
+            self._status.setText("Frame capture failed — is mpv still running?")
+            return
+        self._canvas.load_frame(self._frame_path)
+        x, y, w, h = self._canvas.get_region()
+        self._on_region_changed(x, y, w, h)
+        self._status.setText(
+            f"Frame captured ({self._canvas.source_w} × {self._canvas.source_h} px). "
+            "Drag the green rectangle to set the crop region."
+        )
+
+    def _stop_mpv(self):
+        if self._mpv_process and self._mpv_process.poll() is None:
+            if self._ipc_path:
+                try:
+                    with open(self._ipc_path, "w", encoding="utf-8") as f:
+                        f.write('{ "command": ["quit"] }\n')
+                    time.sleep(0.2)
+                except Exception:
+                    pass
+            self._mpv_process.terminate()
+        self._mpv_process = None
+        self._ipc_path = None
+
+    # ------------------------------------------------------------------
+    # Region synchronisation
+    # ------------------------------------------------------------------
+
+    def _on_region_changed(self, x, y, w, h):
+        """Called when the canvas selection changes — update spinboxes."""
+        self._updating_spinboxes = True
+        self._x_sb.setValue(x)
+        self._y_sb.setValue(y)
+        self._w_sb.setValue(max(1, w))
+        self._h_sb.setValue(max(1, h))
+        self._updating_spinboxes = False
+
+    def _on_spinbox_changed(self):
+        """Called when a spinbox changes — update the canvas."""
+        if self._updating_spinboxes:
+            return
+        self._canvas.set_region(
+            self._x_sb.value(), self._y_sb.value(),
+            self._w_sb.value(), self._h_sb.value(),
+        )
+
+    def _reset_selection(self):
+        """Reset selection to the full captured frame (or 1920×1080 default)."""
+        w = self._canvas.source_w or 1920
+        h = self._canvas.source_h or 1080
+        self._canvas.set_region(0, 0, w, h)
+        self._on_region_changed(0, 0, w, h)
+
+    # ------------------------------------------------------------------
+    # Dialog accept / reject
+    # ------------------------------------------------------------------
+
+    def _ok(self):
+        self.result_config = {
+            'enabled': self._enable_cb.isChecked(),
+            'crop_x': self._x_sb.value(),
+            'crop_y': self._y_sb.value(),
+            'crop_w': self._w_sb.value(),
+            'crop_h': self._h_sb.value(),
+            'scale_w': self._sw_sb.value(),
+            'scale_h': self._sh_sb.value(),
+        }
+        self._stop_mpv()
+        self.accept()
+
+    def _cancel(self):
+        self._stop_mpv()
+        self.reject()
+
+    def closeEvent(self, event):
+        self._stop_mpv()
+        try:
+            shutil.rmtree(self._temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+
 class Switch(QAbstractButton):
     """A custom animated toggle switch widget."""
     def __init__(self, parent=None):
@@ -604,6 +1213,7 @@ class LiveController(QWidget):
 
         # --- Initialize application state and data ---
         self.config = self.load_config()
+        self.zoom_config = self.load_zoom_config()
         self.bpm_data = self.load_json_store(BPM_STORE_FILE)
         self.track_name_data = self.load_json_store(TRACK_NAME_STORE_FILE)
         self.worker = None
@@ -1018,6 +1628,27 @@ class LiveController(QWidget):
         self.quit_button.clicked.connect(self.close)
         app_layout.addWidget(self.quit_button)
         app_group.setLayout(app_layout)
+
+        # --- Video Zoom / Scale Group (Edit Mode Only) ---
+        zoom_group = QGroupBox("Video Zoom / Scale (Edit Mode)")
+        zoom_layout = QVBoxLayout()
+        zoom_layout.setContentsMargins(6, 6, 6, 6)
+        zoom_layout.setSpacing(4)
+        self.zoom_scale_button = QPushButton("Configure Zoom / Scale…")
+        self.zoom_scale_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
+        self.zoom_scale_button.setToolTip(
+            "Open the zoom/scale configuration panel.\n"
+            "Load a test video, capture a frame, then drag the green rectangle\n"
+            "to define which part of the source video is used during playback.\n"
+            "Settings are saved and applied to all videos in play mode via mpv."
+        )
+        self.zoom_scale_button.clicked.connect(self.open_zoom_dialog)
+        self.zoom_status_label = QLabel("Zoom: not configured")
+        self.zoom_status_label.setStyleSheet("font-size: 10px; color: #888; font-style: italic;")
+        zoom_layout.addWidget(self.zoom_scale_button)
+        zoom_layout.addWidget(self.zoom_status_label)
+        zoom_group.setLayout(zoom_layout)
+        self._update_zoom_status_label()
         
         # Add all groups to the control panel area.
         controls_area.addWidget(main_controls_group)
@@ -1026,6 +1657,7 @@ class LiveController(QWidget):
         controls_area.addWidget(calib_loop_group)
         controls_area.addWidget(overlay_colours_group)
         controls_area.addWidget(midi_test_group)
+        controls_area.addWidget(zoom_group)
         controls_area.addWidget(app_group)
         
         # --- Assemble Main Layout ---
@@ -1158,6 +1790,7 @@ class LiveController(QWidget):
         self.track_play_font_spinbox.setEnabled(is_edit_mode)
         self.calib_loop_duration_spinbox.setEnabled(is_edit_mode and not self.calib_loop_active)
         self.calib_loop_button.setEnabled(is_edit_mode and self.test_track_path is not None)
+        self.zoom_scale_button.setEnabled(is_edit_mode)
 
         # Stop the calibration loop if switching to LIVE mode.
         if self.is_live_mode and self.calib_loop_active:
@@ -1251,6 +1884,51 @@ class LiveController(QWidget):
         self.display_combo.setCurrentText(str(self.config.get("display", DEFAULT_VIDEO_SCREEN_NUMBER)))
         self.preload_combo.setCurrentText(str(self.config.get("preload", DEFAULT_LOAD_DELAY_SECONDS)))
         self.check_display_setting()
+
+    def load_zoom_config(self):
+        """Loads the zoom/scale configuration from zoom_config.json."""
+        if not os.path.exists(ZOOM_CONFIG_FILE):
+            return {}
+        try:
+            with open(ZOOM_CONFIG_FILE, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+    def save_zoom_config(self):
+        """Saves the zoom/scale configuration to zoom_config.json."""
+        try:
+            with open(ZOOM_CONFIG_FILE, 'w') as f:
+                json.dump(self.zoom_config, f, indent=4)
+        except OSError as e:
+            self.status_label.setText(f"Warning: Could not save zoom config: {e}")
+
+    def _update_zoom_status_label(self):
+        """Updates the zoom status label to reflect current zoom_config."""
+        if not self.zoom_config or not self.zoom_config.get('enabled'):
+            self.zoom_status_label.setText("Zoom: disabled")
+            self.zoom_status_label.setStyleSheet("font-size: 10px; color: #888; font-style: italic;")
+        else:
+            cx = self.zoom_config.get('crop_x', 0)
+            cy = self.zoom_config.get('crop_y', 0)
+            cw = self.zoom_config.get('crop_w', 0)
+            ch = self.zoom_config.get('crop_h', 0)
+            sw = self.zoom_config.get('scale_w', -1)
+            sh = self.zoom_config.get('scale_h', -1)
+            scale_txt = f"  →  scale {sw}×{sh}" if sw > 0 and sh > 0 else ""
+            self.zoom_status_label.setText(
+                f"Crop: {cw}×{ch} @ ({cx},{cy}){scale_txt}"
+            )
+            self.zoom_status_label.setStyleSheet("font-size: 10px; color: #00b894; font-style: italic;")
+
+    def open_zoom_dialog(self):
+        """Opens the ZoomScaleDialog for configuring the video crop/scale transform."""
+        dialog = ZoomScaleDialog(self.zoom_config, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.result_config is not None:
+            self.zoom_config = dialog.result_config
+            self.save_zoom_config()
+            self._update_zoom_status_label()
+            self.status_label.setText("Status: Zoom/scale settings saved and will apply in play mode.")
 
     def setting_changed(self):
         """Saves the config whenever a setting is changed."""
@@ -1954,7 +2632,7 @@ class LiveController(QWidget):
         require_midi = self.require_midi_checkbox.isChecked()
         self.worker = MidiSyncWorker(track_path, bpm, display_num, preload_time, midi_offset, 
                                      send_start_port1, send_start_port2, send_start_port3, timing_method,
-                                     require_midi)
+                                     require_midi, zoom_config=self.zoom_config)
         self.worker.status_update.connect(self.status_label.setText)
         self.worker.error.connect(lambda msg: self.status_label.setText(f"ERROR: {msg}"))
         self.worker.finished.connect(self.on_playback_finished)
@@ -2205,7 +2883,7 @@ class LiveController(QWidget):
         self.calib_loop_worker = MidiSyncWorker(
             self.test_track_path, bpm, display_num, preload_time, midi_offset,
             True, True, True, timing_method, require_midi,
-            max_duration_sec=duration
+            max_duration_sec=duration, zoom_config=self.zoom_config
         )
         self.calib_loop_worker.status_update.connect(self.status_label.setText)
         self.calib_loop_worker.error.connect(self._on_calib_error)
