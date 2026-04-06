@@ -1319,7 +1319,7 @@ class LiveController(QWidget):
         self.title_label = QLabel("Untitled Setlist")
         self.title_label.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         self.running_time_label = QLabel(f"Total Running Time (incl. {TRACK_OVERHEAD_SECONDS}s overhead/track): 00:00:00")
-        self.running_time_label.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        self.running_time_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self.running_time_label.setStyleSheet("color: #888;")
         self.export_setlist_button = QPushButton("Export Set List")
         self.export_setlist_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
