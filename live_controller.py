@@ -41,7 +41,8 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QTableWidget, QTableWidgetItem, QLineEdit, QHeaderView, 
                              QGroupBox, QLabel, QFileDialog, QSizePolicy, QComboBox,
                              QAbstractButton, QSlider, QAbstractItemView, QCheckBox,
-                             QGridLayout, QRadioButton, QSpinBox, QColorDialog, QDialog)
+                             QGridLayout, QRadioButton, QSpinBox, QColorDialog, QDialog,
+                             QScrollArea)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer, QRect
 from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen, QPixmap
 
@@ -1392,8 +1393,7 @@ class LiveController(QWidget):
         self.table.rows_reordered.connect(self.reorder_tracks)
         
         # --- Right-side Control Panel ---
-        controls_area = QVBoxLayout()
-        controls_area.setSpacing(4)
+        # (Groups are assembled below into a scrollable panel)
         
         # --- Playback & Setlist Group ---
         main_controls_group = QGroupBox("")
@@ -1622,8 +1622,8 @@ class LiveController(QWidget):
         # --- Application Group (Quit) ---
         app_group = QGroupBox("Application")
         app_layout = QVBoxLayout()
-        app_layout.setContentsMargins(6, 6, 6, 6)
-        app_layout.setSpacing(4)
+        app_layout.setContentsMargins(4, 4, 4, 4)
+        app_layout.setSpacing(2)
         self.quit_button = QPushButton("Quit")
         self.quit_button.clicked.connect(self.close)
         app_layout.addWidget(self.quit_button)
@@ -1634,6 +1634,13 @@ class LiveController(QWidget):
         zoom_layout = QVBoxLayout()
         zoom_layout.setContentsMargins(6, 6, 6, 6)
         zoom_layout.setSpacing(4)
+        self.apply_zoom_checkbox = QCheckBox("Apply zoom/scale during playback")
+        self.apply_zoom_checkbox.setChecked(False)  # Default: unscaled on startup
+        self.apply_zoom_checkbox.setToolTip(
+            "When unchecked (default), video plays without any zoom/scale transform.\n"
+            "Check this box to apply the saved crop/scale settings during playback."
+        )
+        self.apply_zoom_checkbox.toggled.connect(self._update_zoom_status_label)
         self.zoom_scale_button = QPushButton("Configure Zoom / Scale…")
         self.zoom_scale_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
         self.zoom_scale_button.setToolTip(
@@ -1645,24 +1652,39 @@ class LiveController(QWidget):
         self.zoom_scale_button.clicked.connect(self.open_zoom_dialog)
         self.zoom_status_label = QLabel("Zoom: not configured")
         self.zoom_status_label.setStyleSheet("font-size: 10px; color: #888; font-style: italic;")
+        zoom_layout.addWidget(self.apply_zoom_checkbox)
         zoom_layout.addWidget(self.zoom_scale_button)
         zoom_layout.addWidget(self.zoom_status_label)
         zoom_group.setLayout(zoom_layout)
         self._update_zoom_status_label()
-        
-        # Add all groups to the control panel area.
-        controls_area.addWidget(main_controls_group)
-        controls_area.addWidget(settings_group)
-        controls_area.addWidget(test_track_group)
-        controls_area.addWidget(calib_loop_group)
-        controls_area.addWidget(overlay_colours_group)
-        controls_area.addWidget(midi_test_group)
-        controls_area.addWidget(zoom_group)
-        controls_area.addWidget(app_group)
-        
+
+        # --- Right-side panel: wrap in a QScrollArea so controls are never off-screen ---
+        controls_widget = QWidget()
+        controls_vbox = QVBoxLayout(controls_widget)
+        controls_vbox.setContentsMargins(0, 0, 0, 0)
+        controls_vbox.setSpacing(3)
+
+        # Application (Quit) goes first so it is always visible at the top.
+        controls_vbox.addWidget(app_group)
+        controls_vbox.addWidget(main_controls_group)
+        controls_vbox.addWidget(zoom_group)
+        controls_vbox.addWidget(settings_group)
+        controls_vbox.addWidget(test_track_group)
+        controls_vbox.addWidget(calib_loop_group)
+        controls_vbox.addWidget(overlay_colours_group)
+        controls_vbox.addWidget(midi_test_group)
+        controls_vbox.addStretch(1)
+
+        controls_scroll = QScrollArea()
+        controls_scroll.setWidget(controls_widget)
+        controls_scroll.setWidgetResizable(True)
+        controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        controls_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        controls_scroll.setMinimumWidth(220)
+
         # --- Assemble Main Layout ---
         main_layout.addWidget(self.table, 4) # Table takes 4/5 of the width
-        main_layout.addLayout(controls_area, 1) # Controls take 1/5
+        main_layout.addWidget(controls_scroll, 1) # Scrollable controls take 1/5
         
         # --- Status Bar ---
         self.status_label = QLabel("Status: Welcome!")
@@ -1791,6 +1813,7 @@ class LiveController(QWidget):
         self.calib_loop_duration_spinbox.setEnabled(is_edit_mode and not self.calib_loop_active)
         self.calib_loop_button.setEnabled(is_edit_mode and self.test_track_path is not None)
         self.zoom_scale_button.setEnabled(is_edit_mode)
+        # apply_zoom_checkbox is always enabled — user can toggle scaling in any mode
 
         # Stop the calibration loop if switching to LIVE mode.
         if self.is_live_mode and self.calib_loop_active:
@@ -1904,10 +1927,14 @@ class LiveController(QWidget):
             self.status_label.setText(f"Warning: Could not save zoom config: {e}")
 
     def _update_zoom_status_label(self):
-        """Updates the zoom status label to reflect current zoom_config."""
-        if not self.zoom_config or not self.zoom_config.get('enabled'):
-            self.zoom_status_label.setText("Zoom: disabled")
+        """Updates the zoom status label to reflect current zoom_config and apply checkbox state."""
+        apply_scaling = self.apply_zoom_checkbox.isChecked()
+        if not apply_scaling:
+            self.zoom_status_label.setText("Zoom: off (unscaled)")
             self.zoom_status_label.setStyleSheet("font-size: 10px; color: #888; font-style: italic;")
+        elif not self.zoom_config or not self.zoom_config.get('enabled'):
+            self.zoom_status_label.setText("Zoom: enabled — not configured")
+            self.zoom_status_label.setStyleSheet("font-size: 10px; color: #e67e22; font-style: italic;")
         else:
             cx = self.zoom_config.get('crop_x', 0)
             cy = self.zoom_config.get('crop_y', 0)
@@ -2630,9 +2657,10 @@ class LiveController(QWidget):
         
         # Create and start the worker thread.
         require_midi = self.require_midi_checkbox.isChecked()
+        effective_zoom = self.zoom_config if self.apply_zoom_checkbox.isChecked() else {}
         self.worker = MidiSyncWorker(track_path, bpm, display_num, preload_time, midi_offset, 
                                      send_start_port1, send_start_port2, send_start_port3, timing_method,
-                                     require_midi, zoom_config=self.zoom_config)
+                                     require_midi, zoom_config=effective_zoom)
         self.worker.status_update.connect(self.status_label.setText)
         self.worker.error.connect(lambda msg: self.status_label.setText(f"ERROR: {msg}"))
         self.worker.finished.connect(self.on_playback_finished)
@@ -2879,11 +2907,12 @@ class LiveController(QWidget):
         midi_offset = self.midi_offset_slider.value()
         timing_method = "high_precision" if self.high_precision_timing_radio.isChecked() else "standard"
         require_midi = self.require_midi_checkbox.isChecked()
+        effective_zoom = self.zoom_config if self.apply_zoom_checkbox.isChecked() else {}
 
         self.calib_loop_worker = MidiSyncWorker(
             self.test_track_path, bpm, display_num, preload_time, midi_offset,
             True, True, True, timing_method, require_midi,
-            max_duration_sec=duration, zoom_config=self.zoom_config
+            max_duration_sec=duration, zoom_config=effective_zoom
         )
         self.calib_loop_worker.status_update.connect(self.status_label.setText)
         self.calib_loop_worker.error.connect(self._on_calib_error)
