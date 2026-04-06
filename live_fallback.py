@@ -492,8 +492,8 @@ class LiveFallback(QWidget):
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(["Hotkey", "Track Name", "Linked", "Actions"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(0, 80); self.table.setColumnWidth(2, 120)
-        self.table.setColumnWidth(3, 100)
+        self.table.setColumnWidth(0, 60); self.table.setColumnWidth(2, 90)
+        self.table.setColumnWidth(3, 80)
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(False)
         self.table.rows_reordered.connect(self.reorder_tracks)
@@ -655,8 +655,8 @@ class LiveFallback(QWidget):
         controls_area.addWidget(app_group)
 
         # --- Assemble Main Layout ---
-        main_layout.addWidget(self.table, 4) # Table takes 4/5 of the width
-        main_layout.addLayout(controls_area, 1) # Controls take 1/5
+        main_layout.addWidget(self.table, 3) # Table takes 3/5 of the width
+        main_layout.addLayout(controls_area, 2) # Controls take 2/5
 
         # --- Status Bar ---
         self.status_label = QLabel("Status: Welcome!")
