@@ -1019,8 +1019,7 @@ class ZoomScaleDialog(QDialog):
 
     def _launch_mpv(self, video_path):
         self._stop_mpv()
-        import time as _time
-        socket_name = f"mpv_zoom_{int(_time.time())}"
+        socket_name = f"mpv_zoom_{int(time.time())}"
         self._ipc_path = fr'\\.\pipe\{socket_name}'
         cmd = [
             MPV_PATH,
