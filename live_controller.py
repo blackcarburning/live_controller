@@ -1309,7 +1309,7 @@ class LiveController(QWidget):
         left_layout = QHBoxLayout(left_container)
         left_layout.setContentsMargins(0,0,0,0)
         self.active_label = QLabel("ACTIVE", self)
-        self.active_label.setFont(QFont("Segoe UI", 30, QFont.Weight.Bold))
+        self.active_label.setFont(QFont("Segoe UI", 24, QFont.Weight.Bold))
         self.active_label.setStyleSheet("color: #27ae60;")
         self.active_label.hide()
         left_layout.addWidget(self.active_label)
@@ -1318,9 +1318,9 @@ class LiveController(QWidget):
         title_layout = QVBoxLayout()
         title_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title_label = QLabel("Untitled Setlist")
-        self.title_label.setFont(QFont("Segoe UI", 22, QFont.Weight.Bold))
+        self.title_label.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
         self.running_time_label = QLabel(f"Total Running Time (incl. {TRACK_OVERHEAD_SECONDS}s overhead/track): 00:00:00")
-        self.running_time_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        self.running_time_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self.running_time_label.setStyleSheet("color: #888;")
         self.export_setlist_button = QPushButton("Export Set List")
         self.export_setlist_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
@@ -1336,11 +1336,11 @@ class LiveController(QWidget):
         mode_layout = QHBoxLayout()
         mode_layout.setSpacing(10)
         self.edit_mode_label = QLabel("EDIT")
-        self.edit_mode_label.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        self.edit_mode_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         self.live_mode_slider = Switch()
         self.live_mode_slider.toggled.connect(self.toggle_live_mode)
         self.live_mode_label = QLabel("LIVE")
-        self.live_mode_label.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        self.live_mode_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         mode_layout.addWidget(self.edit_mode_label)
         mode_layout.addWidget(self.live_mode_slider)
         mode_layout.addWidget(self.live_mode_label)
@@ -1385,9 +1385,9 @@ class LiveController(QWidget):
         self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels(["Hotkey", "Track Name", "Linked", "BPM", "Click", "Rich1", "Rich2", "Actions"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(0, 80); self.table.setColumnWidth(2, 120)
-        self.table.setColumnWidth(3, 80); self.table.setColumnWidth(4, 80)
-        self.table.setColumnWidth(5, 80); self.table.setColumnWidth(6, 80); self.table.setColumnWidth(7, 100)
+        self.table.setColumnWidth(0, 60); self.table.setColumnWidth(2, 90)
+        self.table.setColumnWidth(3, 60); self.table.setColumnWidth(4, 60)
+        self.table.setColumnWidth(5, 60); self.table.setColumnWidth(6, 60); self.table.setColumnWidth(7, 80)
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(False)
         self.table.rows_reordered.connect(self.reorder_tracks)
@@ -1680,11 +1680,11 @@ class LiveController(QWidget):
         controls_scroll.setWidgetResizable(True)
         controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         controls_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        controls_scroll.setMinimumWidth(220)
+        controls_scroll.setMinimumWidth(360)
 
         # --- Assemble Main Layout ---
-        main_layout.addWidget(self.table, 4) # Table takes 4/5 of the width
-        main_layout.addWidget(controls_scroll, 1) # Scrollable controls take 1/5
+        main_layout.addWidget(self.table, 3) # Table takes 3/5 of the width
+        main_layout.addWidget(controls_scroll, 2) # Scrollable controls take 2/5
         
         # --- Status Bar ---
         self.status_label = QLabel("Status: Welcome!")
