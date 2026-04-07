@@ -1639,6 +1639,7 @@ class LiveController(QWidget):
             "Uncheck this box to play video without any zoom/scale transform."
         )
         self.apply_zoom_checkbox.toggled.connect(self._update_zoom_status_label)
+        self.apply_zoom_checkbox.toggled.connect(self.setting_changed)
         self.zoom_scale_button = QPushButton("Configure Zoom / Scale…")
         self.zoom_scale_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
         self.zoom_scale_button.setToolTip(
@@ -1911,6 +1912,7 @@ class LiveController(QWidget):
         """Saves general application configuration to config.json."""
         self.config['display'] = int(self.display_combo.currentText())
         self.config['preload'] = int(self.preload_combo.currentText())
+        self.config['apply_zoom'] = self.apply_zoom_checkbox.isChecked()
         with open(CONFIG_FILE, 'w') as f:
             json.dump(self.config, f, indent=4)
     
@@ -1918,6 +1920,8 @@ class LiveController(QWidget):
         """Sets UI elements based on the loaded general config."""
         self.display_combo.setCurrentText(str(self.config.get("display", DEFAULT_VIDEO_SCREEN_NUMBER)))
         self.preload_combo.setCurrentText(str(self.config.get("preload", DEFAULT_LOAD_DELAY_SECONDS)))
+        self.apply_zoom_checkbox.setChecked(self.config.get('apply_zoom', True))
+        self._update_zoom_status_label()
         self.check_display_setting()
 
     def load_zoom_config(self):
