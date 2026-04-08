@@ -7,7 +7,7 @@ Two scripts are provided:
 | Script | Platform | Hotkey library |
 |---|---|---|
 | `live_fallback.py` | Windows | `keyboard` |
-| `live_controller_mac.py` | macOS (modern, Python 3) | `pynput` |
+| `live_controller_mac.py` | macOS 12 Monterey or later, Python 3.9+ | `pynput` |
 
 ---
 
