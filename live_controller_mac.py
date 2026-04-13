@@ -37,6 +37,7 @@ import time
 import json
 import shutil
 from collections import deque
+from datetime import datetime
 
 # --- Third-Party Library Imports ---
 # Requires: pynput
@@ -48,9 +49,9 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QTableWidget, QTableWidgetItem, QLineEdit, QHeaderView,
                              QGroupBox, QLabel, QFileDialog, QSizePolicy, QComboBox,
                              QAbstractButton, QAbstractItemView, QCheckBox,
-                             QGridLayout, QSpinBox, QColorDialog)
+                             QGridLayout, QSpinBox, QColorDialog, QTextEdit, QDialog)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer
-from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen
+from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen, QTextCursor
 
 
 # --- Executable Path Detection ---
@@ -480,12 +481,92 @@ class Switch(QAbstractButton):
         self.animation.start()
 
 
+class DebugConsoleWindow(QDialog):
+    """A floating, copyable debug log window for diagnosing runtime issues.
+
+    The log text area is read-only but fully selectable so the user can
+    copy individual lines or the entire log.  A "Copy All" button copies
+    everything to the clipboard in one click.
+    """
+
+    MAX_LINES = 500  # Prevent unbounded memory growth.
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Debug Console")
+        self.resize(700, 380)
+        self.setWindowFlags(
+            Qt.WindowType.Window |
+            Qt.WindowType.WindowCloseButtonHint |
+            Qt.WindowType.WindowMinimizeButtonHint
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        self._log_view = QTextEdit()
+        self._log_view.setReadOnly(True)
+        self._log_view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        self._log_view.setFont(QFont("Menlo", 10))
+        self._log_view.setStyleSheet(
+            "background-color: #1c1c1e; color: #e5e5ea; "
+            "border: 1px solid #38383a; border-radius: 6px; "
+            "selection-background-color: #0a84ff; selection-color: #ffffff;"
+        )
+        layout.addWidget(self._log_view)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)
+
+        copy_btn = QPushButton("Copy All")
+        copy_btn.setFixedWidth(90)
+        copy_btn.clicked.connect(self._copy_all)
+        btn_row.addWidget(copy_btn)
+
+        clear_btn = QPushButton("Clear")
+        clear_btn.setFixedWidth(70)
+        clear_btn.clicked.connect(self._log_view.clear)
+        btn_row.addWidget(clear_btn)
+
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+
+    def _copy_all(self):
+        QApplication.clipboard().setText(self._log_view.toPlainText())
+
+    def append(self, message: str):
+        """Append a timestamped message (local time).  Trims the log if it grows too large."""
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        self._log_view.append(f"[{ts}]  {message}")
+
+        # Trim to MAX_LINES to avoid unbounded growth.
+        doc = self._log_view.document()
+        while doc.blockCount() > self.MAX_LINES:
+            cursor = self._log_view.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
+            cursor.select(QTextCursor.SelectionType.LineUnderCursor)
+            cursor.removeSelectedText()
+            cursor.deleteChar()  # Remove the trailing newline.
+
+        # Auto-scroll to the latest entry.
+        self._log_view.verticalScrollBar().setValue(
+            self._log_view.verticalScrollBar().maximum()
+        )
+
+
 class LiveControllerMac(QWidget):
     """The main application window and controller — macOS version."""
+
+    # Milliseconds of main-thread silence before the freeze watchdog logs a warning.
+    _FREEZE_WARN_MS = 1500
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("KATTMAN CONTROL")
+
+        # Debug console (created early so _debug_log works immediately).
+        self._debug_console = DebugConsoleWindow(self)
 
         self.config = self.load_config()
         self.track_name_data = self.load_json_store(TRACK_NAME_STORE_FILE)
@@ -521,6 +602,16 @@ class LiveControllerMac(QWidget):
         self.hotkey_listener = None
         self._start_hotkey_listener()
         self.load_session()
+        self._debug_log("App started.")
+
+        # UI-freeze watchdog: fires every 500 ms from the main thread.
+        # _last_heartbeat is set immediately before the timer starts so the
+        # first tick never produces a spurious freeze warning.
+        self._last_heartbeat = time.monotonic()
+        self._heartbeat_timer = QTimer(self)
+        self._heartbeat_timer.setInterval(500)
+        self._heartbeat_timer.timeout.connect(self._update_heartbeat)
+        self._heartbeat_timer.start()
 
     def setup_ui(self):
         """Constructs the entire user interface (compact layout for MacBook)."""
@@ -838,12 +929,19 @@ class LiveControllerMac(QWidget):
         app_layout = QVBoxLayout()
         app_layout.setContentsMargins(8, 10, 8, 8)
         app_layout.setSpacing(4)
+        self.debug_console_button = QPushButton("Debug Console")
+        self.debug_console_button.setStyleSheet(
+            "background-color: #1a1a3a; color: #636396; border: 1px solid #2a2a5a; "
+            "font-size: 11px; padding: 4px 8px; border-radius: 6px;"
+        )
+        self.debug_console_button.clicked.connect(self._show_debug_console)
         self.quit_button = QPushButton("Quit")
         self.quit_button.setStyleSheet(
             "background-color: #3a0a0a; color: #ff453a; border: 1px solid #7a1a1a; "
             "font-size: 12px; padding: 5px 12px; border-radius: 6px;"
         )
         self.quit_button.clicked.connect(self.close)
+        app_layout.addWidget(self.debug_console_button)
         app_layout.addWidget(self.quit_button)
         app_group.setLayout(app_layout)
 
@@ -963,6 +1061,8 @@ class LiveControllerMac(QWidget):
         self.track_play_color_button.setEnabled(is_edit_mode)
         self.track_play_font_spinbox.setEnabled(is_edit_mode)
         self.audio_only_checkbox.setEnabled(is_edit_mode)
+        # Debug console button is always accessible.
+        self.debug_console_button.setEnabled(True)
 
         for i in range(self.table.rowCount()):
             if i < len(self.tracks):
@@ -974,10 +1074,12 @@ class LiveControllerMac(QWidget):
 
         self.live_mode_label.setStyleSheet("color: #ff453a; font-weight: bold; letter-spacing: 1px;" if self.is_live_mode else "color: #48484a;")
         self.edit_mode_label.setStyleSheet("color: #30d158; font-weight: bold; letter-spacing: 1px;" if is_edit_mode else "color: #48484a;")
+        mode_name = "LIVE" if self.is_live_mode else "EDIT"
         self.status_label.setText(
             "Status: LIVE MODE - Hotkeys are active." if self.is_live_mode
             else "Status: EDIT MODE - Hotkeys are disabled."
         )
+        self._debug_log(f"Mode changed → {mode_name}")
 
     # ------------------------------------------------------------------ #
     # Hotkey helpers
@@ -1069,6 +1171,7 @@ class LiveControllerMac(QWidget):
             self.status_label.setText("Status: No previous session found. Welcome!")
             self.count_in_combo.setCurrentText(str(DEFAULT_COUNT_IN_SECONDS))
             self.count_in_test_checkbox.setChecked(True)
+            self._debug_log("No previous session file found.")
             return
         try:
             with open(SESSION_FILE, 'r') as f:
@@ -1103,8 +1206,15 @@ class LiveControllerMac(QWidget):
             else:
                 self.test_track_path = None
 
-            self.status_label.setText(f"Status: Restored previous session: {session_data.get('setlist_name', '')}")
-        except (json.JSONDecodeError, FileNotFoundError):
+            setlist_name = session_data.get('setlist_name', '')
+            track_count = len([t for t in session_data.get('tracks', []) if t.get('type') == 'track'])
+            self._debug_log(
+                f"Session restored: '{setlist_name}' ({track_count} tracks, "
+                f"audio_only={session_data.get('audio_only', False)})"
+            )
+            self.status_label.setText(f"Status: Restored previous session: {setlist_name}")
+        except (json.JSONDecodeError, FileNotFoundError) as exc:
+            self._debug_log(f"ERROR loading session file: {exc}")
             self.status_label.setText("Status: Could not load previous session file.")
 
     # ------------------------------------------------------------------ #
@@ -1515,12 +1625,14 @@ class LiveControllerMac(QWidget):
             self.hotkey_listener.hotkey_pressed.connect(self.on_global_hotkey)
             self.hotkey_listener.listener_failed.connect(self._on_hotkey_listener_failed)
             self.hotkey_listener.start()
+            self._debug_log("Hotkey listener started.")
         except Exception as exc:
             self.hotkey_listener = None
             self._show_hotkey_unavailable(str(exc))
 
     def _on_hotkey_listener_failed(self, error_msg):
         """Called via signal when the pynput listener thread fails to start."""
+        self._debug_log(f"Hotkey listener failed: {error_msg}")
         self._show_hotkey_unavailable(error_msg)
 
     def _show_hotkey_unavailable(self, detail=""):
@@ -1613,7 +1725,16 @@ class LiveControllerMac(QWidget):
             track_path = track_data.get('path')
         except (ValueError, AttributeError, KeyError) as e:
             self.status_label.setText(f"ERROR: Invalid settings or track data. {e}")
+            self._debug_log(f"ERROR: execute_playback — invalid settings or track data: {e}")
             return
+
+        audio_only = self.audio_only_checkbox.isChecked()
+        label = "test track" if row_index is None else f"row {row_index}"
+        self._debug_log(
+            f"Playback start: {os.path.basename(track_path or '')} "
+            f"({label}, display={display_num}, preload={preload_time}s, "
+            f"audio_only={audio_only})"
+        )
 
         self.clear_highlight()
         if row_index is not None:
@@ -1624,12 +1745,16 @@ class LiveControllerMac(QWidget):
 
         self.active_flash_timer.start()
         self.worker = VideoPlaybackWorker(track_path, display_num, preload_time,
-                                          audio_only_mode=self.audio_only_checkbox.isChecked())
+                                          audio_only_mode=audio_only)
         self.worker.status_update.connect(self.status_label.setText)
-        self.worker.error.connect(lambda msg: self.status_label.setText(f"ERROR: {msg}"))
+        self.worker.error.connect(self._on_playback_error)
         self.worker.finished.connect(self.on_playback_finished)
         self.worker.ipc_socket_path.connect(self.set_ipc_socket)
         self.worker.start()
+
+    def _on_playback_error(self, msg):
+        self.status_label.setText(f"ERROR: {msg}")
+        self._debug_log(f"Playback ERROR: {msg}")
 
     def set_ipc_socket(self, path):
         self.current_ipc_socket = path
@@ -1645,8 +1770,10 @@ class LiveControllerMac(QWidget):
                 self.countdown_connection = None
             self.countdown_label.hide()
             self.status_label.setText("Status: Countdown aborted.")
+            self._debug_log("Countdown aborted by user.")
 
         if self.worker and self.worker.isRunning():
+            self._debug_log("Stopping playback worker.")
             self.worker.stop()
             if self.current_ipc_socket:
                 _send_ipc_command(self.current_ipc_socket, '{ "command": ["quit"] }')
@@ -1657,6 +1784,7 @@ class LiveControllerMac(QWidget):
 
     def on_playback_finished(self):
         finished_row = self.currently_playing_row
+        self._debug_log("Playback finished.")
         self.clear_highlight()
         self.test_file_label.setStyleSheet("font-style: italic; color: #636366;")
         self.status_label.setText("Status: Ready. Press a hotkey to play a track.")
@@ -1694,6 +1822,31 @@ class LiveControllerMac(QWidget):
 
     def toggle_active_label_visibility(self):
         self.active_label.setVisible(not self.active_label.isVisible())
+
+    # ------------------------------------------------------------------ #
+    # Debug console
+    # ------------------------------------------------------------------ #
+
+    def _debug_log(self, message: str):
+        """Append a message to the debug console (thread-safe from main thread)."""
+        self._debug_console.append(message)
+
+    def _show_debug_console(self):
+        """Show (or bring to front) the debug console window."""
+        self._debug_console.show()
+        self._debug_console.raise_()
+        self._debug_console.activateWindow()
+
+    def _update_heartbeat(self):
+        """Main-thread heartbeat tick used by the freeze watchdog."""
+        now = time.monotonic()
+        gap_ms = (now - self._last_heartbeat) * 1000
+        if gap_ms > self._FREEZE_WARN_MS:
+            self._debug_log(
+                f"WARNING: main thread was unresponsive for ~{gap_ms:.0f} ms "
+                "(UI freeze detected)"
+            )
+        self._last_heartbeat = now
 
     def select_test_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
