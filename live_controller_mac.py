@@ -1475,17 +1475,15 @@ class LiveControllerMac(QWidget):
 
         On macOS, pynput requires Accessibility and Input Monitoring permissions.
         If those are missing the OS may send SIGTRAP to the process, which would
-        otherwise crash it.  We install a temporary SIGTRAP handler that converts
-        the signal into a Python exception so we can catch it and degrade gracefully.
+        otherwise crash it.  We temporarily set SIGTRAP to SIG_IGN so the signal
+        is absorbed rather than terminating the process.
         """
-        # Install a SIGTRAP handler so that macOS permission failures do not kill
-        # the process.  The handler raises OSError which the try/except below catches.
+        # Temporarily ignore SIGTRAP so that macOS permission failures do not kill
+        # the process.  We restore the original disposition in the finally block.
         _original_sigtrap = signal.SIG_DFL
         if hasattr(signal, 'SIGTRAP'):
-            def _sigtrap_handler(signum, frame):
-                raise OSError("macOS denied Input Monitoring access (SIGTRAP received). "
-                              "Grant permissions in System Settings > Privacy & Security.")
-            _original_sigtrap = signal.signal(signal.SIGTRAP, _sigtrap_handler)
+            _original_sigtrap = signal.getsignal(signal.SIGTRAP)
+            signal.signal(signal.SIGTRAP, signal.SIG_IGN)
 
         try:
             self.hotkey_listener = GlobalHotkeyListener()
@@ -1502,7 +1500,6 @@ class LiveControllerMac(QWidget):
 
     def _on_hotkey_listener_failed(self, error_msg):
         """Called via signal when the pynput listener thread fails to start."""
-        self.hotkey_listener = None
         self._show_hotkey_unavailable(error_msg)
 
     def _show_hotkey_unavailable(self, detail=""):
