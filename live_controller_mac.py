@@ -534,6 +534,13 @@ class DebugConsoleWindow(QDialog):
         btn_row.addWidget(clear_btn)
 
         btn_row.addStretch(1)
+
+        close_btn = QPushButton("✕ Close")
+        close_btn.setFixedWidth(80)
+        close_btn.setToolTip("Close the debug console")
+        close_btn.clicked.connect(self.hide)
+        btn_row.addWidget(close_btn)
+
         layout.addLayout(btn_row)
 
     def _copy_all(self):
