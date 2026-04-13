@@ -1748,9 +1748,17 @@ if __name__ == '__main__':
     app.setStyle("Fusion")
     app.setStyleSheet(MODERN_STYLESHEET)
     controller = LiveControllerMac()
-    # Show the window first so macOS has a valid window to make full-screen.
-    # The QTimer.singleShot deferral ensures showFullScreen() is called after
-    # the event loop starts, which is the most reliable path on macOS.
+    # Fill the primary screen's available geometry on startup so the window
+    # launches visibly maximised without entering macOS fullscreen-space mode.
+    # Using screen.availableGeometry() (excludes the menu bar and Dock) is more
+    # reliable than showMaximized() / showFullScreen() on macOS, and avoids the
+    # regression where the app appeared smaller than the display.
+    screen = QGuiApplication.primaryScreen()
+    if screen is not None:
+        controller.setGeometry(screen.availableGeometry())
+    # If primaryScreen() is None (no display available), fall back to showing at
+    # the default window size so the app still starts rather than crashing.
     controller.show()
-    QTimer.singleShot(0, controller.showFullScreen)
+    controller.raise_()
+    controller.activateWindow()
     sys.exit(app.exec())
