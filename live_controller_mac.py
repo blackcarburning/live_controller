@@ -51,7 +51,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QGroupBox, QLabel, QFileDialog, QSizePolicy, QComboBox,
                              QAbstractButton, QAbstractItemView, QCheckBox,
                              QGridLayout, QSpinBox, QColorDialog, QTextEdit, QDialog,
-                             QSlider)
+                             QSlider, QScrollArea, QFrame)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer
 from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen, QTextCursor
 
@@ -1159,8 +1159,17 @@ class LiveControllerMac(QWidget):
         controls_area.addWidget(app_group)
         controls_area.addStretch(1)
 
+        controls_widget = QWidget()
+        controls_widget.setLayout(controls_area)
+
+        controls_scroll = QScrollArea()
+        controls_scroll.setWidget(controls_widget)
+        controls_scroll.setWidgetResizable(True)
+        controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        controls_scroll.setFrameShape(QFrame.Shape.NoFrame)
+
         main_layout.addWidget(self.table, 3)
-        main_layout.addLayout(controls_area, 2)
+        main_layout.addWidget(controls_scroll, 2)
 
         self.status_label = QLabel("Status: Welcome!")
         self.status_label.setStyleSheet(
@@ -1473,20 +1482,15 @@ class LiveControllerMac(QWidget):
 
     def get_track_duration(self, file_path):
         """Uses mplayer to get the duration of a media file."""
-        mplayer_bin = MPLAYER_PATH
-        if not os.path.isabs(mplayer_bin) or not os.path.exists(mplayer_bin):
-            mplayer_bin = _find_executable('mplayer')
-
-        if not os.path.exists(mplayer_bin):
-            print(f"mplayer not found at {mplayer_bin}")
+        mplayer_bin = MPLAYER_PATH if (os.path.isabs(MPLAYER_PATH) and os.path.exists(MPLAYER_PATH)) else shutil.which('mplayer')
+        if not mplayer_bin:
+            print("mplayer not found in PATH")
             return 0
         try:
             normalized_path = os.path.normpath(file_path)
-            mplayer_dir = os.path.dirname(mplayer_bin)
             cmd = [mplayer_bin, "-vo", "null", "-ao", "null", "-identify", "-frames", "0", normalized_path]
             result = subprocess.run(
-                cmd, capture_output=True, text=True, check=True,
-                timeout=30, cwd=mplayer_dir or None
+                cmd, capture_output=True, text=True, check=True, timeout=30
             )
             for line in result.stdout.splitlines():
                 if line.startswith("ID_LENGTH="):
