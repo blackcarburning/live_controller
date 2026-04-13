@@ -29,6 +29,8 @@
 import sys
 import os
 import re
+import ctypes
+import ctypes.util
 import signal
 import socket
 import subprocess
@@ -51,7 +53,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QGroupBox, QLabel, QFileDialog, QSizePolicy, QComboBox,
                              QAbstractButton, QAbstractItemView, QCheckBox,
                              QGridLayout, QSpinBox, QColorDialog, QTextEdit, QDialog,
-                             QSlider, QScrollArea, QFrame)
+                             QSlider)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer
 from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen, QTextCursor
 
@@ -67,6 +69,24 @@ def _find_executable(name):
         if os.path.exists(candidate):
             return candidate
     return name  # Return bare name; subprocess will raise a clear error if missing.
+
+
+def _is_accessibility_trusted():
+    """Return True if this process has macOS Accessibility/Input Monitoring trust.
+
+    Uses the ``AXIsProcessTrusted`` C function from the ApplicationServices
+    framework.  Returns *None* on any platform other than macOS or whenever the
+    library cannot be loaded so callers can distinguish "definitely denied" from
+    "unknown".
+    """
+    _framework = (
+        '/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices'
+    )
+    try:
+        lib = ctypes.CDLL(_framework)
+        return bool(lib.AXIsProcessTrusted())
+    except (OSError, AttributeError):
+        return None  # Non-macOS or library unavailable — treat as unknown.
 
 
 MPV_PATH = _find_executable('mpv')
@@ -366,6 +386,17 @@ class GlobalHotkeyListener(QThread):
         self._listener = None
 
     def run(self):
+        # Pre-flight trust check: emit a clear signal instead of letting pynput
+        # print the raw "This process is not trusted!" message to stderr.
+        if _is_accessibility_trusted() is False:
+            self.listener_failed.emit(
+                "This process is not trusted for Input Monitoring. "
+                "Add your terminal or Python binary to "
+                "System Settings → Privacy & Security → Accessibility, "
+                "then restart the app."
+            )
+            return
+
         def on_press(key):
             try:
                 # key.char is set for regular printable characters (a-z, 0-9, ^, etc.)
@@ -871,37 +902,37 @@ class LiveControllerMac(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.rows_reordered.connect(self.reorder_tracks)
 
-        # --- Right-side Control Panel ---
+        # --- Right-side Control Panel (2-column layout, no scroll area) ---
         controls_area = QVBoxLayout()
-        controls_area.setSpacing(6)
+        controls_area.setSpacing(4)
 
         # Playback & Setlist group
         main_controls_group = QGroupBox("Playback & Setlist")
         main_controls_layout = QVBoxLayout()
-        main_controls_layout.setContentsMargins(8, 10, 8, 8)
-        main_controls_layout.setSpacing(6)
+        main_controls_layout.setContentsMargins(6, 8, 6, 6)
+        main_controls_layout.setSpacing(4)
 
         self.stop_button = QPushButton("■  STOP  (q)")
         self.stop_button.setStyleSheet(
             "background-color: #3a0a0a; color: #ff453a; border: 1px solid #7a1a1a; "
-            "font-size: 12px; font-weight: 700; padding: 6px 12px; border-radius: 6px;"
+            "font-size: 12px; font-weight: 700; padding: 5px 8px; border-radius: 6px;"
         )
         self.stop_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.stop_button.clicked.connect(self.stop_all_activity)
 
         add_buttons_layout = QHBoxLayout()
-        add_buttons_layout.setSpacing(6)
+        add_buttons_layout.setSpacing(4)
         self.add_button = QPushButton("+ Add Track(s)")
         self.add_button.setStyleSheet(
             "background-color: #0a2a4a; color: #0a84ff; border: 1px solid #1a4a7a; "
-            "font-size: 11px; padding: 4px 8px; border-radius: 6px;"
+            "font-size: 11px; padding: 3px 6px; border-radius: 6px;"
         )
         self.add_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.add_button.clicked.connect(self.add_tracks)
         self.add_encore_button = QPushButton("+ Add Encore")
         self.add_encore_button.setStyleSheet(
             "background-color: #0a2a4a; color: #0a84ff; border: 1px solid #1a4a7a; "
-            "font-size: 11px; padding: 4px 8px; border-radius: 6px;"
+            "font-size: 11px; padding: 3px 6px; border-radius: 6px;"
         )
         self.add_encore_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.add_encore_button.clicked.connect(self.add_encore_divider)
@@ -913,27 +944,27 @@ class LiveControllerMac(QWidget):
         self.undo_button.setEnabled(False)
 
         setlist_name_layout = QHBoxLayout()
-        setlist_name_layout.setSpacing(6)
+        setlist_name_layout.setSpacing(4)
         self.setlist_name_input = QLineEdit()
         self.setlist_name_input.setPlaceholderText("Setlist name…")
         self.rename_button = QPushButton("Set")
-        self.rename_button.setFixedWidth(44)
+        self.rename_button.setFixedWidth(40)
         self.rename_button.clicked.connect(self.rename_setlist_title)
         setlist_name_layout.addWidget(self.setlist_name_input)
         setlist_name_layout.addWidget(self.rename_button)
 
         save_load_layout = QHBoxLayout()
-        save_load_layout.setSpacing(6)
+        save_load_layout.setSpacing(4)
         self.save_button = QPushButton("Save")
         self.save_button.setStyleSheet(
             "background-color: #0a2a4a; color: #0a84ff; border: 1px solid #1a4a7a; "
-            "font-size: 11px; padding: 4px 8px; border-radius: 6px;"
+            "font-size: 11px; padding: 3px 6px; border-radius: 6px;"
         )
         self.save_button.clicked.connect(self.save_setlist)
         self.load_button = QPushButton("Load")
         self.load_button.setStyleSheet(
             "background-color: #0a2a0a; color: #30d158; border: 1px solid #1a5a1a; "
-            "font-size: 11px; padding: 4px 8px; border-radius: 6px;"
+            "font-size: 11px; padding: 3px 6px; border-radius: 6px;"
         )
         self.load_button.clicked.connect(self.load_setlist)
         save_load_layout.addWidget(self.save_button)
@@ -957,8 +988,8 @@ class LiveControllerMac(QWidget):
         # Settings group
         settings_group = QGroupBox("Settings")
         settings_layout = QGridLayout()
-        settings_layout.setContentsMargins(8, 10, 8, 8)
-        settings_layout.setSpacing(6)
+        settings_layout.setContentsMargins(6, 8, 6, 6)
+        settings_layout.setSpacing(4)
 
         self.display_combo = QComboBox()
         self.display_combo.addItems([str(i) for i in range(1, 5)])
@@ -982,12 +1013,12 @@ class LiveControllerMac(QWidget):
         settings_layout.addWidget(self.count_in_test_checkbox, 3, 0, 1, 2)
 
         font_size_layout = QHBoxLayout()
-        font_size_layout.setSpacing(6)
+        font_size_layout.setSpacing(4)
         self.font_size_spinbox = QSpinBox()
         self.font_size_spinbox.setRange(8, 36)
         self.font_size_spinbox.setValue(self.current_table_font_size)
         self.apply_font_button = QPushButton("Apply")
-        self.apply_font_button.setFixedWidth(54)
+        self.apply_font_button.setFixedWidth(50)
         self.apply_font_button.clicked.connect(self.apply_table_font_size)
         font_size_layout.addWidget(self.font_size_spinbox)
         font_size_layout.addWidget(self.apply_font_button)
@@ -995,35 +1026,34 @@ class LiveControllerMac(QWidget):
         settings_layout.addLayout(font_size_layout, 4, 1)
         settings_group.setLayout(settings_layout)
 
-        # Test Track group
+        # Test Track group (full-width, single compact row)
         test_track_group = QGroupBox("Test Track")
         test_track_layout = QHBoxLayout()
-        test_track_layout.setContentsMargins(8, 10, 8, 8)
-        test_track_layout.setSpacing(6)
+        test_track_layout.setContentsMargins(6, 8, 6, 6)
+        test_track_layout.setSpacing(4)
         self.test_file_button = QPushButton("Select…")
-        self.test_file_button.setFixedWidth(80)
+        self.test_file_button.setFixedWidth(70)
         self.test_file_button.clicked.connect(self.select_test_file)
         self.test_file_label = QLabel("No file selected.")
         self.test_file_label.setStyleSheet("font-style: italic; color: #636366;")
-        self.test_file_label.setMinimumWidth(200)
         self.test_file_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.play_test_button = QPushButton("▶  Play Test  (t)")
         self.play_test_button.setStyleSheet(
             "background-color: #0a2a0a; color: #30d158; border: 1px solid #1a5a1a; "
-            "font-size: 11px; padding: 4px 8px; border-radius: 6px;"
+            "font-size: 11px; padding: 3px 6px; border-radius: 6px;"
         )
         self.play_test_button.clicked.connect(self.play_test_track)
         self.play_test_button.setEnabled(False)
         test_track_layout.addWidget(self.test_file_button)
-        test_track_layout.addWidget(self.test_file_label, 3)
+        test_track_layout.addWidget(self.test_file_label, 1)
         test_track_layout.addWidget(self.play_test_button)
         test_track_group.setLayout(test_track_layout)
 
         # Scrub & Loop group
         scrub_loop_group = QGroupBox("Scrub & Loop")
         scrub_loop_layout = QVBoxLayout()
-        scrub_loop_layout.setContentsMargins(8, 10, 8, 8)
-        scrub_loop_layout.setSpacing(6)
+        scrub_loop_layout.setContentsMargins(6, 8, 6, 6)
+        scrub_loop_layout.setSpacing(4)
 
         # Scrub slider row: [pos] [slider] [dur]
         scrub_row = QHBoxLayout()
@@ -1052,7 +1082,7 @@ class LiveControllerMac(QWidget):
         self.loop_a_label.setFixedWidth(58)
         self.loop_a_label.setStyleSheet("font-size: 10px; color: #aeaeb2;")
         self.loop_set_a_btn = QPushButton("Set A")
-        self.loop_set_a_btn.setFixedWidth(48)
+        self.loop_set_a_btn.setFixedWidth(46)
         self.loop_set_a_btn.setEnabled(False)
         self.loop_set_a_btn.setToolTip("Mark the current playback position as loop start (A).")
         self.loop_set_a_btn.clicked.connect(self._set_loop_a)
@@ -1060,7 +1090,7 @@ class LiveControllerMac(QWidget):
         self.loop_b_label.setFixedWidth(58)
         self.loop_b_label.setStyleSheet("font-size: 10px; color: #aeaeb2;")
         self.loop_set_b_btn = QPushButton("Set B")
-        self.loop_set_b_btn.setFixedWidth(48)
+        self.loop_set_b_btn.setFixedWidth(46)
         self.loop_set_b_btn.setEnabled(False)
         self.loop_set_b_btn.setToolTip("Mark the current playback position as loop end (B).")
         self.loop_set_b_btn.clicked.connect(self._set_loop_b)
@@ -1093,11 +1123,11 @@ class LiveControllerMac(QWidget):
         # Overlay Colours group
         overlay_colours_group = QGroupBox("Overlay Colours")
         overlay_colours_layout = QGridLayout()
-        overlay_colours_layout.setContentsMargins(8, 10, 8, 8)
-        overlay_colours_layout.setSpacing(6)
+        overlay_colours_layout.setContentsMargins(6, 8, 6, 6)
+        overlay_colours_layout.setSpacing(4)
 
         self.count_in_color_button = QPushButton()
-        self.count_in_color_button.setFixedSize(50, 24)
+        self.count_in_color_button.setFixedSize(46, 22)
         self.count_in_color_button.setStyleSheet(
             f"background-color: {DEFAULT_COUNT_IN_BG_COLOR}; border-radius: 4px; border: 1px solid #38383a;"
         )
@@ -1109,7 +1139,7 @@ class LiveControllerMac(QWidget):
         self.count_in_font_spinbox.valueChanged.connect(self._on_count_in_font_changed)
 
         self.track_play_color_button = QPushButton()
-        self.track_play_color_button.setFixedSize(50, 24)
+        self.track_play_color_button.setFixedSize(46, 22)
         self.track_play_color_button.setStyleSheet(
             f"background-color: {DEFAULT_TRACK_PLAY_BG_COLOR}; border-radius: 4px; border: 1px solid #38383a;"
         )
@@ -1130,46 +1160,82 @@ class LiveControllerMac(QWidget):
         overlay_colours_layout.addWidget(self.track_play_font_spinbox, 1, 3)
         overlay_colours_group.setLayout(overlay_colours_layout)
 
-        # Application group
+        # Application group (horizontal for compactness)
         app_group = QGroupBox("Application")
-        app_layout = QVBoxLayout()
-        app_layout.setContentsMargins(8, 10, 8, 8)
+        app_layout = QHBoxLayout()
+        app_layout.setContentsMargins(6, 8, 6, 6)
         app_layout.setSpacing(4)
         self.debug_console_button = QPushButton("Debug Console")
         self.debug_console_button.setStyleSheet(
             "background-color: #1a1a3a; color: #636396; border: 1px solid #2a2a5a; "
-            "font-size: 11px; padding: 4px 8px; border-radius: 6px;"
+            "font-size: 11px; padding: 3px 6px; border-radius: 6px;"
         )
         self.debug_console_button.clicked.connect(self._show_debug_console)
         self.quit_button = QPushButton("Quit")
         self.quit_button.setStyleSheet(
             "background-color: #3a0a0a; color: #ff453a; border: 1px solid #7a1a1a; "
-            "font-size: 12px; padding: 5px 12px; border-radius: 6px;"
+            "font-size: 12px; padding: 4px 8px; border-radius: 6px;"
         )
         self.quit_button.clicked.connect(self.close)
         app_layout.addWidget(self.debug_console_button)
         app_layout.addWidget(self.quit_button)
         app_group.setLayout(app_layout)
 
-        controls_area.addWidget(main_controls_group)
-        controls_area.addWidget(settings_group)
+        # Arrange groups in 2 columns to avoid vertical overflow.
+        # Row 1: Playback & Setlist (left) + Settings (right)
+        row_top = QHBoxLayout()
+        row_top.setSpacing(6)
+        row_top.addWidget(main_controls_group)
+        row_top.addWidget(settings_group)
+
+        # Row 2: Scrub & Loop (left) + Overlay Colours / Application stacked (right)
+        row_mid = QHBoxLayout()
+        row_mid.setSpacing(6)
+        row_mid.addWidget(scrub_loop_group)
+        right_col = QVBoxLayout()
+        right_col.setSpacing(4)
+        right_col.addWidget(overlay_colours_group)
+        right_col.addWidget(app_group)
+        row_mid.addLayout(right_col)
+
+        controls_area.addLayout(row_top)
         controls_area.addWidget(test_track_group)
-        controls_area.addWidget(scrub_loop_group)
-        controls_area.addWidget(overlay_colours_group)
-        controls_area.addWidget(app_group)
+        controls_area.addLayout(row_mid)
         controls_area.addStretch(1)
 
         controls_widget = QWidget()
         controls_widget.setLayout(controls_area)
 
-        controls_scroll = QScrollArea()
-        controls_scroll.setWidget(controls_widget)
-        controls_scroll.setWidgetResizable(True)
-        controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        controls_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        main_layout.addWidget(self.table, 1)
+        main_layout.addWidget(controls_widget, 1)
 
-        main_layout.addWidget(self.table, 3)
-        main_layout.addWidget(controls_scroll, 2)
+        # Trust warning banner — hidden until Accessibility permission is missing.
+        self.trust_banner = QWidget()
+        self.trust_banner.setStyleSheet(
+            "background-color: #3a2a00; border: 1px solid #c8a000; border-radius: 6px;"
+        )
+        trust_banner_layout = QHBoxLayout(self.trust_banner)
+        trust_banner_layout.setContentsMargins(8, 4, 8, 4)
+        trust_banner_layout.setSpacing(8)
+        trust_warn_label = QLabel(
+            "⚠  Global hotkeys need Accessibility permission — "
+            "System Settings → Privacy & Security → Accessibility, "
+            "add your terminal or Python binary, then restart."
+        )
+        trust_warn_label.setStyleSheet(
+            "color: #ffd60a; font-size: 11px; background: transparent; border: none;"
+        )
+        trust_warn_label.setWordWrap(True)
+        self._open_settings_btn = QPushButton("Open Settings")
+        self._open_settings_btn.setFixedWidth(110)
+        self._open_settings_btn.setStyleSheet(
+            "background-color: #c8a000; color: #1c1c1e; border: none; "
+            "font-size: 11px; padding: 3px 8px; border-radius: 5px; font-weight: 600;"
+        )
+        self._open_settings_btn.clicked.connect(self._open_accessibility_settings)
+        trust_banner_layout.addWidget(trust_warn_label, 1)
+        trust_banner_layout.addWidget(self._open_settings_btn)
+        self.trust_banner.hide()
 
         self.status_label = QLabel("Status: Welcome!")
         self.status_label.setStyleSheet(
@@ -1179,7 +1245,8 @@ class LiveControllerMac(QWidget):
 
         self.layout.addLayout(top_bar_layout)
         self.layout.addWidget(separator)
-        self.layout.addLayout(main_layout)
+        self.layout.addLayout(main_layout, 1)
+        self.layout.addWidget(self.trust_banner)
         self.layout.addWidget(self.status_label)
 
         self.live_mode_slider.setChecked(True)
@@ -1837,6 +1904,11 @@ class LiveControllerMac(QWidget):
         if hasattr(signal, 'SIGTRAP'):
             signal.signal(signal.SIGTRAP, signal.SIG_IGN)
 
+        # Pre-flight check: proactively show the guidance banner when the OS
+        # has already denied Accessibility / Input Monitoring permissions.
+        if _is_accessibility_trusted() is False:
+            self._show_trust_banner()
+
         try:
             self.hotkey_listener = GlobalHotkeyListener()
             self.hotkey_listener.hotkey_pressed.connect(self.on_global_hotkey)
@@ -1850,7 +1922,30 @@ class LiveControllerMac(QWidget):
     def _on_hotkey_listener_failed(self, error_msg):
         """Called via signal when the pynput listener thread fails to start."""
         self._debug_log(f"Hotkey listener failed: {error_msg}")
-        self._show_hotkey_unavailable(error_msg)
+        lower_msg = error_msg.lower()
+        if ('not trusted' in lower_msg or 'accessibility' in lower_msg
+                or 'input monitoring' in lower_msg or 'permission' in lower_msg):
+            self._show_trust_banner()
+        else:
+            self._show_hotkey_unavailable(error_msg)
+
+    def _show_trust_banner(self):
+        """Show the accessibility/trust warning banner with actionable guidance."""
+        self.trust_banner.show()
+        self.status_label.setText(
+            "Status: Global hotkeys unavailable — Accessibility permission required (see banner above)."
+        )
+        self._debug_log("Accessibility/Input Monitoring trust check failed; showing guidance banner.")
+
+    def _open_accessibility_settings(self):
+        """Open macOS System Settings directly to the Accessibility privacy pane."""
+        try:
+            subprocess.Popen([
+                'open',
+                'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
+            ])
+        except Exception as exc:
+            self._debug_log(f"Could not open System Settings: {exc}")
 
     def _show_hotkey_unavailable(self, detail=""):
         """Updates the status label to inform the user that hotkeys are disabled."""
