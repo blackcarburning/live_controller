@@ -516,7 +516,7 @@ class LiveControllerMac(QWidget):
 
         self.setup_ui()
         self.apply_config_to_ui()
-        # Do NOT call showFullScreen() — use a regular resizable window for MacBook.
+        # Full-screen mode is requested at startup from the __main__ block via QTimer.
         self.hotkey_listener = None
         self._start_hotkey_listener()
         self.load_session()
@@ -1718,10 +1718,39 @@ class LiveControllerMac(QWidget):
 
 
 # --- Main Execution Block ---
+
+def _set_high_priority():
+    """Best-effort attempt to raise the process scheduling priority on macOS.
+
+    Uses os.nice() to request a lower niceness value (higher CPU priority).
+    On macOS, only root/privileged processes can set negative niceness values
+    (i.e. niceness below 0); a standard user process cannot raise its priority
+    above the default (niceness 0).  We attempt niceness -10 as a reasonable
+    elevated value and let the OS refuse gracefully if permissions are lacking.
+
+    Real-time / kernel-level priority (SCHED_RR / SCHED_FIFO) is not used
+    here because it requires elevated privileges and is unsafe for a GUI app.
+    """
+    try:
+        current_nice = os.nice(0)           # read current niceness
+        desired_delta = -10 - current_nice  # aim for niceness == -10
+        os.nice(desired_delta)              # OS raises PermissionError if not allowed
+    except (OSError, PermissionError):
+        # Graceful degradation: run at default priority if adjustment fails.
+        pass
+
+
 if __name__ == '__main__':
+    # Raise process priority as much as is safely possible for a user-space app.
+    _set_high_priority()
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setStyleSheet(MODERN_STYLESHEET)
     controller = LiveControllerMac()
-    controller.showMaximized()
+    # Show the window first so macOS has a valid window to make full-screen.
+    # The QTimer.singleShot deferral ensures showFullScreen() is called after
+    # the event loop starts, which is the most reliable path on macOS.
+    controller.show()
+    QTimer.singleShot(0, controller.showFullScreen)
     sys.exit(app.exec())
