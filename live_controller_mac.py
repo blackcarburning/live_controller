@@ -102,7 +102,7 @@ MODERN_STYLESHEET = """
 QWidget {
     background-color: #1c1c1e;
     color: #f2f2f7;
-    font-family: "SF Pro Text", "Helvetica Neue", Arial;
+    font-family: Arial;
     font-size: 12px;
 }
 QGroupBox {
