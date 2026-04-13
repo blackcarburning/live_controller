@@ -331,11 +331,12 @@ class VideoPlaybackWorker(QThread):
     status_update = pyqtSignal(str)
     ipc_socket_path = pyqtSignal(str)
 
-    def __init__(self, video_file, display_num, preload_time):
+    def __init__(self, video_file, display_num, preload_time, audio_only_mode=False):
         super().__init__()
         self.video_file = video_file
         self.display_num = display_num
         self.preload_time = preload_time
+        self.audio_only_mode = audio_only_mode
         self.mpv_process = None
         self._is_running = True
 
@@ -358,7 +359,7 @@ class VideoPlaybackWorker(QThread):
         full_socket_path = os.path.join(tempfile.gettempdir(), socket_name)
 
         file_ext = os.path.splitext(self.video_file)[1].lower()
-        is_audio_only = file_ext == '.wav'
+        is_audio_only = file_ext == '.wav' or self.audio_only_mode
 
         if is_audio_only:
             mpv_cmd = [
@@ -717,6 +718,14 @@ class LiveControllerMac(QWidget):
         main_controls_layout.addWidget(self.undo_button)
         main_controls_layout.addLayout(setlist_name_layout)
         main_controls_layout.addLayout(save_load_layout)
+
+        self.audio_only_checkbox = QCheckBox("Audio Only (no video)")
+        self.audio_only_checkbox.setToolTip(
+            "When checked, audio plays from video files but no video is sent to the display.\n"
+            "Useful when no projector or external screen is connected.\n"
+            "This setting is saved with the setlist."
+        )
+        main_controls_layout.addWidget(self.audio_only_checkbox)
         main_controls_group.setLayout(main_controls_layout)
 
         # Settings group
@@ -770,7 +779,8 @@ class LiveControllerMac(QWidget):
         self.test_file_button.clicked.connect(self.select_test_file)
         self.test_file_label = QLabel("No file selected.")
         self.test_file_label.setStyleSheet("font-style: italic; color: #636366;")
-        self.test_file_label.setMinimumWidth(140)
+        self.test_file_label.setMinimumWidth(200)
+        self.test_file_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.play_test_button = QPushButton("▶  Play Test  (t)")
         self.play_test_button.setStyleSheet(
             "background-color: #0a2a0a; color: #30d158; border: 1px solid #1a5a1a; "
@@ -952,6 +962,7 @@ class LiveControllerMac(QWidget):
         self.count_in_font_spinbox.setEnabled(is_edit_mode)
         self.track_play_color_button.setEnabled(is_edit_mode)
         self.track_play_font_spinbox.setEnabled(is_edit_mode)
+        self.audio_only_checkbox.setEnabled(is_edit_mode)
 
         for i in range(self.table.rowCount()):
             if i < len(self.tracks):
@@ -1048,6 +1059,7 @@ class LiveControllerMac(QWidget):
             'count_in_font_size': self.count_in_font_size,
             'track_play_bg_color': self.track_play_bg_color,
             'track_play_font_size': self.track_play_font_size,
+            'audio_only': self.audio_only_checkbox.isChecked(),
         }
         with open(SESSION_FILE, 'w') as f:
             json.dump(session_data, f, indent=4)
@@ -1080,6 +1092,8 @@ class LiveControllerMac(QWidget):
 
             self.undo_history = deque(session_data.get('undo_history', []), maxlen=MAX_UNDO_LEVELS)
             self._apply_setlist_data(session_data.get('tracks', []), session_data.get('setlist_name', 'Untitled Setlist'))
+
+            self.audio_only_checkbox.setChecked(session_data.get('audio_only', False))
 
             self.test_track_path = session_data.get('test_track_path')
             if self.test_track_path and os.path.exists(self.test_track_path):
@@ -1218,10 +1232,13 @@ class LiveControllerMac(QWidget):
                 encore_item.setFont(font)
                 self.table.setItem(i, 0, encore_item)
 
-                remove_button = QPushButton("X")
+                remove_button = QPushButton("✕")
                 remove_button.clicked.connect(lambda checked, i=i: self.remove_item(i))
                 remove_button.setFixedSize(18, 18)
-                remove_button.setStyleSheet("background-color: #c0392b; color: white; font-weight: bold; border-radius: 3px; font-size: 10px;")
+                remove_button.setStyleSheet(
+                    "background-color: transparent; color: #636366; border: none; "
+                    "font-size: 12px; padding: 0px;"
+                )
                 btn_container = QWidget()
                 btn_layout = QHBoxLayout(btn_container)
                 btn_layout.addWidget(remove_button)
@@ -1262,10 +1279,13 @@ class LiveControllerMac(QWidget):
 
                 self.table.setCellWidget(i, 2, create_linked_checkbox(i, item))
 
-                remove_button = QPushButton("X")
+                remove_button = QPushButton("✕")
                 remove_button.clicked.connect(lambda checked, i=i: self.remove_item(i))
                 remove_button.setFixedSize(18, 18)
-                remove_button.setStyleSheet("background-color: #c0392b; color: white; font-weight: bold; border-radius: 3px; font-size: 10px;")
+                remove_button.setStyleSheet(
+                    "background-color: transparent; color: #636366; border: none; "
+                    "font-size: 12px; padding: 0px;"
+                )
                 btn_container = QWidget()
                 btn_layout = QHBoxLayout(btn_container)
                 btn_layout.addWidget(remove_button)
@@ -1341,6 +1361,7 @@ class LiveControllerMac(QWidget):
             'count_in_font_size': self.count_in_font_size,
             'track_play_bg_color': self.track_play_bg_color,
             'track_play_font_size': self.track_play_font_size,
+            'audio_only': self.audio_only_checkbox.isChecked(),
         }
         with open(file_path, 'w') as f:
             json.dump(setlist_data_to_save, f, indent=4)
@@ -1384,6 +1405,7 @@ class LiveControllerMac(QWidget):
             self.track_play_color_button.setStyleSheet(f"background-color: {self.track_play_bg_color};")
             self.track_play_font_spinbox.setValue(self.track_play_font_size)
             self.apply_overlay_styles()
+            self.audio_only_checkbox.setChecked(loaded_data.get('audio_only', False))
         else:
             tracks_data = loaded_data
             self.undo_history.clear()
@@ -1601,7 +1623,8 @@ class LiveControllerMac(QWidget):
             self.test_file_label.setStyleSheet("font-weight: bold; color: #30d158;")
 
         self.active_flash_timer.start()
-        self.worker = VideoPlaybackWorker(track_path, display_num, preload_time)
+        self.worker = VideoPlaybackWorker(track_path, display_num, preload_time,
+                                          audio_only_mode=self.audio_only_checkbox.isChecked())
         self.worker.status_update.connect(self.status_label.setText)
         self.worker.error.connect(lambda msg: self.status_label.setText(f"ERROR: {msg}"))
         self.worker.finished.connect(self.on_playback_finished)
