@@ -1656,6 +1656,7 @@ class LiveControllerMac(QWidget):
             if lower_key == 'q':
                 self._focus_main_window()
                 self.stop_all_activity()
+                QTimer.singleShot(250, self._focus_main_window)
             else:
                 self.show_danger_message()
             return
@@ -1667,6 +1668,7 @@ class LiveControllerMac(QWidget):
 
         if lower_key == 'q':
             self._focus_main_window()
+            QTimer.singleShot(250, self._focus_main_window)
             return
 
         if not self.is_live_mode:
