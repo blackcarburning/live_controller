@@ -96,86 +96,150 @@ _DEFAULT_DIALOG_DIR = os.path.join(os.path.expanduser("~"), "Movies")
 if not os.path.isdir(_DEFAULT_DIALOG_DIR):
     _DEFAULT_DIALOG_DIR = os.path.expanduser("~")
 
-# --- Dark Theme Stylesheet (compact for MacBook) ---
-DARK_STYLESHEET = """
+# --- Modern macOS-Dark Stylesheet ---
+MODERN_STYLESHEET = """
 QWidget {
-    background-color: #1e1e1e;
-    color: #d4d4d4;
+    background-color: #1c1c1e;
+    color: #f2f2f7;
     font-family: 'Helvetica Neue', 'Arial', sans-serif;
+    font-size: 12px;
 }
 QGroupBox {
-    font-size: 10px;
-    font-weight: bold;
-    border: 1px solid #444;
-    border-radius: 6px;
-    margin-top: 4px;
+    font-size: 9px;
+    font-weight: 600;
+    color: #636366;
+    border: 1px solid #38383a;
+    border-radius: 10px;
+    margin-top: 8px;
+    padding-top: 4px;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
-    subcontrol-position: top center;
-    padding: 0 6px;
+    subcontrol-position: top left;
+    padding: 0 8px;
+    color: #636366;
 }
 QLabel {
     background-color: transparent;
+    color: #f2f2f7;
 }
 QPushButton {
-    background-color: #333;
-    color: #d4d4d4;
-    border: 1px solid #555;
-    padding: 4px;
-    border-radius: 4px;
-    font-size: 11px;
+    background-color: #2c2c2e;
+    color: #f2f2f7;
+    border: 1px solid #3a3a3c;
+    padding: 5px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    min-height: 22px;
 }
 QPushButton:hover {
-    background-color: #454545;
+    background-color: #3a3a3c;
+    border-color: #636366;
 }
 QPushButton:pressed {
-    background-color: #555;
+    background-color: #48484a;
 }
 QPushButton:disabled {
-    background-color: #2a2a2a;
-    color: #5a5a5a;
+    background-color: #1c1c1e;
+    color: #3a3a3c;
+    border-color: #2c2c2e;
 }
 QLineEdit, QComboBox, QSpinBox {
-    background-color: #2a2a2a;
-    border: 1px solid #444;
-    border-radius: 3px;
-    padding: 3px;
-    font-size: 11px;
+    background-color: #2c2c2e;
+    border: 1px solid #38383a;
+    border-radius: 6px;
+    padding: 4px 8px;
+    color: #f2f2f7;
+    font-size: 12px;
+    selection-background-color: #0a84ff;
+    selection-color: #ffffff;
+}
+QLineEdit:focus {
+    border-color: #0a84ff;
 }
 QComboBox::drop-down {
     border: none;
+    padding-right: 4px;
 }
 QTableWidget {
-    background-color: #2a2a2a;
-    gridline-color: #444;
-    border: 1px solid #444;
+    background-color: #2c2c2e;
+    gridline-color: #38383a;
+    border: 1px solid #38383a;
+    border-radius: 8px;
+    alternate-background-color: #323234;
 }
 QHeaderView::section {
-    background-color: #333;
-    color: #d4d4d4;
-    padding: 3px;
-    border: 1px solid #444;
-    font-size: 10pt;
+    background-color: #1c1c1e;
+    color: #636366;
+    padding: 6px 4px;
+    border: none;
+    border-bottom: 1px solid #38383a;
+    font-size: 10px;
+    font-weight: 600;
 }
 QTableWidget::item {
-    padding-left: 3px;
-    padding-right: 3px;
+    padding: 3px 6px;
 }
 QTableWidget::item:selected {
-    background-color: #3d3d3d;
-    color: #d4d4d4;
+    background-color: #0a84ff;
+    color: #ffffff;
 }
-QCheckBox::indicator {
-    width: 14px;
-    height: 14px;
-    border: 1px solid #555;
+QScrollBar:vertical {
+    background-color: #1c1c1e;
+    width: 6px;
+    border-radius: 3px;
+    margin: 0px;
+}
+QScrollBar::handle:vertical {
+    background-color: #48484a;
+    border-radius: 3px;
+    min-height: 20px;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+QScrollBar:horizontal {
+    background-color: #1c1c1e;
+    height: 6px;
     border-radius: 3px;
 }
+QScrollBar::handle:horizontal {
+    background-color: #48484a;
+    border-radius: 3px;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0px;
+}
+QCheckBox {
+    spacing: 6px;
+}
+QCheckBox::indicator {
+    width: 15px;
+    height: 15px;
+    border: 1.5px solid #48484a;
+    border-radius: 4px;
+    background-color: #2c2c2e;
+}
 QCheckBox::indicator:checked {
-    background-color: #3498db;
+    background-color: #0a84ff;
+    border-color: #0a84ff;
+}
+QSpinBox::up-button, QSpinBox::down-button {
+    background-color: transparent;
+    border: none;
+    width: 14px;
 }
 """
+
+# Branded logo HTML — ▲ (U+25B2) replaces each A in KATTMAN CONTROL
+KATTMAN_LOGO_HTML = (
+    '<span style="color:#f2f2f7; font-weight:700; font-size:22px; letter-spacing:4px;">'
+    'K<span style="color:#0a84ff;">&#9650;</span>TTM'
+    '<span style="color:#0a84ff;">&#9650;</span>N&nbsp;&nbsp;CONTROL'
+    '</span>'
+)
+
 
 
 def _send_ipc_command(socket_path, command_str):
@@ -382,7 +446,7 @@ class Switch(QAbstractButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
-        bg_color = QColor("#d63031") if self.isChecked() else QColor("#00b894")
+        bg_color = QColor("#ff453a") if self.isChecked() else QColor("#30d158")
         painter.setBrush(QBrush(bg_color))
         painter.drawRoundedRect(0, 0, self.width(), self.height(), self.height() / 2, self.height() / 2)
         painter.setBrush(QBrush(QColor(255, 255, 255)))
@@ -411,7 +475,7 @@ class LiveControllerMac(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Live Controller (Mac) - blackcarburning - Video Only")
+        self.setWindowTitle("KATTMAN CONTROL")
 
         self.config = self.load_config()
         self.track_name_data = self.load_json_store(TRACK_NAME_STORE_FILE)
@@ -426,8 +490,8 @@ class LiveControllerMac(QWidget):
         self.test_track_path = None
 
         self.current_table_font_size = DEFAULT_TABLE_FONT_SIZE
-        self.playing_color = QColor("#2ecc71")
-        self.default_color = QColor("#2a2a2a")
+        self.playing_color = QColor("#30d158")
+        self.default_color = QColor("#2c2c2e")
         self.count_in_bg_color = DEFAULT_COUNT_IN_BG_COLOR
         self.count_in_font_size = DEFAULT_COUNT_IN_FONT_SIZE
         self.track_play_bg_color = DEFAULT_TRACK_PLAY_BG_COLOR
@@ -452,47 +516,71 @@ class LiveControllerMac(QWidget):
     def setup_ui(self):
         """Constructs the entire user interface (compact layout for MacBook)."""
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(6, 6, 6, 6)
-        self.layout.setSpacing(3)
+        self.layout.setContentsMargins(12, 8, 12, 8)
+        self.layout.setSpacing(6)
 
         # --- Top Bar ---
         top_bar_layout = QHBoxLayout()
+        top_bar_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Left: ACTIVE flash label
         left_container = QWidget()
         left_layout = QHBoxLayout(left_container)
         left_layout.setContentsMargins(0, 0, 0, 0)
         self.active_label = QLabel("ACTIVE", self)
-        self.active_label.setFont(QFont("Arial", 18, QFont.Weight.Bold))
-        self.active_label.setStyleSheet("color: #27ae60;")
+        self.active_label.setFont(QFont("Helvetica Neue", 16, QFont.Weight.Bold))
+        self.active_label.setStyleSheet("color: #30d158; letter-spacing: 2px;")
         self.active_label.hide()
         left_layout.addWidget(self.active_label)
         left_layout.addStretch(1)
 
+        # Center: K▲TTM▲N CONTROL logo + setlist info stacked
         title_layout = QVBoxLayout()
         title_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_layout.setSpacing(2)
+
+        logo_label = QLabel()
+        logo_label.setTextFormat(Qt.TextFormat.RichText)
+        logo_label.setText(KATTMAN_LOGO_HTML)
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         self.title_label = QLabel("Untitled Setlist")
-        self.title_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
-        self.running_time_label = QLabel(f"Total Running Time (incl. {TRACK_OVERHEAD_SECONDS}s overhead/track): 00:00:00")
-        self.running_time_label.setFont(QFont("Arial", 9, QFont.Weight.Bold))
-        self.running_time_label.setStyleSheet("color: #888;")
+        self.title_label.setFont(QFont("Helvetica Neue", 12, QFont.Weight.Bold))
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.title_label.setStyleSheet("color: #aeaeb2;")
+
+        self.running_time_label = QLabel(
+            f"Total Running Time (incl. {TRACK_OVERHEAD_SECONDS}s overhead/track): 00:00:00"
+        )
+        self.running_time_label.setFont(QFont("Helvetica Neue", 9))
+        self.running_time_label.setStyleSheet("color: #636366;")
+        self.running_time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         self.export_setlist_button = QPushButton("Export Set List")
-        self.export_setlist_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 10px; padding: 2px 5px;")
+        self.export_setlist_button.setStyleSheet(
+            "background-color: #2a1040; color: #bf5af2; border: 1px solid #6e2c9e; "
+            "font-size: 10px; padding: 3px 10px; border-radius: 5px;"
+        )
         self.export_setlist_button.clicked.connect(self.export_setlist)
+
+        title_layout.addWidget(logo_label)
         title_layout.addWidget(self.title_label)
         title_layout.addWidget(self.running_time_label)
-        title_layout.addWidget(self.export_setlist_button)
+        title_layout.addWidget(self.export_setlist_button, 0, Qt.AlignmentFlag.AlignCenter)
 
+        # Right: mode toggle
         right_container = QWidget()
         right_layout = QHBoxLayout(right_container)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.addStretch(1)
         mode_layout = QHBoxLayout()
-        mode_layout.setSpacing(6)
+        mode_layout.setSpacing(8)
         self.edit_mode_label = QLabel("EDIT")
-        self.edit_mode_label.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        self.edit_mode_label.setFont(QFont("Helvetica Neue", 10, QFont.Weight.Bold))
         self.live_mode_slider = Switch()
         self.live_mode_slider.toggled.connect(self.toggle_live_mode)
         self.live_mode_label = QLabel("LIVE")
-        self.live_mode_label.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        self.live_mode_label.setFont(QFont("Helvetica Neue", 10, QFont.Weight.Bold))
         mode_layout.addWidget(self.edit_mode_label)
         mode_layout.addWidget(self.live_mode_slider)
         mode_layout.addWidget(self.live_mode_label)
@@ -502,87 +590,116 @@ class LiveControllerMac(QWidget):
         top_bar_layout.addLayout(title_layout, 2)
         top_bar_layout.addWidget(right_container, 1)
 
-        # --- Overlay Labels ---
+        # Thin separator beneath the top bar
+        separator = QWidget()
+        separator.setFixedHeight(1)
+        separator.setStyleSheet("background-color: #38383a;")
+
+        # --- Overlay Labels (full-window, always on top) ---
         self.danger_label = QLabel("DANGER!!\n\nSTOP PRESSING BUTTONS!\nAND GET YOUR HAIR CUT", self)
-        self.danger_label.setFont(QFont("Arial", 40, QFont.Weight.ExtraBold))
+        self.danger_label.setFont(QFont("Helvetica Neue", 40, QFont.Weight.ExtraBold))
         self.danger_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.danger_label.setStyleSheet("background-color: rgba(255, 0, 0, 0.8); color: white; border-radius: 20px;")
+        self.danger_label.setStyleSheet("background-color: rgba(255, 69, 58, 0.9); color: white; border-radius: 20px;")
         self.danger_label.hide()
 
         self.countdown_label = QLabel("", self)
-        self.countdown_label.setFont(QFont("Arial", DEFAULT_COUNT_IN_FONT_SIZE, QFont.Weight.ExtraBold))
+        self.countdown_label.setFont(QFont("Helvetica Neue", DEFAULT_COUNT_IN_FONT_SIZE, QFont.Weight.ExtraBold))
         self.countdown_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.countdown_label.setStyleSheet("background-color: rgba(200, 0, 0, 0.9); color: white; border-radius: 20px;")
         self.countdown_label.hide()
 
         self.preparing_label = QLabel("", self)
-        self.preparing_label.setFont(QFont("Arial", DEFAULT_TRACK_PLAY_FONT_SIZE, QFont.Weight.Bold))
+        self.preparing_label.setFont(QFont("Helvetica Neue", DEFAULT_TRACK_PLAY_FONT_SIZE, QFont.Weight.Bold))
         self.preparing_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preparing_label.setStyleSheet("background-color: rgba(0, 200, 0, 0.8); color: white; border-radius: 20px;")
+        self.preparing_label.setStyleSheet("background-color: rgba(0, 200, 0, 0.85); color: white; border-radius: 20px;")
         self.preparing_label.hide()
 
         self.save_notification_label = QLabel(self)
-        self.save_notification_label.setStyleSheet("background-color: #27ae60; color: white; font-size: 14px; font-weight: bold; padding: 10px; border-radius: 8px;")
+        self.save_notification_label.setStyleSheet(
+            "background-color: #1a3a2a; color: #30d158; font-size: 14px; font-weight: bold; "
+            "padding: 12px 20px; border-radius: 10px; border: 1px solid #30d158;"
+        )
         self.save_notification_label.hide()
 
         # --- Main Content: Table + Controls ---
         main_layout = QHBoxLayout()
+        main_layout.setSpacing(10)
         self.table = DraggableTableWidget()
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(["Key", "Track Name", "Link", "Del"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(0, 45)
-        self.table.setColumnWidth(2, 40)
-        self.table.setColumnWidth(3, 40)
+        self.table.setColumnWidth(0, 48)
+        self.table.setColumnWidth(2, 42)
+        self.table.setColumnWidth(3, 42)
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(False)
+        self.table.setAlternatingRowColors(True)
         self.table.rows_reordered.connect(self.reorder_tracks)
 
         # --- Right-side Control Panel ---
         controls_area = QVBoxLayout()
-        controls_area.setSpacing(3)
+        controls_area.setSpacing(6)
 
         # Playback & Setlist group
-        main_controls_group = QGroupBox("")
+        main_controls_group = QGroupBox("Playback & Setlist")
         main_controls_layout = QVBoxLayout()
-        main_controls_layout.setContentsMargins(4, 4, 4, 4)
-        main_controls_layout.setSpacing(3)
+        main_controls_layout.setContentsMargins(8, 10, 8, 8)
+        main_controls_layout.setSpacing(6)
+
+        self.stop_button = QPushButton("■  STOP  (q)")
+        self.stop_button.setStyleSheet(
+            "background-color: #3a0a0a; color: #ff453a; border: 1px solid #7a1a1a; "
+            "font-size: 12px; font-weight: 700; padding: 6px 12px; border-radius: 6px;"
+        )
+        self.stop_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.stop_button.clicked.connect(self.stop_all_activity)
 
         add_buttons_layout = QHBoxLayout()
-        self.add_button = QPushButton("Add Track(s)")
-        self.add_button.setStyleSheet("background-color: #007acc; color: white; font-size: 10px; padding: 3px 4px;")
+        add_buttons_layout.setSpacing(6)
+        self.add_button = QPushButton("+ Add Track(s)")
+        self.add_button.setStyleSheet(
+            "background-color: #0a2a4a; color: #0a84ff; border: 1px solid #1a4a7a; "
+            "font-size: 11px; padding: 4px 8px; border-radius: 6px;"
+        )
         self.add_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.add_button.clicked.connect(self.add_tracks)
-        self.add_encore_button = QPushButton("Add Encore")
-        self.add_encore_button.setStyleSheet("background-color: #007acc; color: white; font-size: 10px; padding: 3px 4px;")
+        self.add_encore_button = QPushButton("+ Add Encore")
+        self.add_encore_button.setStyleSheet(
+            "background-color: #0a2a4a; color: #0a84ff; border: 1px solid #1a4a7a; "
+            "font-size: 11px; padding: 4px 8px; border-radius: 6px;"
+        )
         self.add_encore_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.add_encore_button.clicked.connect(self.add_encore_divider)
         add_buttons_layout.addWidget(self.add_button)
         add_buttons_layout.addWidget(self.add_encore_button)
 
-        self.undo_button = QPushButton("Undo Delete")
+        self.undo_button = QPushButton("↩  Undo Delete")
         self.undo_button.clicked.connect(self.undo_delete)
         self.undo_button.setEnabled(False)
 
-        self.stop_button = QPushButton("STOP (q)")
-        self.stop_button.setStyleSheet("background-color: #e74c3c; color: white; font-size: 11px; font-weight: bold; padding: 3px 4px;")
-        self.stop_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.stop_button.clicked.connect(self.stop_all_activity)
-
         setlist_name_layout = QHBoxLayout()
+        setlist_name_layout.setSpacing(6)
         self.setlist_name_input = QLineEdit()
-        self.setlist_name_input.setPlaceholderText("Setlist name...")
+        self.setlist_name_input.setPlaceholderText("Setlist name…")
         self.rename_button = QPushButton("Set")
+        self.rename_button.setFixedWidth(44)
         self.rename_button.clicked.connect(self.rename_setlist_title)
         setlist_name_layout.addWidget(self.setlist_name_input)
         setlist_name_layout.addWidget(self.rename_button)
 
         save_load_layout = QHBoxLayout()
+        save_load_layout.setSpacing(6)
         self.save_button = QPushButton("Save")
-        self.save_button.setStyleSheet("background-color: #2980b9; color: white; font-size: 10px; padding: 3px 4px;")
+        self.save_button.setStyleSheet(
+            "background-color: #0a2a4a; color: #0a84ff; border: 1px solid #1a4a7a; "
+            "font-size: 11px; padding: 4px 8px; border-radius: 6px;"
+        )
         self.save_button.clicked.connect(self.save_setlist)
         self.load_button = QPushButton("Load")
-        self.load_button.setStyleSheet("background-color: #27ae60; color: white; font-size: 10px; padding: 3px 4px;")
+        self.load_button.setStyleSheet(
+            "background-color: #0a2a0a; color: #30d158; border: 1px solid #1a5a1a; "
+            "font-size: 11px; padding: 4px 8px; border-radius: 6px;"
+        )
         self.load_button.clicked.connect(self.load_setlist)
         save_load_layout.addWidget(self.save_button)
         save_load_layout.addWidget(self.load_button)
@@ -597,8 +714,8 @@ class LiveControllerMac(QWidget):
         # Settings group
         settings_group = QGroupBox("Settings")
         settings_layout = QGridLayout()
-        settings_layout.setContentsMargins(4, 4, 4, 4)
-        settings_layout.setSpacing(2)
+        settings_layout.setContentsMargins(8, 10, 8, 8)
+        settings_layout.setSpacing(6)
 
         self.display_combo = QComboBox()
         self.display_combo.addItems([str(i) for i in range(1, 5)])
@@ -622,10 +739,12 @@ class LiveControllerMac(QWidget):
         settings_layout.addWidget(self.count_in_test_checkbox, 3, 0, 1, 2)
 
         font_size_layout = QHBoxLayout()
+        font_size_layout.setSpacing(6)
         self.font_size_spinbox = QSpinBox()
         self.font_size_spinbox.setRange(8, 36)
         self.font_size_spinbox.setValue(self.current_table_font_size)
         self.apply_font_button = QPushButton("Apply")
+        self.apply_font_button.setFixedWidth(54)
         self.apply_font_button.clicked.connect(self.apply_table_font_size)
         font_size_layout.addWidget(self.font_size_spinbox)
         font_size_layout.addWidget(self.apply_font_button)
@@ -636,13 +755,18 @@ class LiveControllerMac(QWidget):
         # Test Track group
         test_track_group = QGroupBox("Test Track")
         test_track_layout = QHBoxLayout()
-        test_track_layout.setContentsMargins(4, 4, 4, 4)
-        test_track_layout.setSpacing(3)
+        test_track_layout.setContentsMargins(8, 10, 8, 8)
+        test_track_layout.setSpacing(6)
         self.test_file_button = QPushButton("Select…")
+        self.test_file_button.setFixedWidth(62)
         self.test_file_button.clicked.connect(self.select_test_file)
         self.test_file_label = QLabel("No file selected.")
-        self.test_file_label.setStyleSheet("font-style: italic;")
-        self.play_test_button = QPushButton("Play Test (t)")
+        self.test_file_label.setStyleSheet("font-style: italic; color: #636366;")
+        self.play_test_button = QPushButton("▶  Play Test  (t)")
+        self.play_test_button.setStyleSheet(
+            "background-color: #0a2a0a; color: #30d158; border: 1px solid #1a5a1a; "
+            "font-size: 11px; padding: 4px 8px; border-radius: 6px;"
+        )
         self.play_test_button.clicked.connect(self.play_test_track)
         self.play_test_button.setEnabled(False)
         test_track_layout.addWidget(self.test_file_button)
@@ -653,12 +777,14 @@ class LiveControllerMac(QWidget):
         # Overlay Colours group
         overlay_colours_group = QGroupBox("Overlay Colours")
         overlay_colours_layout = QGridLayout()
-        overlay_colours_layout.setContentsMargins(4, 4, 4, 4)
-        overlay_colours_layout.setSpacing(3)
+        overlay_colours_layout.setContentsMargins(8, 10, 8, 8)
+        overlay_colours_layout.setSpacing(6)
 
         self.count_in_color_button = QPushButton()
-        self.count_in_color_button.setFixedSize(50, 22)
-        self.count_in_color_button.setStyleSheet(f"background-color: {DEFAULT_COUNT_IN_BG_COLOR};")
+        self.count_in_color_button.setFixedSize(50, 24)
+        self.count_in_color_button.setStyleSheet(
+            f"background-color: {DEFAULT_COUNT_IN_BG_COLOR}; border-radius: 4px; border: 1px solid #38383a;"
+        )
         self.count_in_color_button.clicked.connect(self.pick_count_in_color)
 
         self.count_in_font_spinbox = QSpinBox()
@@ -667,8 +793,10 @@ class LiveControllerMac(QWidget):
         self.count_in_font_spinbox.valueChanged.connect(self._on_count_in_font_changed)
 
         self.track_play_color_button = QPushButton()
-        self.track_play_color_button.setFixedSize(50, 22)
-        self.track_play_color_button.setStyleSheet(f"background-color: {DEFAULT_TRACK_PLAY_BG_COLOR};")
+        self.track_play_color_button.setFixedSize(50, 24)
+        self.track_play_color_button.setStyleSheet(
+            f"background-color: {DEFAULT_TRACK_PLAY_BG_COLOR}; border-radius: 4px; border: 1px solid #38383a;"
+        )
         self.track_play_color_button.clicked.connect(self.pick_track_play_color)
 
         self.track_play_font_spinbox = QSpinBox()
@@ -689,9 +817,13 @@ class LiveControllerMac(QWidget):
         # Application group
         app_group = QGroupBox("Application")
         app_layout = QVBoxLayout()
-        app_layout.setContentsMargins(4, 4, 4, 4)
-        app_layout.setSpacing(3)
+        app_layout.setContentsMargins(8, 10, 8, 8)
+        app_layout.setSpacing(4)
         self.quit_button = QPushButton("Quit")
+        self.quit_button.setStyleSheet(
+            "background-color: #3a0a0a; color: #ff453a; border: 1px solid #7a1a1a; "
+            "font-size: 12px; padding: 5px 12px; border-radius: 6px;"
+        )
         self.quit_button.clicked.connect(self.close)
         app_layout.addWidget(self.quit_button)
         app_group.setLayout(app_layout)
@@ -707,9 +839,13 @@ class LiveControllerMac(QWidget):
         main_layout.addLayout(controls_area, 2)
 
         self.status_label = QLabel("Status: Welcome!")
-        self.status_label.setStyleSheet("font-style: italic; color: #888; font-size: 11px;")
+        self.status_label.setStyleSheet(
+            "font-style: italic; color: #636366; font-size: 11px; "
+            "padding: 3px 0px; border-top: 1px solid #2c2c2e;"
+        )
 
         self.layout.addLayout(top_bar_layout)
+        self.layout.addWidget(separator)
         self.layout.addLayout(main_layout)
         self.layout.addWidget(self.status_label)
 
@@ -728,14 +864,14 @@ class LiveControllerMac(QWidget):
             f"background-color: rgba({count_in_c.red()}, {count_in_c.green()}, {count_in_c.blue()}, 0.9); "
             "color: white; border-radius: 20px;"
         )
-        self.countdown_label.setFont(QFont("Arial", self.count_in_font_size, QFont.Weight.ExtraBold))
+        self.countdown_label.setFont(QFont("Helvetica Neue", self.count_in_font_size, QFont.Weight.ExtraBold))
 
         track_play_c = QColor(self.track_play_bg_color)
         self.preparing_label.setStyleSheet(
             f"background-color: rgba({track_play_c.red()}, {track_play_c.green()}, {track_play_c.blue()}, 0.8); "
             "color: white; border-radius: 20px;"
         )
-        self.preparing_label.setFont(QFont("Arial", self.track_play_font_size, QFont.Weight.Bold))
+        self.preparing_label.setFont(QFont("Helvetica Neue", self.track_play_font_size, QFont.Weight.Bold))
 
     def pick_count_in_color(self):
         color = QColorDialog.getColor(QColor(self.count_in_bg_color), self, "Count-In Background Colour")
@@ -765,7 +901,7 @@ class LiveControllerMac(QWidget):
 
     def apply_table_font_size(self):
         self.current_table_font_size = self.font_size_spinbox.value()
-        new_font = QFont("Arial", self.current_table_font_size)
+        new_font = QFont("Helvetica Neue", self.current_table_font_size)
         self.table.verticalHeader().setDefaultSectionSize(int(self.current_table_font_size * 2.5))
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
@@ -816,8 +952,8 @@ class LiveControllerMac(QWidget):
                         if widget := self.table.cellWidget(i, col):
                             widget.setEnabled(is_edit_mode)
 
-        self.live_mode_label.setStyleSheet("color: #d63031; font-weight: bold;" if self.is_live_mode else "color: #888;")
-        self.edit_mode_label.setStyleSheet("color: #00b894; font-weight: bold;" if is_edit_mode else "color: #888;")
+        self.live_mode_label.setStyleSheet("color: #ff453a; font-weight: bold; letter-spacing: 1px;" if self.is_live_mode else "color: #48484a;")
+        self.edit_mode_label.setStyleSheet("color: #30d158; font-weight: bold; letter-spacing: 1px;" if is_edit_mode else "color: #48484a;")
         self.status_label.setText(
             "Status: LIVE MODE - Hotkeys are active." if self.is_live_mode
             else "Status: EDIT MODE - Hotkeys are disabled."
@@ -939,7 +1075,7 @@ class LiveControllerMac(QWidget):
             self.test_track_path = session_data.get('test_track_path')
             if self.test_track_path and os.path.exists(self.test_track_path):
                 self.test_file_label.setText(os.path.basename(self.test_track_path))
-                self.test_file_label.setStyleSheet("font-style: normal; color: #d4d4d4;")
+                self.test_file_label.setStyleSheet("font-style: normal; color: #aeaeb2;")
                 self.play_test_button.setEnabled(True)
             else:
                 self.test_track_path = None
@@ -1066,9 +1202,9 @@ class LiveControllerMac(QWidget):
                 self.table.setRowHeight(i, 20)
                 encore_item = QTableWidgetItem(item.get('text', 'ENCORE'))
                 encore_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                encore_item.setBackground(QColor("#007acc"))
+                encore_item.setBackground(QColor("#0a84ff"))
                 encore_item.setForeground(QColor(Qt.GlobalColor.white))
-                font = QFont("Arial", self.current_table_font_size)
+                font = QFont("Helvetica Neue", self.current_table_font_size)
                 font.setBold(False)
                 encore_item.setFont(font)
                 self.table.setItem(i, 0, encore_item)
@@ -1084,7 +1220,7 @@ class LiveControllerMac(QWidget):
                 btn_layout.setContentsMargins(0, 0, 0, 0)
                 self.table.setCellWidget(i, 3, btn_container)
             else:
-                table_font = QFont("Arial", self.current_table_font_size)
+                table_font = QFont("Helvetica Neue", self.current_table_font_size)
 
                 hotkey_item = QTableWidgetItem(item['hotkey'].upper())
                 hotkey_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1147,14 +1283,14 @@ class LiveControllerMac(QWidget):
         if row >= len(self.tracks) or self.tracks[row]['type'] == 'divider':
             return
         bg_color = self.playing_color if is_playing else self.default_color
-        fg_color = QColor("#000000") if is_playing else QColor("#d4d4d4")
+        fg_color = QColor("#000000") if is_playing else QColor("#f2f2f7")
         font_size = self.current_table_font_size
         for col in range(self.table.columnCount()):
             item = self.table.item(row, col)
             if item:
                 item.setBackground(bg_color)
                 item.setForeground(fg_color)
-                item.setFont(QFont("Arial", font_size))
+                item.setFont(QFont("Helvetica Neue", font_size))
             widget = self.table.cellWidget(row, col)
             if widget:
                 if col in [2, 3]:
@@ -1164,7 +1300,7 @@ class LiveControllerMac(QWidget):
                     widget.setStyleSheet(style_sheet)
                     if hasattr(widget, 'findChildren'):
                         for child_widget in widget.findChildren(QLineEdit):
-                            child_widget.setFont(QFont("Arial", font_size))
+                            child_widget.setFont(QFont("Helvetica Neue", font_size))
                             child_widget.setStyleSheet(style_sheet)
 
     def clear_highlight(self):
@@ -1405,7 +1541,7 @@ class LiveControllerMac(QWidget):
             self.highlight_row(row_index, is_playing=True)
             self.currently_playing_row = row_index
         else:
-            self.test_file_label.setStyleSheet("font-weight: bold; color: #27ae60;")
+            self.test_file_label.setStyleSheet("font-weight: bold; color: #30d158;")
 
         self.active_flash_timer.start()
         self.worker = VideoPlaybackWorker(track_path, display_num, preload_time)
@@ -1442,7 +1578,7 @@ class LiveControllerMac(QWidget):
     def on_playback_finished(self):
         finished_row = self.currently_playing_row
         self.clear_highlight()
-        self.test_file_label.setStyleSheet("font-style: italic; color: #888;")
+        self.test_file_label.setStyleSheet("font-style: italic; color: #636366;")
         self.status_label.setText("Status: Ready. Press a hotkey to play a track.")
         self.active_flash_timer.stop()
         self.active_label.hide()
@@ -1487,7 +1623,7 @@ class LiveControllerMac(QWidget):
         if file_path:
             self.test_track_path = file_path
             self.test_file_label.setText(os.path.basename(file_path))
-            self.test_file_label.setStyleSheet("font-style: normal; color: #d4d4d4;")
+            self.test_file_label.setStyleSheet("font-style: normal; color: #aeaeb2;")
             self.play_test_button.setEnabled(True)
 
     def play_test_track(self):
@@ -1527,7 +1663,7 @@ class LiveControllerMac(QWidget):
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    app.setStyleSheet(DARK_STYLESHEET)
+    app.setStyleSheet(MODERN_STYLESHEET)
     controller = LiveControllerMac()
     controller.resize(1280, 800)
     controller.show()
