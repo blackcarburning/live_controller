@@ -1474,15 +1474,17 @@ class LiveControllerMac(QWidget):
         """Starts the global hotkey listener, handling SIGTRAP and other failures gracefully.
 
         On macOS, pynput requires Accessibility and Input Monitoring permissions.
-        If those are missing the OS may send SIGTRAP to the process, which would
-        otherwise crash it.  We temporarily set SIGTRAP to SIG_IGN so the signal
-        is absorbed rather than terminating the process.
+        If those are missing the OS may send SIGTRAP to the process at any point
+        while the listener is running — including when special keys such as
+        Caps Lock are pressed.  We install a permanent SIG_IGN handler so the
+        signal is absorbed for the entire lifetime of the app rather than
+        terminating the process.
         """
-        # Temporarily ignore SIGTRAP so that macOS permission failures do not kill
-        # the process.  We restore the original disposition in the finally block.
-        _original_sigtrap = None
+        # Permanently ignore SIGTRAP for the lifetime of the process.
+        # macOS sends SIGTRAP when an untrusted process intercepts input events
+        # (e.g. Caps Lock).  Restoring the default handler after listener startup
+        # would leave the app exposed to that crash whenever those keys are pressed.
         if hasattr(signal, 'SIGTRAP'):
-            _original_sigtrap = signal.getsignal(signal.SIGTRAP)
             signal.signal(signal.SIGTRAP, signal.SIG_IGN)
 
         try:
@@ -1493,10 +1495,6 @@ class LiveControllerMac(QWidget):
         except Exception as exc:
             self.hotkey_listener = None
             self._show_hotkey_unavailable(str(exc))
-        finally:
-            # Restore the original SIGTRAP disposition only if we changed it.
-            if _original_sigtrap is not None:
-                signal.signal(signal.SIGTRAP, _original_sigtrap)
 
     def _on_hotkey_listener_failed(self, error_msg):
         """Called via signal when the pynput listener thread fails to start."""
