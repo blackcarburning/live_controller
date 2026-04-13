@@ -775,7 +775,7 @@ class LiveControllerMac(QWidget):
         test_track_layout.setContentsMargins(8, 10, 8, 8)
         test_track_layout.setSpacing(6)
         self.test_file_button = QPushButton("Select…")
-        self.test_file_button.setFixedWidth(62)
+        self.test_file_button.setFixedWidth(80)
         self.test_file_button.clicked.connect(self.select_test_file)
         self.test_file_label = QLabel("No file selected.")
         self.test_file_label.setStyleSheet("font-style: italic; color: #636366;")
@@ -881,16 +881,16 @@ class LiveControllerMac(QWidget):
         count_in_c = QColor(self.count_in_bg_color)
         self.countdown_label.setStyleSheet(
             f"background-color: rgba({count_in_c.red()}, {count_in_c.green()}, {count_in_c.blue()}, 0.9); "
-            "color: white; border-radius: 20px;"
+            f"color: white; border-radius: 20px; font-family: 'Helvetica Neue'; "
+            f"font-size: {self.count_in_font_size}pt; font-weight: 800;"
         )
-        self.countdown_label.setFont(QFont("Helvetica Neue", self.count_in_font_size, QFont.Weight.ExtraBold))
 
         track_play_c = QColor(self.track_play_bg_color)
         self.preparing_label.setStyleSheet(
             f"background-color: rgba({track_play_c.red()}, {track_play_c.green()}, {track_play_c.blue()}, 0.8); "
-            "color: white; border-radius: 20px;"
+            f"color: white; border-radius: 20px; font-family: 'Helvetica Neue'; "
+            f"font-size: {self.track_play_font_size}pt; font-weight: 700;"
         )
-        self.preparing_label.setFont(QFont("Helvetica Neue", self.track_play_font_size, QFont.Weight.Bold))
 
     def pick_count_in_color(self):
         color = QColorDialog.getColor(QColor(self.count_in_bg_color), self, "Count-In Background Colour")
