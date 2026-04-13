@@ -770,6 +770,7 @@ class LiveControllerMac(QWidget):
         self.test_file_button.clicked.connect(self.select_test_file)
         self.test_file_label = QLabel("No file selected.")
         self.test_file_label.setStyleSheet("font-style: italic; color: #636366;")
+        self.test_file_label.setMinimumWidth(140)
         self.play_test_button = QPushButton("▶  Play Test  (t)")
         self.play_test_button.setStyleSheet(
             "background-color: #0a2a0a; color: #30d158; border: 1px solid #1a5a1a; "
@@ -778,7 +779,7 @@ class LiveControllerMac(QWidget):
         self.play_test_button.clicked.connect(self.play_test_track)
         self.play_test_button.setEnabled(False)
         test_track_layout.addWidget(self.test_file_button)
-        test_track_layout.addWidget(self.test_file_label, 1)
+        test_track_layout.addWidget(self.test_file_label, 3)
         test_track_layout.addWidget(self.play_test_button)
         test_track_group.setLayout(test_track_layout)
 
@@ -1506,12 +1507,20 @@ class LiveControllerMac(QWidget):
                 "permissions in System Settings > Privacy & Security, then restart the app.")
         self.status_label.setText(f"{base} ({detail})" if detail else base)
 
+    def _focus_main_window(self):
+        """Brings the main window to the foreground and activates it."""
+        self.show()
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+        self.raise_()
+        self.activateWindow()
+
     def on_global_hotkey(self, key):
         """Handles key presses from the pynput-based global hotkey listener."""
         lower_key = key.lower()
 
         if self.worker and self.worker.isRunning() or self.countdown_timer.isActive():
             if lower_key == 'q':
+                self._focus_main_window()
                 self.stop_all_activity()
             else:
                 self.show_danger_message()
@@ -1520,6 +1529,10 @@ class LiveControllerMac(QWidget):
         # '^' toggles EDIT/LIVE mode (e.g. from a Stream Deck).
         if lower_key == '^':
             self.live_mode_slider.setChecked(not self.live_mode_slider.isChecked())
+            return
+
+        if lower_key == 'q':
+            self._focus_main_window()
             return
 
         if not self.is_live_mode:
