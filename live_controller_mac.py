@@ -29,6 +29,7 @@
 import sys
 import os
 import re
+import signal
 import socket
 import subprocess
 import tempfile
@@ -291,6 +292,7 @@ class GlobalHotkeyListener(QThread):
     for whichever terminal or Python binary you use to run this script.
     """
     hotkey_pressed = pyqtSignal(str)
+    listener_failed = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -305,9 +307,16 @@ class GlobalHotkeyListener(QThread):
             except Exception:
                 pass
 
-        with pynput_keyboard.Listener(on_press=on_press) as listener:
-            self._listener = listener
-            listener.join()
+        try:
+            with pynput_keyboard.Listener(on_press=on_press) as listener:
+                self._listener = listener
+                listener.join()
+        except Exception as exc:
+            self.listener_failed.emit(
+                f"Global hotkeys unavailable: {exc}. "
+                "Grant Accessibility/Input Monitoring permissions in "
+                "System Settings > Privacy & Security."
+            )
 
     def stop(self):
         """Stops the pynput listener."""
@@ -508,9 +517,8 @@ class LiveControllerMac(QWidget):
         self.setup_ui()
         self.apply_config_to_ui()
         # Do NOT call showFullScreen() — use a regular resizable window for MacBook.
-        self.hotkey_listener = GlobalHotkeyListener()
-        self.hotkey_listener.hotkey_pressed.connect(self.on_global_hotkey)
-        self.hotkey_listener.start()
+        self.hotkey_listener = None
+        self._start_hotkey_listener()
         self.load_session()
 
     def setup_ui(self):
@@ -1462,6 +1470,48 @@ class LiveControllerMac(QWidget):
     # Hotkey handler
     # ------------------------------------------------------------------ #
 
+    def _start_hotkey_listener(self):
+        """Starts the global hotkey listener, handling SIGTRAP and other failures gracefully.
+
+        On macOS, pynput requires Accessibility and Input Monitoring permissions.
+        If those are missing the OS may send SIGTRAP to the process, which would
+        otherwise crash it.  We install a temporary SIGTRAP handler that converts
+        the signal into a Python exception so we can catch it and degrade gracefully.
+        """
+        # Install a SIGTRAP handler so that macOS permission failures do not kill
+        # the process.  The handler raises OSError which the try/except below catches.
+        _original_sigtrap = signal.SIG_DFL
+        if hasattr(signal, 'SIGTRAP'):
+            def _sigtrap_handler(signum, frame):
+                raise OSError("macOS denied Input Monitoring access (SIGTRAP received). "
+                              "Grant permissions in System Settings > Privacy & Security.")
+            _original_sigtrap = signal.signal(signal.SIGTRAP, _sigtrap_handler)
+
+        try:
+            self.hotkey_listener = GlobalHotkeyListener()
+            self.hotkey_listener.hotkey_pressed.connect(self.on_global_hotkey)
+            self.hotkey_listener.listener_failed.connect(self._on_hotkey_listener_failed)
+            self.hotkey_listener.start()
+        except Exception as exc:
+            self.hotkey_listener = None
+            self._show_hotkey_unavailable(str(exc))
+        finally:
+            # Restore the original SIGTRAP disposition.
+            if hasattr(signal, 'SIGTRAP'):
+                signal.signal(signal.SIGTRAP, _original_sigtrap)
+
+    def _on_hotkey_listener_failed(self, error_msg):
+        """Called via signal when the pynput listener thread fails to start."""
+        self.hotkey_listener = None
+        self._show_hotkey_unavailable(error_msg)
+
+    def _show_hotkey_unavailable(self, detail=""):
+        """Updates the status label to inform the user that hotkeys are disabled."""
+        self.status_label.setText(
+            "Status: Global hotkeys unavailable — grant Accessibility/Input Monitoring "
+            "permissions in System Settings > Privacy & Security, then restart the app."
+        )
+
     def on_global_hotkey(self, key):
         """Handles key presses from the pynput-based global hotkey listener."""
         lower_key = key.lower()
@@ -1653,8 +1703,9 @@ class LiveControllerMac(QWidget):
     def closeEvent(self, event):
         self.save_session()
         self.save_config()
-        self.hotkey_listener.stop()
-        self.hotkey_listener.wait()
+        if self.hotkey_listener is not None:
+            self.hotkey_listener.stop()
+            self.hotkey_listener.wait()
         self.stop_all_activity()
         event.accept()
 
