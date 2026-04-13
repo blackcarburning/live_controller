@@ -92,6 +92,10 @@ MAX_UNDO_LEVELS = 30
 PREPARING_OVERLAY_DURATION_MS = 2000
 ACTIVE_FLASH_INTERVAL_MS = 500
 SAVE_POPUP_DURATION_MS = 3000
+# Delay (ms) before the second focus-restore pass after stopping playback on macOS.
+# macOS may reassign focus during fullscreen/maximize teardown; a deferred re-activation
+# ensures the main window reliably ends up in front after pressing q.
+MACOS_FOCUS_RESTORE_DELAY_MS = 250
 
 # Default directory for file dialogs (macOS Movies folder or home dir)
 _DEFAULT_DIALOG_DIR = os.path.join(os.path.expanduser("~"), "Movies")
@@ -595,6 +599,13 @@ class LiveControllerMac(QWidget):
         self.active_flash_timer = QTimer(self)
         self.active_flash_timer.setInterval(ACTIVE_FLASH_INTERVAL_MS)
         self.active_flash_timer.timeout.connect(self.toggle_active_label_visibility)
+
+        # Single-shot timer used to defer a second focus-restore pass after q is pressed.
+        # Storing it as an instance allows cancelling any pending shot before rescheduling.
+        self._focus_restore_timer = QTimer(self)
+        self._focus_restore_timer.setSingleShot(True)
+        self._focus_restore_timer.setInterval(MACOS_FOCUS_RESTORE_DELAY_MS)
+        self._focus_restore_timer.timeout.connect(self._focus_main_window)
 
         self.setup_ui()
         self.apply_config_to_ui()
@@ -1656,7 +1667,7 @@ class LiveControllerMac(QWidget):
             if lower_key == 'q':
                 self._focus_main_window()
                 self.stop_all_activity()
-                QTimer.singleShot(250, self._focus_main_window)
+                self._focus_restore_timer.start()
             else:
                 self.show_danger_message()
             return
@@ -1668,7 +1679,7 @@ class LiveControllerMac(QWidget):
 
         if lower_key == 'q':
             self._focus_main_window()
-            QTimer.singleShot(250, self._focus_main_window)
+            self._focus_restore_timer.start()
             return
 
         if not self.is_live_mode:
