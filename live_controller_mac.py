@@ -1480,7 +1480,7 @@ class LiveControllerMac(QWidget):
         """
         # Temporarily ignore SIGTRAP so that macOS permission failures do not kill
         # the process.  We restore the original disposition in the finally block.
-        _original_sigtrap = signal.SIG_DFL
+        _original_sigtrap = None
         if hasattr(signal, 'SIGTRAP'):
             _original_sigtrap = signal.getsignal(signal.SIGTRAP)
             signal.signal(signal.SIGTRAP, signal.SIG_IGN)
@@ -1494,8 +1494,8 @@ class LiveControllerMac(QWidget):
             self.hotkey_listener = None
             self._show_hotkey_unavailable(str(exc))
         finally:
-            # Restore the original SIGTRAP disposition.
-            if hasattr(signal, 'SIGTRAP'):
+            # Restore the original SIGTRAP disposition only if we changed it.
+            if _original_sigtrap is not None:
                 signal.signal(signal.SIGTRAP, _original_sigtrap)
 
     def _on_hotkey_listener_failed(self, error_msg):
@@ -1504,10 +1504,9 @@ class LiveControllerMac(QWidget):
 
     def _show_hotkey_unavailable(self, detail=""):
         """Updates the status label to inform the user that hotkeys are disabled."""
-        self.status_label.setText(
-            "Status: Global hotkeys unavailable — grant Accessibility/Input Monitoring "
-            "permissions in System Settings > Privacy & Security, then restart the app."
-        )
+        base = ("Status: Global hotkeys unavailable — grant Accessibility/Input Monitoring "
+                "permissions in System Settings > Privacy & Security, then restart the app.")
+        self.status_label.setText(f"{base} ({detail})" if detail else base)
 
     def on_global_hotkey(self, key):
         """Handles key presses from the pynput-based global hotkey listener."""
