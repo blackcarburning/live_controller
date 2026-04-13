@@ -1723,6 +1723,5 @@ if __name__ == '__main__':
     app.setStyle("Fusion")
     app.setStyleSheet(MODERN_STYLESHEET)
     controller = LiveControllerMac()
-    controller.resize(1280, 800)
-    controller.show()
+    controller.showMaximized()
     sys.exit(app.exec())

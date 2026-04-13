@@ -45,11 +45,20 @@ Without these permissions the hotkey listener will start but key presses outside
 
 ### Running
 
+**Option 1 — double-click launcher (easiest)**
+
+After the virtual environment is set up, double-click `run_live_controller.command` in Finder.  
+macOS may ask for permission the first time; click *Open*.
+
+**Option 2 — terminal**
+
 ```bash
+cd ~/live_controller
+source .venv/bin/activate
 python live_controller_mac.py
 ```
 
-A resizable window sized at 1280 × 800 opens — suitable for a 13-inch or 14-inch MacBook screen.
+The window opens maximized to fill the screen on launch.
 
 ### Hotkeys (in LIVE mode)
 
