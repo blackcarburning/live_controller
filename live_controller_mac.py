@@ -49,7 +49,8 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QTableWidget, QTableWidgetItem, QLineEdit, QHeaderView,
                              QGroupBox, QLabel, QFileDialog, QSizePolicy, QComboBox,
                              QAbstractButton, QAbstractItemView, QCheckBox,
-                             QGridLayout, QSpinBox, QColorDialog, QTextEdit, QDialog)
+                             QGridLayout, QSpinBox, QColorDialog, QTextEdit, QDialog,
+                             QSlider)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer
 from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen, QTextCursor
 
@@ -236,6 +237,28 @@ QSpinBox::up-button, QSpinBox::down-button {
     border: none;
     width: 14px;
 }
+QSlider::groove:horizontal {
+    height: 4px;
+    background: #38383a;
+    border-radius: 2px;
+}
+QSlider::sub-page:horizontal {
+    background: #0a84ff;
+    border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    background: #0a84ff;
+    width: 16px;
+    height: 16px;
+    margin: -6px 0;
+    border-radius: 8px;
+}
+QSlider::handle:horizontal:disabled {
+    background: #48484a;
+}
+QSlider::sub-page:horizontal:disabled {
+    background: #38383a;
+}
 """
 
 # Branded logo HTML — ▲ (U+25B2) replaces each A in KATTMAN CONTROL
@@ -258,6 +281,44 @@ def _send_ipc_command(socket_path, command_str):
         sock.close()
     except Exception as e:
         print(f"mpv IPC error: {e}")
+
+
+def _query_ipc_property(socket_path, prop):
+    """Query a single mpv property via its Unix domain socket.
+
+    Returns the property value on success, or *None* on any error.
+    Uses a short timeout so callers in background threads are not blocked.
+    """
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(0.5)
+        sock.connect(socket_path)
+        req_id = 1
+        cmd = json.dumps({"command": ["get_property", prop], "request_id": req_id}) + '\n'
+        sock.sendall(cmd.encode('utf-8'))
+        buf = b""
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
+            try:
+                chunk = sock.recv(4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            while b'\n' in buf:
+                line, buf = buf.split(b'\n', 1)
+                try:
+                    obj = json.loads(line.decode('utf-8'))
+                    if obj.get('request_id') == req_id:
+                        sock.close()
+                        return obj.get('data') if obj.get('error') == 'success' else None
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass
+        sock.close()
+    except Exception:
+        pass
+    return None
 
 
 class DraggableTableWidget(QTableWidget):
@@ -446,6 +507,46 @@ class VideoPlaybackWorker(QThread):
         self.finished.emit()
 
 
+class PositionPoller(QThread):
+    """Polls mpv playback position and duration via IPC at ~500 ms intervals.
+
+    Runs entirely in its own thread so the main-thread UI is never blocked
+    waiting on IPC socket I/O.  Set the active socket path with
+    :meth:`set_socket`; pass ``None`` to pause polling without stopping the
+    thread.
+    """
+    position_updated = pyqtSignal(float, float)   # (pos_seconds, dur_seconds)
+
+    _POLL_INTERVAL = 0.5   # seconds between polls
+
+    def __init__(self):
+        super().__init__()
+        self._socket_path = None   # guarded by the GIL (str assignment is atomic in CPython)
+        self._running = False
+
+    def set_socket(self, path):
+        """Set (or clear) the active mpv IPC socket path."""
+        self._socket_path = path
+
+    def stop(self):
+        """Signal the polling loop to exit."""
+        self._running = False
+
+    def run(self):
+        self._running = True
+        while self._running:
+            path = self._socket_path
+            if path:
+                pos = _query_ipc_property(path, "time-pos")
+                dur = _query_ipc_property(path, "duration")
+                if pos is not None and dur is not None:
+                    try:
+                        self.position_updated.emit(float(pos), float(dur))
+                    except Exception:
+                        pass
+            time.sleep(self._POLL_INTERVAL)
+
+
 class Switch(QAbstractButton):
     """A custom animated toggle switch widget."""
     def __init__(self, parent=None):
@@ -598,6 +699,18 @@ class LiveControllerMac(QWidget):
         self.count_in_font_size = DEFAULT_COUNT_IN_FONT_SIZE
         self.track_play_bg_color = DEFAULT_TRACK_PLAY_BG_COLOR
         self.track_play_font_size = DEFAULT_TRACK_PLAY_FONT_SIZE
+
+        # --- Scrub / loop state ---
+        self._current_playback_pos = 0.0       # seconds, updated by position poller
+        self._current_track_duration = 0.0     # seconds, updated by position poller
+        self._slider_being_dragged = False      # True while user holds the scrub slider
+        self._loop_a_seconds = 0.0             # loop start point (seconds)
+        self._loop_b_seconds = 0.0             # loop end point (seconds)
+
+        # Background thread that polls mpv's playback position without blocking the UI.
+        self._position_poller = PositionPoller()
+        self._position_poller.position_updated.connect(self._on_position_updated)
+        self._position_poller.start()
 
         self.countdown_timer = QTimer(self)
         self.countdown_seconds = 0
@@ -902,6 +1015,77 @@ class LiveControllerMac(QWidget):
         test_track_layout.addWidget(self.play_test_button)
         test_track_group.setLayout(test_track_layout)
 
+        # Scrub & Loop group
+        scrub_loop_group = QGroupBox("Scrub & Loop")
+        scrub_loop_layout = QVBoxLayout()
+        scrub_loop_layout.setContentsMargins(8, 10, 8, 8)
+        scrub_loop_layout.setSpacing(6)
+
+        # Scrub slider row: [pos] [slider] [dur]
+        scrub_row = QHBoxLayout()
+        scrub_row.setSpacing(4)
+        self.scrub_pos_label = QLabel("--:--")
+        self.scrub_pos_label.setFixedWidth(38)
+        self.scrub_pos_label.setStyleSheet("font-size: 10px; color: #aeaeb2;")
+        self.scrub_slider = QSlider(Qt.Orientation.Horizontal)
+        self.scrub_slider.setRange(0, 1000)
+        self.scrub_slider.setValue(0)
+        self.scrub_slider.setEnabled(False)
+        self.scrub_slider.setToolTip("Drag to seek to a different position in the currently playing file.")
+        self.scrub_slider.sliderMoved.connect(self._on_scrub_slider_moved)
+        self.scrub_slider.sliderReleased.connect(self._on_scrub_slider_released)
+        self.scrub_dur_label = QLabel("--:--")
+        self.scrub_dur_label.setFixedWidth(38)
+        self.scrub_dur_label.setStyleSheet("font-size: 10px; color: #aeaeb2;")
+        scrub_row.addWidget(self.scrub_pos_label)
+        scrub_row.addWidget(self.scrub_slider, 1)
+        scrub_row.addWidget(self.scrub_dur_label)
+
+        # Loop points row: [A: 00:00] [Set A] [B: 00:00] [Set B] [Loop A→B]
+        loop_row = QHBoxLayout()
+        loop_row.setSpacing(4)
+        self.loop_a_label = QLabel("A: --:--")
+        self.loop_a_label.setFixedWidth(58)
+        self.loop_a_label.setStyleSheet("font-size: 10px; color: #aeaeb2;")
+        self.loop_set_a_btn = QPushButton("Set A")
+        self.loop_set_a_btn.setFixedWidth(48)
+        self.loop_set_a_btn.setEnabled(False)
+        self.loop_set_a_btn.setToolTip("Mark the current playback position as loop start (A).")
+        self.loop_set_a_btn.clicked.connect(self._set_loop_a)
+        self.loop_b_label = QLabel("B: --:--")
+        self.loop_b_label.setFixedWidth(58)
+        self.loop_b_label.setStyleSheet("font-size: 10px; color: #aeaeb2;")
+        self.loop_set_b_btn = QPushButton("Set B")
+        self.loop_set_b_btn.setFixedWidth(48)
+        self.loop_set_b_btn.setEnabled(False)
+        self.loop_set_b_btn.setToolTip("Mark the current playback position as loop end (B).")
+        self.loop_set_b_btn.clicked.connect(self._set_loop_b)
+        self.loop_checkbox = QCheckBox("Loop A→B")
+        self.loop_checkbox.setToolTip(
+            "When checked, mpv will repeat the section between loop points A and B continuously."
+        )
+        self.loop_checkbox.toggled.connect(self._on_loop_toggled)
+        loop_row.addWidget(self.loop_a_label)
+        loop_row.addWidget(self.loop_set_a_btn)
+        loop_row.addWidget(self.loop_b_label)
+        loop_row.addWidget(self.loop_set_b_btn)
+        loop_row.addWidget(self.loop_checkbox)
+        loop_row.addStretch(1)
+
+        # Lock row
+        self.scrub_lock_checkbox = QCheckBox("Lock scrub/loop controls")
+        self.scrub_lock_checkbox.setToolTip(
+            "When checked, the scrub slider and loop controls are disabled.\n"
+            "Use this during live shows to prevent accidental changes.\n"
+            "This setting is saved with the session."
+        )
+        self.scrub_lock_checkbox.toggled.connect(self._on_scrub_lock_changed)
+
+        scrub_loop_layout.addLayout(scrub_row)
+        scrub_loop_layout.addLayout(loop_row)
+        scrub_loop_layout.addWidget(self.scrub_lock_checkbox)
+        scrub_loop_group.setLayout(scrub_loop_layout)
+
         # Overlay Colours group
         overlay_colours_group = QGroupBox("Overlay Colours")
         overlay_colours_layout = QGridLayout()
@@ -966,6 +1150,7 @@ class LiveControllerMac(QWidget):
         controls_area.addWidget(main_controls_group)
         controls_area.addWidget(settings_group)
         controls_area.addWidget(test_track_group)
+        controls_area.addWidget(scrub_loop_group)
         controls_area.addWidget(overlay_colours_group)
         controls_area.addWidget(app_group)
         controls_area.addStretch(1)
@@ -1180,6 +1365,8 @@ class LiveControllerMac(QWidget):
             'track_play_bg_color': self.track_play_bg_color,
             'track_play_font_size': self.track_play_font_size,
             'audio_only': self.audio_only_checkbox.isChecked(),
+            'scrub_locked': self.scrub_lock_checkbox.isChecked(),
+            'loop_enabled': self.loop_checkbox.isChecked(),
         }
         with open(SESSION_FILE, 'w') as f:
             json.dump(session_data, f, indent=4)
@@ -1215,6 +1402,10 @@ class LiveControllerMac(QWidget):
             self._apply_setlist_data(session_data.get('tracks', []), session_data.get('setlist_name', 'Untitled Setlist'))
 
             self.audio_only_checkbox.setChecked(session_data.get('audio_only', False))
+
+            self.scrub_lock_checkbox.setChecked(session_data.get('scrub_locked', False))
+            self.loop_checkbox.setChecked(session_data.get('loop_enabled', False))
+            self._update_scrub_controls_state()
 
             self.test_track_path = session_data.get('test_track_path')
             if self.test_track_path and os.path.exists(self.test_track_path):
@@ -1771,6 +1962,7 @@ class LiveControllerMac(QWidget):
         self.worker.finished.connect(self.on_playback_finished)
         self.worker.ipc_socket_path.connect(self.set_ipc_socket)
         self.worker.start()
+        self._update_scrub_controls_state()
 
     def _on_playback_error(self, msg):
         self.status_label.setText(f"ERROR: {msg}")
@@ -1778,6 +1970,7 @@ class LiveControllerMac(QWidget):
 
     def set_ipc_socket(self, path):
         self.current_ipc_socket = path
+        self._position_poller.set_socket(path)
 
     def stop_all_activity(self):
         if self.countdown_timer.isActive():
@@ -1801,6 +1994,7 @@ class LiveControllerMac(QWidget):
 
         self.active_flash_timer.stop()
         self.active_label.hide()
+        self._reset_scrub_controls()
 
     def on_playback_finished(self):
         finished_row = self.currently_playing_row
@@ -1814,6 +2008,7 @@ class LiveControllerMac(QWidget):
             self.worker.deleteLater()
         self.worker = None
         self.current_ipc_socket = None
+        self._reset_scrub_controls()
 
         # Auto-play next track if the finished track was linked.
         if finished_row is not None and finished_row < len(self.tracks):
@@ -1844,8 +2039,123 @@ class LiveControllerMac(QWidget):
         self.active_label.setVisible(not self.active_label.isVisible())
 
     # ------------------------------------------------------------------ #
-    # Debug console
+    # Scrub & Loop
     # ------------------------------------------------------------------ #
+
+    def _on_position_updated(self, pos: float, dur: float):
+        """Slot called by PositionPoller (via signal) whenever mpv reports a new position."""
+        self._current_playback_pos = pos
+        self._current_track_duration = dur
+        if self._slider_being_dragged:
+            return
+        if dur > 0:
+            slider_val = int((pos / dur) * 1000)
+            # Block the sliderMoved signal while we update the slider programmatically.
+            self.scrub_slider.blockSignals(True)
+            self.scrub_slider.setValue(slider_val)
+            self.scrub_slider.blockSignals(False)
+        self.scrub_pos_label.setText(self.format_duration(pos))
+        self.scrub_dur_label.setText(self.format_duration(dur))
+
+    def _on_scrub_slider_moved(self, value: int):
+        """Called continuously while the user drags the scrub slider handle."""
+        self._slider_being_dragged = True
+        if self._current_track_duration > 0:
+            pos = (value / 1000.0) * self._current_track_duration
+            self.scrub_pos_label.setText(self.format_duration(pos))
+
+    def _on_scrub_slider_released(self):
+        """Called when the user releases the scrub slider — seek mpv to the chosen position."""
+        if not self._slider_being_dragged:
+            return
+        self._slider_being_dragged = False
+        if self.current_ipc_socket and self._current_track_duration > 0:
+            value = self.scrub_slider.value()
+            pos = (value / 1000.0) * self._current_track_duration
+            _send_ipc_command(
+                self.current_ipc_socket,
+                json.dumps({"command": ["seek", pos, "absolute"]}),
+            )
+            self._debug_log(f"Scrub seek → {self.format_duration(pos)}")
+
+    def _set_loop_a(self):
+        """Capture the current playback position as loop point A."""
+        pos = self._current_playback_pos
+        self._loop_a_seconds = pos
+        self.loop_a_label.setText(f"A: {self.format_duration(pos)}")
+        if self.loop_checkbox.isChecked() and self.current_ipc_socket:
+            _send_ipc_command(
+                self.current_ipc_socket,
+                json.dumps({"command": ["set_property", "ab-loop-a", pos]}),
+            )
+        self._debug_log(f"Loop A set → {self.format_duration(pos)}")
+
+    def _set_loop_b(self):
+        """Capture the current playback position as loop point B."""
+        pos = self._current_playback_pos
+        self._loop_b_seconds = pos
+        self.loop_b_label.setText(f"B: {self.format_duration(pos)}")
+        if self.loop_checkbox.isChecked() and self.current_ipc_socket:
+            _send_ipc_command(
+                self.current_ipc_socket,
+                json.dumps({"command": ["set_property", "ab-loop-b", pos]}),
+            )
+        self._debug_log(f"Loop B set → {self.format_duration(pos)}")
+
+    def _on_loop_toggled(self, checked: bool):
+        """Enable or disable mpv's A-B loop when the loop checkbox is toggled."""
+        if not self.current_ipc_socket:
+            return
+        if checked:
+            _send_ipc_command(
+                self.current_ipc_socket,
+                json.dumps({"command": ["set_property", "ab-loop-a", self._loop_a_seconds]}),
+            )
+            _send_ipc_command(
+                self.current_ipc_socket,
+                json.dumps({"command": ["set_property", "ab-loop-b", self._loop_b_seconds]}),
+            )
+            self._debug_log(
+                f"Loop enabled: A={self.format_duration(self._loop_a_seconds)} "
+                f"B={self.format_duration(self._loop_b_seconds)}"
+            )
+        else:
+            _send_ipc_command(
+                self.current_ipc_socket,
+                json.dumps({"command": ["set_property", "ab-loop-a", "no"]}),
+            )
+            _send_ipc_command(
+                self.current_ipc_socket,
+                json.dumps({"command": ["set_property", "ab-loop-b", "no"]}),
+            )
+            self._debug_log("Loop disabled.")
+
+    def _on_scrub_lock_changed(self, checked: bool):
+        """Lock or unlock the scrub/loop controls and persist the setting."""
+        self._update_scrub_controls_state()
+        self._debug_log(f"Scrub/loop controls {'locked' if checked else 'unlocked'}.")
+
+    def _update_scrub_controls_state(self):
+        """Refresh enabled/disabled state for all scrub and loop widgets."""
+        is_playing = self.worker is not None and self.worker.isRunning()
+        locked = self.scrub_lock_checkbox.isChecked()
+        self.scrub_slider.setEnabled(is_playing and not locked)
+        self.loop_set_a_btn.setEnabled(is_playing and not locked)
+        self.loop_set_b_btn.setEnabled(is_playing and not locked)
+        self.loop_checkbox.setEnabled(not locked)
+
+    def _reset_scrub_controls(self):
+        """Reset scrub slider and labels to their idle state when playback stops."""
+        self._position_poller.set_socket(None)
+        self._current_track_duration = 0.0
+        self._current_playback_pos = 0.0
+        self._slider_being_dragged = False
+        self.scrub_slider.blockSignals(True)
+        self.scrub_slider.setValue(0)
+        self.scrub_slider.blockSignals(False)
+        self.scrub_pos_label.setText("--:--")
+        self.scrub_dur_label.setText("--:--")
+        self._update_scrub_controls_state()
 
     def _debug_log(self, message: str):
         """Append a message to the debug console (thread-safe from main thread)."""
@@ -1910,6 +2220,8 @@ class LiveControllerMac(QWidget):
             self.hotkey_listener.stop()
             self.hotkey_listener.wait()
         self.stop_all_activity()
+        self._position_poller.stop()
+        self._position_poller.wait()
         event.accept()
 
 
