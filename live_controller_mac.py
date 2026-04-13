@@ -51,7 +51,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QAbstractButton, QAbstractItemView, QCheckBox,
                              QGridLayout, QSpinBox, QColorDialog, QTextEdit, QDialog)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer
-from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen
+from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen, QTextCursor
 
 
 # --- Executable Path Detection ---
@@ -536,7 +536,7 @@ class DebugConsoleWindow(QDialog):
         QApplication.clipboard().setText(self._log_view.toPlainText())
 
     def append(self, message: str):
-        """Append a timestamped message.  Trims the log if it grows too large."""
+        """Append a timestamped message (local time).  Trims the log if it grows too large."""
         ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         self._log_view.append(f"[{ts}]  {message}")
 
@@ -544,8 +544,8 @@ class DebugConsoleWindow(QDialog):
         doc = self._log_view.document()
         while doc.blockCount() > self.MAX_LINES:
             cursor = self._log_view.textCursor()
-            cursor.movePosition(cursor.MoveOperation.Start)
-            cursor.select(cursor.SelectionType.LineUnderCursor)
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
+            cursor.select(QTextCursor.SelectionType.LineUnderCursor)
             cursor.removeSelectedText()
             cursor.deleteChar()  # Remove the trailing newline.
 
@@ -557,6 +557,9 @@ class DebugConsoleWindow(QDialog):
 
 class LiveControllerMac(QWidget):
     """The main application window and controller — macOS version."""
+
+    # Milliseconds of main-thread silence before the freeze watchdog logs a warning.
+    _FREEZE_WARN_MS = 1500
 
     def __init__(self):
         super().__init__()
@@ -593,17 +596,6 @@ class LiveControllerMac(QWidget):
         self.active_flash_timer.setInterval(ACTIVE_FLASH_INTERVAL_MS)
         self.active_flash_timer.timeout.connect(self.toggle_active_label_visibility)
 
-        # UI-freeze watchdog: fires every 500 ms from the main thread.
-        # We record when the timer last fired; a background thread checks
-        # whether the main thread is keeping up.  If the gap between ticks
-        # exceeds _FREEZE_WARN_MS we log a warning.
-        self._FREEZE_WARN_MS = 1500
-        self._last_heartbeat = time.monotonic()
-        self._heartbeat_timer = QTimer(self)
-        self._heartbeat_timer.setInterval(500)
-        self._heartbeat_timer.timeout.connect(self._update_heartbeat)
-        self._heartbeat_timer.start()
-
         self.setup_ui()
         self.apply_config_to_ui()
         # Full-screen mode is requested at startup from the __main__ block via QTimer.
@@ -611,6 +603,15 @@ class LiveControllerMac(QWidget):
         self._start_hotkey_listener()
         self.load_session()
         self._debug_log("App started.")
+
+        # UI-freeze watchdog: fires every 500 ms from the main thread.
+        # _last_heartbeat is set immediately before the timer starts so the
+        # first tick never produces a spurious freeze warning.
+        self._last_heartbeat = time.monotonic()
+        self._heartbeat_timer = QTimer(self)
+        self._heartbeat_timer.setInterval(500)
+        self._heartbeat_timer.timeout.connect(self._update_heartbeat)
+        self._heartbeat_timer.start()
 
     def setup_ui(self):
         """Constructs the entire user interface (compact layout for MacBook)."""
