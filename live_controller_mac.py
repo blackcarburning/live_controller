@@ -85,7 +85,7 @@ def _is_accessibility_trusted():
     try:
         lib = ctypes.CDLL(_framework)
         return bool(lib.AXIsProcessTrusted())
-    except Exception:
+    except (OSError, AttributeError):
         return None  # Non-macOS or library unavailable — treat as unknown.
 
 
@@ -1217,15 +1217,15 @@ class LiveControllerMac(QWidget):
         trust_banner_layout = QHBoxLayout(self.trust_banner)
         trust_banner_layout.setContentsMargins(8, 4, 8, 4)
         trust_banner_layout.setSpacing(8)
-        _trust_warn_label = QLabel(
+        trust_warn_label = QLabel(
             "⚠  Global hotkeys need Accessibility permission — "
             "System Settings → Privacy & Security → Accessibility, "
             "add your terminal or Python binary, then restart."
         )
-        _trust_warn_label.setStyleSheet(
+        trust_warn_label.setStyleSheet(
             "color: #ffd60a; font-size: 11px; background: transparent; border: none;"
         )
-        _trust_warn_label.setWordWrap(True)
+        trust_warn_label.setWordWrap(True)
         self._open_settings_btn = QPushButton("Open Settings")
         self._open_settings_btn.setFixedWidth(110)
         self._open_settings_btn.setStyleSheet(
@@ -1233,7 +1233,7 @@ class LiveControllerMac(QWidget):
             "font-size: 11px; padding: 3px 8px; border-radius: 5px; font-weight: 600;"
         )
         self._open_settings_btn.clicked.connect(self._open_accessibility_settings)
-        trust_banner_layout.addWidget(_trust_warn_label, 1)
+        trust_banner_layout.addWidget(trust_warn_label, 1)
         trust_banner_layout.addWidget(self._open_settings_btn)
         self.trust_banner.hide()
 
