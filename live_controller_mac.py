@@ -33,6 +33,7 @@ import signal
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import json
 import shutil
@@ -521,12 +522,14 @@ class PositionPoller(QThread):
 
     def __init__(self):
         super().__init__()
-        self._socket_path = None   # guarded by the GIL (str assignment is atomic in CPython)
+        self._socket_path = None
+        self._socket_lock = threading.Lock()
         self._running = False
 
     def set_socket(self, path):
-        """Set (or clear) the active mpv IPC socket path."""
-        self._socket_path = path
+        """Set (or clear) the active mpv IPC socket path (thread-safe)."""
+        with self._socket_lock:
+            self._socket_path = path
 
     def stop(self):
         """Signal the polling loop to exit."""
@@ -535,7 +538,8 @@ class PositionPoller(QThread):
     def run(self):
         self._running = True
         while self._running:
-            path = self._socket_path
+            with self._socket_lock:
+                path = self._socket_path
             if path:
                 pos = _query_ipc_property(path, "time-pos")
                 dur = _query_ipc_property(path, "duration")
