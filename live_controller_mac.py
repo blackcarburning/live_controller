@@ -290,6 +290,193 @@ KATTMAN_LOGO_HTML = (
     '</span>'
 )
 
+# Default color scheme — matches the colors used in MODERN_STYLESHEET.
+# Keys cover backgrounds and text only; button styling is intentionally excluded.
+DEFAULT_COLOR_SCHEME = {
+    'app_bg':       '#1c1c1e',   # Main app/window background
+    'app_fg':       '#f2f2f7',   # Main text / foreground color
+    'panel_bg':     '#2c2c2e',   # Inputs, checkboxes, secondary panels
+    'table_bg':     '#2c2c2e',   # Table widget background
+    'table_alt_bg': '#323234',   # Table alternating row background
+    'header_fg':    '#636366',   # Column header text and group-box title text
+    'border_color': '#38383a',   # Borders, grid lines, and separators
+}
+
+# File extension / filter used for color-scheme export/import.
+COLOR_SCHEME_FILE_FILTER = "Color Scheme (*.json)"
+
+
+def _build_stylesheet(scheme):
+    """Return a full Qt stylesheet built from *scheme*.
+
+    Button (QPushButton) rules are kept as fixed constants so that the
+    user-configurable color scheme never alters button appearance.
+    All other background and text rules are parameterised from *scheme*.
+    """
+    app_bg       = scheme.get('app_bg',       DEFAULT_COLOR_SCHEME['app_bg'])
+    app_fg       = scheme.get('app_fg',       DEFAULT_COLOR_SCHEME['app_fg'])
+    panel_bg     = scheme.get('panel_bg',     DEFAULT_COLOR_SCHEME['panel_bg'])
+    table_bg     = scheme.get('table_bg',     DEFAULT_COLOR_SCHEME['table_bg'])
+    table_alt_bg = scheme.get('table_alt_bg', DEFAULT_COLOR_SCHEME['table_alt_bg'])
+    header_fg    = scheme.get('header_fg',    DEFAULT_COLOR_SCHEME['header_fg'])
+    border_color = scheme.get('border_color', DEFAULT_COLOR_SCHEME['border_color'])
+
+    return f"""
+QWidget {{
+    background-color: {app_bg};
+    color: {app_fg};
+    font-family: Arial;
+    font-size: 12px;
+}}
+QGroupBox {{
+    font-size: 9px;
+    font-weight: 600;
+    color: {header_fg};
+    border: 1px solid {border_color};
+    border-radius: 10px;
+    margin-top: 8px;
+    padding-top: 4px;
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 8px;
+    color: {header_fg};
+}}
+QLabel {{
+    background-color: transparent;
+    color: {app_fg};
+}}
+QPushButton {{
+    background-color: #2c2c2e;
+    color: #f2f2f7;
+    border: 1px solid #3a3a3c;
+    padding: 5px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    min-height: 22px;
+}}
+QPushButton:hover {{
+    background-color: #3a3a3c;
+    border-color: #636366;
+}}
+QPushButton:pressed {{
+    background-color: #48484a;
+}}
+QPushButton:disabled {{
+    background-color: #1c1c1e;
+    color: #3a3a3c;
+    border-color: #2c2c2e;
+}}
+QLineEdit, QComboBox, QSpinBox {{
+    background-color: {panel_bg};
+    border: 1px solid {border_color};
+    border-radius: 6px;
+    padding: 4px 8px;
+    color: {app_fg};
+    font-size: 12px;
+    selection-background-color: #0a84ff;
+    selection-color: #ffffff;
+}}
+QLineEdit:focus {{
+    border-color: #0a84ff;
+}}
+QComboBox::drop-down {{
+    border: none;
+    padding-right: 4px;
+}}
+QTableWidget {{
+    background-color: {table_bg};
+    gridline-color: {border_color};
+    border: 1px solid {border_color};
+    border-radius: 8px;
+    alternate-background-color: {table_alt_bg};
+}}
+QHeaderView::section {{
+    background-color: {app_bg};
+    color: {header_fg};
+    padding: 6px 4px;
+    border: none;
+    border-bottom: 1px solid {border_color};
+    font-size: 10px;
+    font-weight: 600;
+}}
+QTableWidget::item {{
+    padding: 3px 6px;
+}}
+QTableWidget::item:selected {{
+    background-color: #0a84ff;
+    color: #ffffff;
+}}
+QScrollBar:vertical {{
+    background-color: {app_bg};
+    width: 6px;
+    border-radius: 3px;
+    margin: 0px;
+}}
+QScrollBar::handle:vertical {{
+    background-color: #48484a;
+    border-radius: 3px;
+    min-height: 20px;
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0px;
+}}
+QScrollBar:horizontal {{
+    background-color: {app_bg};
+    height: 6px;
+    border-radius: 3px;
+}}
+QScrollBar::handle:horizontal {{
+    background-color: #48484a;
+    border-radius: 3px;
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0px;
+}}
+QCheckBox {{
+    spacing: 6px;
+}}
+QCheckBox::indicator {{
+    width: 15px;
+    height: 15px;
+    border: 1.5px solid #48484a;
+    border-radius: 4px;
+    background-color: {panel_bg};
+}}
+QCheckBox::indicator:checked {{
+    background-color: #0a84ff;
+    border-color: #0a84ff;
+}}
+QSpinBox::up-button, QSpinBox::down-button {{
+    background-color: transparent;
+    border: none;
+    width: 14px;
+}}
+QSlider::groove:horizontal {{
+    height: 4px;
+    background: {border_color};
+    border-radius: 2px;
+}}
+QSlider::sub-page:horizontal {{
+    background: #0a84ff;
+    border-radius: 2px;
+}}
+QSlider::handle:horizontal {{
+    background: #0a84ff;
+    width: 16px;
+    height: 16px;
+    margin: -6px 0;
+    border-radius: 8px;
+}}
+QSlider::handle:horizontal:disabled {{
+    background: #48484a;
+}}
+QSlider::sub-page:horizontal:disabled {{
+    background: {border_color};
+}}
+"""
 
 
 def _send_ipc_command(socket_path, command_str):
@@ -735,6 +922,9 @@ class LiveControllerMac(QWidget):
         self.track_play_bg_color = DEFAULT_TRACK_PLAY_BG_COLOR
         self.track_play_font_size = DEFAULT_TRACK_PLAY_FONT_SIZE
 
+        # Color scheme for backgrounds and text (populated from session on load).
+        self._color_scheme = dict(DEFAULT_COLOR_SCHEME)
+
         # --- Scrub / loop state ---
         self._current_playback_pos = 0.0       # seconds, updated by position poller
         self._current_track_duration = 0.0     # seconds, updated by position poller
@@ -1160,6 +1350,71 @@ class LiveControllerMac(QWidget):
         overlay_colours_layout.addWidget(self.track_play_font_spinbox, 1, 3)
         overlay_colours_group.setLayout(overlay_colours_layout)
 
+        # Color Scheme group — controls app background and text colors.
+        # Button styling is intentionally excluded (buttons use fixed inline styles).
+        color_scheme_group = QGroupBox("Color Scheme")
+        color_scheme_layout = QGridLayout()
+        color_scheme_layout.setContentsMargins(6, 8, 6, 6)
+        color_scheme_layout.setSpacing(4)
+
+        # Helper: create a compact color swatch button for *key* with *label* text.
+        def _make_swatch(key, hex_color):
+            btn = QPushButton()
+            btn.setFixedSize(46, 22)
+            btn.setStyleSheet(
+                f"background-color: {hex_color}; border-radius: 4px; border: 1px solid #38383a;"
+            )
+            btn.clicked.connect(lambda _checked, k=key: self._pick_scheme_color(k))
+            return btn
+
+        scheme = self._color_scheme
+        self._scheme_swatches = {}  # key → QPushButton
+
+        self._scheme_swatches['app_bg']       = _make_swatch('app_bg',       scheme['app_bg'])
+        self._scheme_swatches['app_fg']       = _make_swatch('app_fg',       scheme['app_fg'])
+        self._scheme_swatches['panel_bg']     = _make_swatch('panel_bg',     scheme['panel_bg'])
+        self._scheme_swatches['table_bg']     = _make_swatch('table_bg',     scheme['table_bg'])
+        self._scheme_swatches['table_alt_bg'] = _make_swatch('table_alt_bg', scheme['table_alt_bg'])
+        self._scheme_swatches['header_fg']    = _make_swatch('header_fg',    scheme['header_fg'])
+        self._scheme_swatches['border_color'] = _make_swatch('border_color', scheme['border_color'])
+
+        color_scheme_layout.addWidget(QLabel("App BG:"),        0, 0)
+        color_scheme_layout.addWidget(self._scheme_swatches['app_bg'],        0, 1)
+        color_scheme_layout.addWidget(QLabel("App Text:"),      0, 2)
+        color_scheme_layout.addWidget(self._scheme_swatches['app_fg'],        0, 3)
+
+        color_scheme_layout.addWidget(QLabel("Panel BG:"),      1, 0)
+        color_scheme_layout.addWidget(self._scheme_swatches['panel_bg'],      1, 1)
+        color_scheme_layout.addWidget(QLabel("Table Alt:"),     1, 2)
+        color_scheme_layout.addWidget(self._scheme_swatches['table_alt_bg'],  1, 3)
+
+        color_scheme_layout.addWidget(QLabel("Table BG:"),      2, 0)
+        color_scheme_layout.addWidget(self._scheme_swatches['table_bg'],      2, 1)
+        color_scheme_layout.addWidget(QLabel("Header Text:"),   2, 2)
+        color_scheme_layout.addWidget(self._scheme_swatches['header_fg'],     2, 3)
+
+        color_scheme_layout.addWidget(QLabel("Borders:"),       3, 0)
+        color_scheme_layout.addWidget(self._scheme_swatches['border_color'],  3, 1)
+
+        # Action buttons row
+        scheme_btns_layout = QHBoxLayout()
+        scheme_btns_layout.setSpacing(4)
+        self.scheme_reset_button = QPushButton("Reset")
+        self.scheme_reset_button.setToolTip("Reset all colors to the built-in default scheme")
+        self.scheme_reset_button.clicked.connect(self._reset_color_scheme)
+        self.scheme_export_button = QPushButton("Export…")
+        self.scheme_export_button.setToolTip("Save the current color scheme to a JSON file")
+        self.scheme_export_button.clicked.connect(self._export_color_scheme)
+        self.scheme_import_button = QPushButton("Import…")
+        self.scheme_import_button.setToolTip("Load a color scheme from a JSON file")
+        self.scheme_import_button.clicked.connect(self._import_color_scheme)
+        scheme_btns_layout.addWidget(self.scheme_reset_button)
+        scheme_btns_layout.addWidget(self.scheme_export_button)
+        scheme_btns_layout.addWidget(self.scheme_import_button)
+
+        color_scheme_layout.addLayout(scheme_btns_layout, 4, 0, 1, 4)
+        color_scheme_group.setLayout(color_scheme_layout)
+
         # Application group (horizontal for compactness)
         app_group = QGroupBox("Application")
         app_layout = QHBoxLayout()
@@ -1188,13 +1443,14 @@ class LiveControllerMac(QWidget):
         row_top.addWidget(main_controls_group)
         row_top.addWidget(settings_group)
 
-        # Row 2: Scrub & Loop (left) + Overlay Colours / Application stacked (right)
+        # Row 2: Scrub & Loop (left) + Overlay Colours / Color Scheme / Application stacked (right)
         row_mid = QHBoxLayout()
         row_mid.setSpacing(6)
         row_mid.addWidget(scrub_loop_group)
         right_col = QVBoxLayout()
         right_col.setSpacing(4)
         right_col.addWidget(overlay_colours_group)
+        right_col.addWidget(color_scheme_group)
         right_col.addWidget(app_group)
         row_mid.addLayout(right_col)
 
@@ -1296,8 +1552,83 @@ class LiveControllerMac(QWidget):
         self.apply_overlay_styles()
 
     # ------------------------------------------------------------------ #
-    # Table font
+    # Color scheme helpers
     # ------------------------------------------------------------------ #
+
+    def apply_color_scheme(self, scheme):
+        """Apply *scheme* to the application stylesheet and update all swatch buttons."""
+        self._color_scheme = dict(scheme)
+        QApplication.instance().setStyleSheet(_build_stylesheet(self._color_scheme))
+        for key, btn in self._scheme_swatches.items():
+            color = self._color_scheme.get(key, DEFAULT_COLOR_SCHEME[key])
+            btn.setStyleSheet(
+                f"background-color: {color}; border-radius: 4px; border: 1px solid #38383a;"
+            )
+
+    def _pick_scheme_color(self, key):
+        """Open a colour picker for *key* and apply the result."""
+        current = self._color_scheme.get(key, DEFAULT_COLOR_SCHEME[key])
+        label_map = {
+            'app_bg':       'App Background',
+            'app_fg':       'App Text',
+            'panel_bg':     'Panel Background',
+            'table_bg':     'Table Background',
+            'table_alt_bg': 'Table Alternate Row',
+            'header_fg':    'Header Text',
+            'border_color': 'Border / Lines',
+        }
+        color = QColorDialog.getColor(QColor(current), self, label_map.get(key, key))
+        if color.isValid():
+            new_scheme = dict(self._color_scheme)
+            new_scheme[key] = color.name()
+            self.apply_color_scheme(new_scheme)
+            self.save_session()
+            self.status_label.setText(f"Status: Color '{label_map.get(key, key)}' updated.")
+
+    def _reset_color_scheme(self):
+        """Reset the color scheme to the built-in defaults."""
+        self.apply_color_scheme(dict(DEFAULT_COLOR_SCHEME))
+        self.save_session()
+        self.status_label.setText("Status: Color scheme reset to defaults.")
+
+    def _export_color_scheme(self):
+        """Save the current color scheme to a JSON file chosen by the user."""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Color Scheme", _DEFAULT_DIALOG_DIR, COLOR_SCHEME_FILE_FILTER
+        )
+        if not path:
+            return
+        if not path.endswith('.json'):
+            path += '.json'
+        try:
+            with open(path, 'w') as f:
+                json.dump(self._color_scheme, f, indent=4)
+            self.status_label.setText(f"Status: Color scheme exported to {os.path.basename(path)}.")
+        except OSError as exc:
+            self.status_label.setText(f"Status: Export failed — {exc}")
+
+    def _import_color_scheme(self):
+        """Load a color scheme from a user-selected JSON file and apply it."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Color Scheme", _DEFAULT_DIALOG_DIR, COLOR_SCHEME_FILE_FILTER
+        )
+        if not path:
+            return
+        try:
+            with open(path, 'r') as f:
+                loaded = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            self.status_label.setText(f"Status: Import failed — {exc}")
+            return
+        # Validate: start from defaults and overlay only known keys with valid hex colors.
+        new_scheme = dict(DEFAULT_COLOR_SCHEME)
+        for key in DEFAULT_COLOR_SCHEME:
+            value = loaded.get(key)
+            if isinstance(value, str) and QColor(value).isValid():
+                new_scheme[key] = value
+        self.apply_color_scheme(new_scheme)
+        self.save_session()
+        self.status_label.setText(f"Status: Color scheme imported from {os.path.basename(path)}.")
 
     def apply_table_font_size(self):
         self.current_table_font_size = self.font_size_spinbox.value()
@@ -1344,6 +1675,12 @@ class LiveControllerMac(QWidget):
         self.track_play_color_button.setEnabled(is_edit_mode)
         self.track_play_font_spinbox.setEnabled(is_edit_mode)
         self.audio_only_checkbox.setEnabled(is_edit_mode)
+        # Color scheme controls — only available in edit mode.
+        for swatch in self._scheme_swatches.values():
+            swatch.setEnabled(is_edit_mode)
+        self.scheme_reset_button.setEnabled(is_edit_mode)
+        self.scheme_export_button.setEnabled(is_edit_mode)
+        self.scheme_import_button.setEnabled(is_edit_mode)
         # Debug console button is always accessible.
         self.debug_console_button.setEnabled(True)
 
@@ -1447,6 +1784,7 @@ class LiveControllerMac(QWidget):
             'audio_only': self.audio_only_checkbox.isChecked(),
             'scrub_locked': self.scrub_lock_checkbox.isChecked(),
             'loop_enabled': self.loop_checkbox.isChecked(),
+            'color_scheme': self._color_scheme,
         }
         with open(SESSION_FILE, 'w') as f:
             json.dump(session_data, f, indent=4)
@@ -1477,6 +1815,15 @@ class LiveControllerMac(QWidget):
             self.track_play_color_button.setStyleSheet(f"background-color: {self.track_play_bg_color};")
             self.track_play_font_spinbox.setValue(self.track_play_font_size)
             self.apply_overlay_styles()
+
+            # Restore color scheme (validate all keys before applying).
+            saved_scheme = session_data.get('color_scheme', {})
+            restored_scheme = dict(DEFAULT_COLOR_SCHEME)
+            for key in DEFAULT_COLOR_SCHEME:
+                value = saved_scheme.get(key)
+                if isinstance(value, str) and QColor(value).isValid():
+                    restored_scheme[key] = value
+            self.apply_color_scheme(restored_scheme)
 
             self.undo_history = deque(session_data.get('undo_history', []), maxlen=MAX_UNDO_LEVELS)
             self._apply_setlist_data(session_data.get('tracks', []), session_data.get('setlist_name', 'Untitled Setlist'))
@@ -2357,7 +2704,7 @@ if __name__ == '__main__':
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    app.setStyleSheet(MODERN_STYLESHEET)
+    app.setStyleSheet(_build_stylesheet(DEFAULT_COLOR_SCHEME))
     controller = LiveControllerMac()
     # Fill the primary screen's available geometry on startup so the window
     # launches visibly maximised without entering macOS fullscreen-space mode.
