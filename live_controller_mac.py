@@ -1241,7 +1241,7 @@ class LiveControllerMac(QWidget):
         setlist_name_layout.setSpacing(4)
         self.setlist_name_input = QLineEdit()
         self.setlist_name_input.setPlaceholderText("Setlist name…")
-        self.setlist_name_input.setMaximumWidth(120)
+        self.setlist_name_input.setMaximumWidth(280)
         self.rename_button = QPushButton("Set")
         self.rename_button.setFixedWidth(48)
         self.rename_button.clicked.connect(self.rename_setlist_title)
@@ -1416,7 +1416,7 @@ class LiveControllerMac(QWidget):
         overlay_colours_layout.setSpacing(3)
 
         self.count_in_color_button = QPushButton()
-        self.count_in_color_button.setFixedSize(34, 18)
+        self.count_in_color_button.setFixedSize(24, 14)
         self.count_in_color_button.setStyleSheet(
             f"background-color: {DEFAULT_COUNT_IN_BG_COLOR}; border-radius: 3px; border: 1px solid #38383a;"
         )
@@ -1429,7 +1429,7 @@ class LiveControllerMac(QWidget):
         self.count_in_font_spinbox.valueChanged.connect(self._on_count_in_font_changed)
 
         self.track_play_color_button = QPushButton()
-        self.track_play_color_button.setFixedSize(34, 18)
+        self.track_play_color_button.setFixedSize(24, 14)
         self.track_play_color_button.setStyleSheet(
             f"background-color: {DEFAULT_TRACK_PLAY_BG_COLOR}; border-radius: 3px; border: 1px solid #38383a;"
         )
@@ -1470,7 +1470,7 @@ class LiveControllerMac(QWidget):
         # Helper: create a compact color swatch button for *key* with *label* text.
         def make_swatch(key, hex_color):
             btn = QPushButton()
-            btn.setFixedSize(34, 18)
+            btn.setFixedSize(24, 14)
             btn.setStyleSheet(
                 f"background-color: {hex_color}; border-radius: 3px; border: 1px solid #38383a;"
             )
@@ -1770,7 +1770,6 @@ class LiveControllerMac(QWidget):
                 if isinstance(widget, QLineEdit):
                     widget.setFont(new_font)
         self.status_label.setText(f"Status: Font size set to {self.current_table_font_size}pt.")
-        self.save_session()
 
     # ------------------------------------------------------------------ #
     # Mode toggle
