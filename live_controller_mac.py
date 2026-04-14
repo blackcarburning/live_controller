@@ -1185,12 +1185,13 @@ class LiveControllerMac(QWidget):
         main_layout = QHBoxLayout()
         main_layout.setSpacing(10)
         self.table = DraggableTableWidget()
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Key", "Track Name", "Link", "Del"])
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["Key", "Track Name", "Link", "Secs", "Del"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.setColumnWidth(0, 48)
         self.table.setColumnWidth(2, 42)
-        self.table.setColumnWidth(3, 42)
+        self.table.setColumnWidth(3, 38)
+        self.table.setColumnWidth(4, 42)
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(False)
         self.table.setAlternatingRowColors(True)
@@ -1241,13 +1242,11 @@ class LiveControllerMac(QWidget):
         setlist_name_layout.setSpacing(4)
         self.setlist_name_input = QLineEdit()
         self.setlist_name_input.setPlaceholderText("Setlist name…")
-        self.setlist_name_input.setMaximumWidth(280)
         self.rename_button = QPushButton("Set")
         self.rename_button.setFixedWidth(48)
         self.rename_button.clicked.connect(self.rename_setlist_title)
-        setlist_name_layout.addWidget(self.setlist_name_input)
+        setlist_name_layout.addWidget(self.setlist_name_input, 1)
         setlist_name_layout.addWidget(self.rename_button)
-        setlist_name_layout.addStretch(1)
 
         save_load_layout = QHBoxLayout()
         save_load_layout.setSpacing(4)
@@ -2108,7 +2107,7 @@ class LiveControllerMac(QWidget):
                 btn_layout.addWidget(remove_button)
                 btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 btn_layout.setContentsMargins(0, 0, 0, 0)
-                self.table.setCellWidget(i, 3, btn_container)
+                self.table.setCellWidget(i, 4, btn_container)
             else:
                 table_font = QFont("Helvetica Neue", self.current_table_font_size)
 
@@ -2143,6 +2142,16 @@ class LiveControllerMac(QWidget):
 
                 self.table.setCellWidget(i, 2, create_linked_checkbox(i, item))
 
+                is_linked = item.get('linked', False)
+                seconds_input = QLineEdit(str(item.get('gap_seconds', 0)).zfill(2))
+                seconds_input.setFont(table_font)
+                seconds_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                seconds_input.setMaxLength(2)
+                seconds_input.setToolTip("Gap in seconds before next song (only active when Link is on)")
+                seconds_input.setEnabled(is_linked)
+                seconds_input.textChanged.connect(lambda text, path=item['path']: self.update_gap_seconds(path, text))
+                self.table.setCellWidget(i, 3, seconds_input)
+
                 remove_button = QPushButton("✕")
                 remove_button.clicked.connect(lambda checked, i=i: self.remove_item(i))
                 remove_button.setFixedSize(18, 18)
@@ -2156,7 +2165,7 @@ class LiveControllerMac(QWidget):
                 btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 btn_layout.setContentsMargins(0, 0, 0, 0)
                 btn_container.setToolTip(tooltip_text)
-                self.table.setCellWidget(i, 3, btn_container)
+                self.table.setCellWidget(i, 4, btn_container)
 
         self.apply_table_font_size()
         self.update_total_running_time()
@@ -2208,6 +2217,19 @@ class LiveControllerMac(QWidget):
     def update_linked_setting(self, is_checked, row_index):
         if 0 <= row_index < len(self.tracks) and self.tracks[row_index]['type'] == 'track':
             self.tracks[row_index]['linked'] = is_checked
+            seconds_widget = self.table.cellWidget(row_index, 3)
+            if isinstance(seconds_widget, QLineEdit):
+                seconds_widget.setEnabled(is_checked)
+
+    def update_gap_seconds(self, file_path, text):
+        try:
+            value = max(0, min(99, int(text)))
+        except ValueError:
+            value = 0
+        for item in self.tracks:
+            if item.get('type') == 'track' and item.get('path') == file_path:
+                item['gap_seconds'] = value
+                break
 
     def save_setlist(self):
         setlist_name = self.setlist_name_input.text().strip()
@@ -2298,6 +2320,8 @@ class LiveControllerMac(QWidget):
                     item['duration'] = self.get_track_duration(item['path'])
                 if 'linked' not in item:
                     item['linked'] = False
+                if 'gap_seconds' not in item:
+                    item['gap_seconds'] = 0
                 if item['hotkey'] not in valid_hotkeys:
                     if self.available_hotkeys:
                         item['hotkey'] = self.available_hotkeys.pop(0)
