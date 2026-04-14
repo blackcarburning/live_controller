@@ -2623,10 +2623,11 @@ class LiveControllerMac(QWidget):
                     next_row += 1
                 if next_row < len(self.tracks) and self.tracks[next_row].get('type') == 'track':
                     next_track = self.tracks[next_row]
+                    delay_ms = max(0, finished_track.get('gap_seconds', 0)) * 1000
                     track_name_widget = self.table.cellWidget(next_row, 1)
                     if track_name_widget:
                         self.show_preparing_message(track_name_widget.text())
-                    self.execute_playback(next_track, next_row)
+                    QTimer.singleShot(delay_ms, lambda nt=next_track, nr=next_row: self.execute_playback(nt, nr))
 
     def show_danger_message(self):
         self.danger_label.raise_()
