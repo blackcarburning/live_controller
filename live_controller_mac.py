@@ -1190,7 +1190,7 @@ class LiveControllerMac(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.setColumnWidth(0, 48)
         self.table.setColumnWidth(2, 42)
-        self.table.setColumnWidth(3, 38)
+        self.table.setColumnWidth(3, 55)
         self.table.setColumnWidth(4, 42)
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(False)
