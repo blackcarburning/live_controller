@@ -1016,6 +1016,7 @@ class LiveControllerMac(QWidget):
         self.hotkey_map = {}
         self.available_hotkeys = self._generate_hotkeys()
         self.currently_playing_row = None
+        self._user_stopped = False
         self.test_track_path = None
 
         self.current_table_font_size = DEFAULT_TABLE_FONT_SIZE
@@ -2577,6 +2578,7 @@ class LiveControllerMac(QWidget):
         self._position_poller.set_socket(path)
 
     def stop_all_activity(self):
+        self._user_stopped = True
         if self.countdown_timer.isActive():
             self.countdown_timer.stop()
             if self.countdown_connection:
@@ -2615,7 +2617,7 @@ class LiveControllerMac(QWidget):
         self._reset_scrub_controls()
 
         # Auto-play next track if the finished track was linked.
-        if finished_row is not None and finished_row < len(self.tracks):
+        if not self._user_stopped and finished_row is not None and finished_row < len(self.tracks):
             finished_track = self.tracks[finished_row]
             if finished_track.get('type') == 'track' and finished_track.get('linked', False):
                 next_row = finished_row + 1
@@ -2628,6 +2630,7 @@ class LiveControllerMac(QWidget):
                     if track_name_widget:
                         self.show_preparing_message(track_name_widget.text())
                     QTimer.singleShot(delay_ms, lambda nt=next_track, nr=next_row: self.execute_playback(nt, nr))
+        self._user_stopped = False
 
     def show_danger_message(self):
         self.danger_label.raise_()
