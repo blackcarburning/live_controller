@@ -1358,7 +1358,7 @@ class LiveControllerMac(QWidget):
         color_scheme_layout.setSpacing(4)
 
         # Helper: create a compact color swatch button for *key* with *label* text.
-        def _make_swatch(key, hex_color):
+        def make_swatch(key, hex_color):
             btn = QPushButton()
             btn.setFixedSize(46, 22)
             btn.setStyleSheet(
@@ -1370,13 +1370,13 @@ class LiveControllerMac(QWidget):
         scheme = self._color_scheme
         self._scheme_swatches = {}  # key → QPushButton
 
-        self._scheme_swatches['app_bg']       = _make_swatch('app_bg',       scheme['app_bg'])
-        self._scheme_swatches['app_fg']       = _make_swatch('app_fg',       scheme['app_fg'])
-        self._scheme_swatches['panel_bg']     = _make_swatch('panel_bg',     scheme['panel_bg'])
-        self._scheme_swatches['table_bg']     = _make_swatch('table_bg',     scheme['table_bg'])
-        self._scheme_swatches['table_alt_bg'] = _make_swatch('table_alt_bg', scheme['table_alt_bg'])
-        self._scheme_swatches['header_fg']    = _make_swatch('header_fg',    scheme['header_fg'])
-        self._scheme_swatches['border_color'] = _make_swatch('border_color', scheme['border_color'])
+        self._scheme_swatches['app_bg']       = make_swatch('app_bg',       scheme['app_bg'])
+        self._scheme_swatches['app_fg']       = make_swatch('app_fg',       scheme['app_fg'])
+        self._scheme_swatches['panel_bg']     = make_swatch('panel_bg',     scheme['panel_bg'])
+        self._scheme_swatches['table_bg']     = make_swatch('table_bg',     scheme['table_bg'])
+        self._scheme_swatches['table_alt_bg'] = make_swatch('table_alt_bg', scheme['table_alt_bg'])
+        self._scheme_swatches['header_fg']    = make_swatch('header_fg',    scheme['header_fg'])
+        self._scheme_swatches['border_color'] = make_swatch('border_color', scheme['border_color'])
 
         color_scheme_layout.addWidget(QLabel("App BG:"),        0, 0)
         color_scheme_layout.addWidget(self._scheme_swatches['app_bg'],        0, 1)
@@ -1555,6 +1555,20 @@ class LiveControllerMac(QWidget):
     # Color scheme helpers
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _validate_color_scheme(raw):
+        """Return a clean scheme dict built from *raw*, falling back to defaults for invalid entries.
+
+        Accepts any mapping; unknown keys are ignored and invalid color strings
+        are replaced with their DEFAULT_COLOR_SCHEME equivalents.
+        """
+        scheme = dict(DEFAULT_COLOR_SCHEME)
+        for key in DEFAULT_COLOR_SCHEME:
+            value = raw.get(key)
+            if isinstance(value, str) and QColor(value).isValid():
+                scheme[key] = value
+        return scheme
+
     def apply_color_scheme(self, scheme):
         """Apply *scheme* to the application stylesheet and update all swatch buttons."""
         self._color_scheme = dict(scheme)
@@ -1566,7 +1580,7 @@ class LiveControllerMac(QWidget):
             )
 
     def _pick_scheme_color(self, key):
-        """Open a colour picker for *key* and apply the result."""
+        """Open a color picker for *key* and apply the result."""
         current = self._color_scheme.get(key, DEFAULT_COLOR_SCHEME[key])
         label_map = {
             'app_bg':       'App Background',
@@ -1620,13 +1634,7 @@ class LiveControllerMac(QWidget):
         except (OSError, json.JSONDecodeError) as exc:
             self.status_label.setText(f"Status: Import failed — {exc}")
             return
-        # Validate: start from defaults and overlay only known keys with valid hex colors.
-        new_scheme = dict(DEFAULT_COLOR_SCHEME)
-        for key in DEFAULT_COLOR_SCHEME:
-            value = loaded.get(key)
-            if isinstance(value, str) and QColor(value).isValid():
-                new_scheme[key] = value
-        self.apply_color_scheme(new_scheme)
+        self.apply_color_scheme(self._validate_color_scheme(loaded))
         self.save_session()
         self.status_label.setText(f"Status: Color scheme imported from {os.path.basename(path)}.")
 
@@ -1817,13 +1825,7 @@ class LiveControllerMac(QWidget):
             self.apply_overlay_styles()
 
             # Restore color scheme (validate all keys before applying).
-            saved_scheme = session_data.get('color_scheme', {})
-            restored_scheme = dict(DEFAULT_COLOR_SCHEME)
-            for key in DEFAULT_COLOR_SCHEME:
-                value = saved_scheme.get(key)
-                if isinstance(value, str) and QColor(value).isValid():
-                    restored_scheme[key] = value
-            self.apply_color_scheme(restored_scheme)
+            self.apply_color_scheme(self._validate_color_scheme(session_data.get('color_scheme', {})))
 
             self.undo_history = deque(session_data.get('undo_history', []), maxlen=MAX_UNDO_LEVELS)
             self._apply_setlist_data(session_data.get('tracks', []), session_data.get('setlist_name', 'Untitled Setlist'))
