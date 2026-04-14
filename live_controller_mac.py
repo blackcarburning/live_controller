@@ -1241,8 +1241,9 @@ class LiveControllerMac(QWidget):
         setlist_name_layout.setSpacing(4)
         self.setlist_name_input = QLineEdit()
         self.setlist_name_input.setPlaceholderText("Setlist name…")
+        self.setlist_name_input.setMaximumWidth(120)
         self.rename_button = QPushButton("Set")
-        self.rename_button.setFixedWidth(40)
+        self.rename_button.setFixedWidth(48)
         self.rename_button.clicked.connect(self.rename_setlist_title)
         setlist_name_layout.addWidget(self.setlist_name_input)
         setlist_name_layout.addWidget(self.rename_button)
@@ -1312,7 +1313,7 @@ class LiveControllerMac(QWidget):
         self.font_size_spinbox.setRange(8, 36)
         self.font_size_spinbox.setValue(self.current_table_font_size)
         self.apply_font_button = QPushButton("Apply")
-        self.apply_font_button.setFixedWidth(50)
+        self.apply_font_button.setMinimumWidth(64)
         self.apply_font_button.clicked.connect(self.apply_table_font_size)
         font_size_layout.addWidget(self.font_size_spinbox)
         font_size_layout.addWidget(self.apply_font_button)
@@ -1769,6 +1770,7 @@ class LiveControllerMac(QWidget):
                 if isinstance(widget, QLineEdit):
                     widget.setFont(new_font)
         self.status_label.setText(f"Status: Font size set to {self.current_table_font_size}pt.")
+        self.save_session()
 
     # ------------------------------------------------------------------ #
     # Mode toggle
@@ -2224,6 +2226,7 @@ class LiveControllerMac(QWidget):
             'track_play_bg_color': self.track_play_bg_color,
             'track_play_font_size': self.track_play_font_size,
             'audio_only': self.audio_only_checkbox.isChecked(),
+            'table_font_size': self.current_table_font_size,
         }
         with open(file_path, 'w') as f:
             json.dump(setlist_data_to_save, f, indent=4)
@@ -2268,6 +2271,11 @@ class LiveControllerMac(QWidget):
             self.track_play_font_spinbox.setValue(self.track_play_font_size)
             self.apply_overlay_styles()
             self.audio_only_checkbox.setChecked(loaded_data.get('audio_only', False))
+            table_font_size = loaded_data.get('table_font_size')
+            if table_font_size is not None:
+                self.current_table_font_size = table_font_size
+                self.font_size_spinbox.setValue(self.current_table_font_size)
+                # apply_table_font_size() is called by _apply_setlist_data() below
         else:
             tracks_data = loaded_data
             self.undo_history.clear()
