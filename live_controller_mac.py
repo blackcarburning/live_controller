@@ -1247,6 +1247,7 @@ class LiveControllerMac(QWidget):
         self.rename_button.clicked.connect(self.rename_setlist_title)
         setlist_name_layout.addWidget(self.setlist_name_input)
         setlist_name_layout.addWidget(self.rename_button)
+        setlist_name_layout.addStretch(1)
 
         save_load_layout = QHBoxLayout()
         save_load_layout.setSpacing(4)
