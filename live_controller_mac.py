@@ -305,6 +305,110 @@ DEFAULT_COLOR_SCHEME = {
 # File extension / filter used for color-scheme export/import.
 COLOR_SCHEME_FILE_FILTER = "Color Scheme (*.json)"
 
+# Twenty coherent preset color themes.  Each entry is (display_name, scheme_dict).
+COLOR_SCHEME_PRESETS = [
+    ("Dark (Default)", {
+        'app_bg': '#1c1c1e', 'app_fg': '#f2f2f7', 'panel_bg': '#2c2c2e',
+        'table_bg': '#2c2c2e', 'table_alt_bg': '#323234',
+        'header_fg': '#636366', 'border_color': '#38383a',
+    }),
+    ("Midnight Blue", {
+        'app_bg': '#0d1117', 'app_fg': '#c9d1d9', 'panel_bg': '#161b22',
+        'table_bg': '#161b22', 'table_alt_bg': '#1c2128',
+        'header_fg': '#6e7681', 'border_color': '#30363d',
+    }),
+    ("Forest Green", {
+        'app_bg': '#0d1a10', 'app_fg': '#d8e8d8', 'panel_bg': '#1a2e1c',
+        'table_bg': '#1a2e1c', 'table_alt_bg': '#1f3522',
+        'header_fg': '#5a8060', 'border_color': '#2d4a30',
+    }),
+    ("Crimson Night", {
+        'app_bg': '#1a0a0a', 'app_fg': '#f0d8d8', 'panel_bg': '#2a1212',
+        'table_bg': '#2a1212', 'table_alt_bg': '#311515',
+        'header_fg': '#7a4444', 'border_color': '#4a2020',
+    }),
+    ("Deep Purple", {
+        'app_bg': '#120a1a', 'app_fg': '#e8d8f0', 'panel_bg': '#1e1028',
+        'table_bg': '#1e1028', 'table_alt_bg': '#23122f',
+        'header_fg': '#6a4a80', 'border_color': '#3a2050',
+    }),
+    ("Slate", {
+        'app_bg': '#0f1923', 'app_fg': '#cdd6f4', 'panel_bg': '#1b2838',
+        'table_bg': '#1b2838', 'table_alt_bg': '#1f2d3d',
+        'header_fg': '#5d7a99', 'border_color': '#2d4460',
+    }),
+    ("Mocha", {
+        'app_bg': '#1a1210', 'app_fg': '#ede0d4', 'panel_bg': '#2d1f1b',
+        'table_bg': '#2d1f1b', 'table_alt_bg': '#342420',
+        'header_fg': '#7a5c52', 'border_color': '#4a3028',
+    }),
+    ("Light", {
+        'app_bg': '#f5f5f5', 'app_fg': '#1c1c1e', 'panel_bg': '#e8e8ec',
+        'table_bg': '#e8e8ec', 'table_alt_bg': '#e0e0e4',
+        'header_fg': '#8e8e93', 'border_color': '#c8c8cc',
+    }),
+    ("Solarized Dark", {
+        'app_bg': '#002b36', 'app_fg': '#839496', 'panel_bg': '#073642',
+        'table_bg': '#073642', 'table_alt_bg': '#0a3d4a',
+        'header_fg': '#586e75', 'border_color': '#1a4a56',
+    }),
+    ("Solarized Light", {
+        'app_bg': '#fdf6e3', 'app_fg': '#657b83', 'panel_bg': '#eee8d5',
+        'table_bg': '#eee8d5', 'table_alt_bg': '#e8e2ce',
+        'header_fg': '#93a1a1', 'border_color': '#d0c9b8',
+    }),
+    ("Nord", {
+        'app_bg': '#2e3440', 'app_fg': '#d8dee9', 'panel_bg': '#3b4252',
+        'table_bg': '#3b4252', 'table_alt_bg': '#434c5e',
+        'header_fg': '#7b8fa6', 'border_color': '#4c566a',
+    }),
+    ("Dracula", {
+        'app_bg': '#282a36', 'app_fg': '#f8f8f2', 'panel_bg': '#343746',
+        'table_bg': '#343746', 'table_alt_bg': '#3c3f54',
+        'header_fg': '#6272a4', 'border_color': '#44475a',
+    }),
+    ("Gruvbox Dark", {
+        'app_bg': '#282828', 'app_fg': '#ebdbb2', 'panel_bg': '#3c3836',
+        'table_bg': '#3c3836', 'table_alt_bg': '#44403c',
+        'header_fg': '#928374', 'border_color': '#504945',
+    }),
+    ("One Dark", {
+        'app_bg': '#282c34', 'app_fg': '#abb2bf', 'panel_bg': '#2d333b',
+        'table_bg': '#2d333b', 'table_alt_bg': '#323840',
+        'header_fg': '#6b7280', 'border_color': '#404857',
+    }),
+    ("Tokyo Night", {
+        'app_bg': '#1a1b26', 'app_fg': '#a9b1d6', 'panel_bg': '#24283b',
+        'table_bg': '#24283b', 'table_alt_bg': '#292e42',
+        'header_fg': '#565f89', 'border_color': '#3b3f5c',
+    }),
+    ("Catppuccin Mocha", {
+        'app_bg': '#1e1e2e', 'app_fg': '#cdd6f4', 'panel_bg': '#313244',
+        'table_bg': '#313244', 'table_alt_bg': '#363850',
+        'header_fg': '#6c7086', 'border_color': '#45475a',
+    }),
+    ("Rosé Pine", {
+        'app_bg': '#191724', 'app_fg': '#e0def4', 'panel_bg': '#26233a',
+        'table_bg': '#26233a', 'table_alt_bg': '#2a2740',
+        'header_fg': '#6e6a86', 'border_color': '#393552',
+    }),
+    ("Material Dark", {
+        'app_bg': '#212121', 'app_fg': '#eeffff', 'panel_bg': '#2d2d2d',
+        'table_bg': '#2d2d2d', 'table_alt_bg': '#333333',
+        'header_fg': '#7a7a7a', 'border_color': '#424242',
+    }),
+    ("Ayu Dark", {
+        'app_bg': '#0d1017', 'app_fg': '#bfbdb6', 'panel_bg': '#131721',
+        'table_bg': '#131721', 'table_alt_bg': '#181d28',
+        'header_fg': '#4d5566', 'border_color': '#272d38',
+    }),
+    ("Retro Terminal", {
+        'app_bg': '#0a0a0a', 'app_fg': '#00ff41', 'panel_bg': '#0f0f0f',
+        'table_bg': '#0f0f0f', 'table_alt_bg': '#141414',
+        'header_fg': '#008f11', 'border_color': '#1a2a1a',
+    }),
+]
+
 
 def _build_stylesheet(scheme):
     """Return a full Qt stylesheet built from *scheme*.
@@ -1094,13 +1198,13 @@ class LiveControllerMac(QWidget):
 
         # --- Right-side Control Panel (2-column layout, no scroll area) ---
         controls_area = QVBoxLayout()
-        controls_area.setSpacing(4)
+        controls_area.setSpacing(3)
 
         # Playback & Setlist group
         main_controls_group = QGroupBox("Playback & Setlist")
         main_controls_layout = QVBoxLayout()
-        main_controls_layout.setContentsMargins(6, 8, 6, 6)
-        main_controls_layout.setSpacing(4)
+        main_controls_layout.setContentsMargins(4, 6, 4, 4)
+        main_controls_layout.setSpacing(3)
 
         self.stop_button = QPushButton("■  STOP  (q)")
         self.stop_button.setStyleSheet(
@@ -1178,8 +1282,8 @@ class LiveControllerMac(QWidget):
         # Settings group
         settings_group = QGroupBox("Settings")
         settings_layout = QGridLayout()
-        settings_layout.setContentsMargins(6, 8, 6, 6)
-        settings_layout.setSpacing(4)
+        settings_layout.setContentsMargins(4, 6, 4, 4)
+        settings_layout.setSpacing(3)
 
         self.display_combo = QComboBox()
         self.display_combo.addItems([str(i) for i in range(1, 5)])
@@ -1219,8 +1323,8 @@ class LiveControllerMac(QWidget):
         # Test Track group (full-width, single compact row)
         test_track_group = QGroupBox("Test Track")
         test_track_layout = QHBoxLayout()
-        test_track_layout.setContentsMargins(6, 8, 6, 6)
-        test_track_layout.setSpacing(4)
+        test_track_layout.setContentsMargins(4, 6, 4, 4)
+        test_track_layout.setSpacing(3)
         self.test_file_button = QPushButton("Select…")
         self.test_file_button.setFixedWidth(70)
         self.test_file_button.clicked.connect(self.select_test_file)
@@ -1242,8 +1346,8 @@ class LiveControllerMac(QWidget):
         # Scrub & Loop group
         scrub_loop_group = QGroupBox("Scrub & Loop")
         scrub_loop_layout = QVBoxLayout()
-        scrub_loop_layout.setContentsMargins(6, 8, 6, 6)
-        scrub_loop_layout.setSpacing(4)
+        scrub_loop_layout.setContentsMargins(4, 6, 4, 4)
+        scrub_loop_layout.setSpacing(3)
 
         # Scrub slider row: [pos] [slider] [dur]
         scrub_row = QHBoxLayout()
@@ -1265,22 +1369,18 @@ class LiveControllerMac(QWidget):
         scrub_row.addWidget(self.scrub_slider, 1)
         scrub_row.addWidget(self.scrub_dur_label)
 
-        # Loop points row: [A: 00:00] [Set A] [B: 00:00] [Set B] [Loop A→B]
+        # Loop points row: [A: --:--] [B: --:--] [Loop A→B]
+        # Each button combines the label and current time so the loop point text
+        # is always visible inside the button itself.
         loop_row = QHBoxLayout()
-        loop_row.setSpacing(4)
-        self.loop_a_label = QLabel("A: --:--")
-        self.loop_a_label.setFixedWidth(58)
-        self.loop_a_label.setStyleSheet("font-size: 10px; color: #aeaeb2;")
-        self.loop_set_a_btn = QPushButton("Set A")
-        self.loop_set_a_btn.setFixedWidth(46)
+        loop_row.setSpacing(3)
+        self.loop_set_a_btn = QPushButton("A: --:--")
+        self.loop_set_a_btn.setFixedWidth(82)
         self.loop_set_a_btn.setEnabled(False)
         self.loop_set_a_btn.setToolTip("Mark the current playback position as loop start (A).")
         self.loop_set_a_btn.clicked.connect(self._set_loop_a)
-        self.loop_b_label = QLabel("B: --:--")
-        self.loop_b_label.setFixedWidth(58)
-        self.loop_b_label.setStyleSheet("font-size: 10px; color: #aeaeb2;")
-        self.loop_set_b_btn = QPushButton("Set B")
-        self.loop_set_b_btn.setFixedWidth(46)
+        self.loop_set_b_btn = QPushButton("B: --:--")
+        self.loop_set_b_btn.setFixedWidth(82)
         self.loop_set_b_btn.setEnabled(False)
         self.loop_set_b_btn.setToolTip("Mark the current playback position as loop end (B).")
         self.loop_set_b_btn.clicked.connect(self._set_loop_b)
@@ -1289,9 +1389,7 @@ class LiveControllerMac(QWidget):
             "When checked, mpv will repeat the section between loop points A and B continuously."
         )
         self.loop_checkbox.toggled.connect(self._on_loop_toggled)
-        loop_row.addWidget(self.loop_a_label)
         loop_row.addWidget(self.loop_set_a_btn)
-        loop_row.addWidget(self.loop_b_label)
         loop_row.addWidget(self.loop_set_b_btn)
         loop_row.addWidget(self.loop_checkbox)
         loop_row.addStretch(1)
@@ -1313,31 +1411,33 @@ class LiveControllerMac(QWidget):
         # Overlay Colours group
         overlay_colours_group = QGroupBox("Overlay Colours")
         overlay_colours_layout = QGridLayout()
-        overlay_colours_layout.setContentsMargins(6, 8, 6, 6)
-        overlay_colours_layout.setSpacing(4)
+        overlay_colours_layout.setContentsMargins(4, 6, 4, 4)
+        overlay_colours_layout.setSpacing(3)
 
         self.count_in_color_button = QPushButton()
-        self.count_in_color_button.setFixedSize(46, 22)
+        self.count_in_color_button.setFixedSize(34, 18)
         self.count_in_color_button.setStyleSheet(
-            f"background-color: {DEFAULT_COUNT_IN_BG_COLOR}; border-radius: 4px; border: 1px solid #38383a;"
+            f"background-color: {DEFAULT_COUNT_IN_BG_COLOR}; border-radius: 3px; border: 1px solid #38383a;"
         )
         self.count_in_color_button.clicked.connect(self.pick_count_in_color)
 
         self.count_in_font_spinbox = QSpinBox()
         self.count_in_font_spinbox.setRange(20, 500)
         self.count_in_font_spinbox.setValue(DEFAULT_COUNT_IN_FONT_SIZE)
+        self.count_in_font_spinbox.setMaximumWidth(58)
         self.count_in_font_spinbox.valueChanged.connect(self._on_count_in_font_changed)
 
         self.track_play_color_button = QPushButton()
-        self.track_play_color_button.setFixedSize(46, 22)
+        self.track_play_color_button.setFixedSize(34, 18)
         self.track_play_color_button.setStyleSheet(
-            f"background-color: {DEFAULT_TRACK_PLAY_BG_COLOR}; border-radius: 4px; border: 1px solid #38383a;"
+            f"background-color: {DEFAULT_TRACK_PLAY_BG_COLOR}; border-radius: 3px; border: 1px solid #38383a;"
         )
         self.track_play_color_button.clicked.connect(self.pick_track_play_color)
 
         self.track_play_font_spinbox = QSpinBox()
         self.track_play_font_spinbox.setRange(20, 500)
         self.track_play_font_spinbox.setValue(DEFAULT_TRACK_PLAY_FONT_SIZE)
+        self.track_play_font_spinbox.setMaximumWidth(58)
         self.track_play_font_spinbox.valueChanged.connect(self._on_track_play_font_changed)
 
         overlay_colours_layout.addWidget(QLabel("Count-In BG:"), 0, 0)
@@ -1354,15 +1454,24 @@ class LiveControllerMac(QWidget):
         # Button styling is intentionally excluded (buttons use fixed inline styles).
         color_scheme_group = QGroupBox("Color Scheme")
         color_scheme_layout = QGridLayout()
-        color_scheme_layout.setContentsMargins(6, 8, 6, 6)
-        color_scheme_layout.setSpacing(4)
+        color_scheme_layout.setContentsMargins(4, 6, 4, 4)
+        color_scheme_layout.setSpacing(3)
+
+        # Preset themes dropdown — row 0, spans all columns.
+        self.scheme_preset_combo = QComboBox()
+        self.scheme_preset_combo.addItem("— Presets —")
+        for _preset_name, _ in COLOR_SCHEME_PRESETS:
+            self.scheme_preset_combo.addItem(_preset_name)
+        self.scheme_preset_combo.setToolTip("Apply a built-in color theme to the whole UI")
+        self.scheme_preset_combo.currentIndexChanged.connect(self._apply_preset_scheme)
+        color_scheme_layout.addWidget(self.scheme_preset_combo, 0, 0, 1, 4)
 
         # Helper: create a compact color swatch button for *key* with *label* text.
         def make_swatch(key, hex_color):
             btn = QPushButton()
-            btn.setFixedSize(46, 22)
+            btn.setFixedSize(34, 18)
             btn.setStyleSheet(
-                f"background-color: {hex_color}; border-radius: 4px; border: 1px solid #38383a;"
+                f"background-color: {hex_color}; border-radius: 3px; border: 1px solid #38383a;"
             )
             btn.clicked.connect(lambda _checked, k=key: self._pick_scheme_color(k))
             return btn
@@ -1378,27 +1487,27 @@ class LiveControllerMac(QWidget):
         self._scheme_swatches['header_fg']    = make_swatch('header_fg',    scheme['header_fg'])
         self._scheme_swatches['border_color'] = make_swatch('border_color', scheme['border_color'])
 
-        color_scheme_layout.addWidget(QLabel("App BG:"),        0, 0)
-        color_scheme_layout.addWidget(self._scheme_swatches['app_bg'],        0, 1)
-        color_scheme_layout.addWidget(QLabel("App Text:"),      0, 2)
-        color_scheme_layout.addWidget(self._scheme_swatches['app_fg'],        0, 3)
+        color_scheme_layout.addWidget(QLabel("App BG:"),        1, 0)
+        color_scheme_layout.addWidget(self._scheme_swatches['app_bg'],        1, 1)
+        color_scheme_layout.addWidget(QLabel("App Text:"),      1, 2)
+        color_scheme_layout.addWidget(self._scheme_swatches['app_fg'],        1, 3)
 
-        color_scheme_layout.addWidget(QLabel("Panel BG:"),      1, 0)
-        color_scheme_layout.addWidget(self._scheme_swatches['panel_bg'],      1, 1)
-        color_scheme_layout.addWidget(QLabel("Table Alt:"),     1, 2)
-        color_scheme_layout.addWidget(self._scheme_swatches['table_alt_bg'],  1, 3)
+        color_scheme_layout.addWidget(QLabel("Panel BG:"),      2, 0)
+        color_scheme_layout.addWidget(self._scheme_swatches['panel_bg'],      2, 1)
+        color_scheme_layout.addWidget(QLabel("Table Alt:"),     2, 2)
+        color_scheme_layout.addWidget(self._scheme_swatches['table_alt_bg'],  2, 3)
 
-        color_scheme_layout.addWidget(QLabel("Table BG:"),      2, 0)
-        color_scheme_layout.addWidget(self._scheme_swatches['table_bg'],      2, 1)
-        color_scheme_layout.addWidget(QLabel("Header Text:"),   2, 2)
-        color_scheme_layout.addWidget(self._scheme_swatches['header_fg'],     2, 3)
+        color_scheme_layout.addWidget(QLabel("Table BG:"),      3, 0)
+        color_scheme_layout.addWidget(self._scheme_swatches['table_bg'],      3, 1)
+        color_scheme_layout.addWidget(QLabel("Header Text:"),   3, 2)
+        color_scheme_layout.addWidget(self._scheme_swatches['header_fg'],     3, 3)
 
-        color_scheme_layout.addWidget(QLabel("Borders:"),       3, 0)
-        color_scheme_layout.addWidget(self._scheme_swatches['border_color'],  3, 1)
+        color_scheme_layout.addWidget(QLabel("Borders:"),       4, 0)
+        color_scheme_layout.addWidget(self._scheme_swatches['border_color'],  4, 1)
 
         # Action buttons row
         scheme_btns_layout = QHBoxLayout()
-        scheme_btns_layout.setSpacing(4)
+        scheme_btns_layout.setSpacing(3)
         self.scheme_reset_button = QPushButton("Reset")
         self.scheme_reset_button.setToolTip("Reset all colors to the built-in default scheme")
         self.scheme_reset_button.clicked.connect(self._reset_color_scheme)
@@ -1412,14 +1521,14 @@ class LiveControllerMac(QWidget):
         scheme_btns_layout.addWidget(self.scheme_export_button)
         scheme_btns_layout.addWidget(self.scheme_import_button)
 
-        color_scheme_layout.addLayout(scheme_btns_layout, 4, 0, 1, 4)
+        color_scheme_layout.addLayout(scheme_btns_layout, 5, 0, 1, 4)
         color_scheme_group.setLayout(color_scheme_layout)
 
         # Application group (horizontal for compactness)
         app_group = QGroupBox("Application")
         app_layout = QHBoxLayout()
-        app_layout.setContentsMargins(6, 8, 6, 6)
-        app_layout.setSpacing(4)
+        app_layout.setContentsMargins(4, 6, 4, 4)
+        app_layout.setSpacing(3)
         self.debug_console_button = QPushButton("Debug Console")
         self.debug_console_button.setStyleSheet(
             "background-color: #1a1a3a; color: #636396; border: 1px solid #2a2a5a; "
@@ -1448,7 +1557,7 @@ class LiveControllerMac(QWidget):
         row_mid.setSpacing(6)
         row_mid.addWidget(scrub_loop_group)
         right_col = QVBoxLayout()
-        right_col.setSpacing(4)
+        right_col.setSpacing(3)
         right_col.addWidget(overlay_colours_group)
         right_col.addWidget(color_scheme_group)
         right_col.addWidget(app_group)
@@ -1605,6 +1714,15 @@ class LiveControllerMac(QWidget):
         self.save_session()
         self.status_label.setText("Status: Color scheme reset to defaults.")
 
+    def _apply_preset_scheme(self, index):
+        """Apply the preset theme selected in scheme_preset_combo (index 0 = placeholder)."""
+        if index <= 0:
+            return
+        name, scheme = COLOR_SCHEME_PRESETS[index - 1]
+        self.apply_color_scheme(dict(scheme))
+        self.save_session()
+        self.status_label.setText(f"Status: Theme '{name}' applied.")
+
     def _export_color_scheme(self):
         """Save the current color scheme to a JSON file chosen by the user."""
         path, _ = QFileDialog.getSaveFileName(
@@ -1686,6 +1804,7 @@ class LiveControllerMac(QWidget):
         # Color scheme controls — only available in edit mode.
         for swatch in self._scheme_swatches.values():
             swatch.setEnabled(is_edit_mode)
+        self.scheme_preset_combo.setEnabled(is_edit_mode)
         self.scheme_reset_button.setEnabled(is_edit_mode)
         self.scheme_export_button.setEnabled(is_edit_mode)
         self.scheme_import_button.setEnabled(is_edit_mode)
@@ -2534,7 +2653,7 @@ class LiveControllerMac(QWidget):
         """Capture the current playback position as loop point A."""
         pos = self._current_playback_pos
         self._loop_a_seconds = pos
-        self.loop_a_label.setText(f"A: {self.format_duration(pos)}")
+        self.loop_set_a_btn.setText(f"A: {self.format_duration(pos)}")
         if self.loop_checkbox.isChecked() and self.current_ipc_socket:
             _send_ipc_command(
                 self.current_ipc_socket,
@@ -2546,7 +2665,7 @@ class LiveControllerMac(QWidget):
         """Capture the current playback position as loop point B."""
         pos = self._current_playback_pos
         self._loop_b_seconds = pos
-        self.loop_b_label.setText(f"B: {self.format_duration(pos)}")
+        self.loop_set_b_btn.setText(f"B: {self.format_duration(pos)}")
         if self.loop_checkbox.isChecked() and self.current_ipc_socket:
             _send_ipc_command(
                 self.current_ipc_socket,
@@ -2607,6 +2726,8 @@ class LiveControllerMac(QWidget):
         self.scrub_slider.blockSignals(False)
         self.scrub_pos_label.setText("--:--")
         self.scrub_dur_label.setText("--:--")
+        self.loop_set_a_btn.setText("A: --:--")
+        self.loop_set_b_btn.setText("B: --:--")
         self._update_scrub_controls_state()
 
     def _debug_log(self, message: str):
