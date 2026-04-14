@@ -2143,13 +2143,14 @@ class LiveControllerMac(QWidget):
                 self.table.setCellWidget(i, 2, create_linked_checkbox(i, item))
 
                 is_linked = item.get('linked', False)
-                seconds_input = QLineEdit(str(item.get('gap_seconds', 0)).zfill(2))
+                seconds_input = QLineEdit(str(max(0, min(99, item.get('gap_seconds', 0)))).zfill(2))
                 seconds_input.setFont(table_font)
                 seconds_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 seconds_input.setMaxLength(2)
                 seconds_input.setToolTip("Gap in seconds before next song (only active when Link is on)")
                 seconds_input.setEnabled(is_linked)
                 seconds_input.textChanged.connect(lambda text, path=item['path']: self.update_gap_seconds(path, text))
+                seconds_input.editingFinished.connect(lambda w=seconds_input: w.setText(w.text().zfill(2) if w.text() else "00"))
                 self.table.setCellWidget(i, 3, seconds_input)
 
                 remove_button = QPushButton("✕")
