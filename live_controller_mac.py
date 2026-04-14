@@ -1416,7 +1416,7 @@ class LiveControllerMac(QWidget):
         overlay_colours_layout.setSpacing(3)
 
         self.count_in_color_button = QPushButton()
-        self.count_in_color_button.setFixedSize(24, 14)
+        self.count_in_color_button.setFixedSize(18, 18)
         self.count_in_color_button.setStyleSheet(
             f"background-color: {DEFAULT_COUNT_IN_BG_COLOR}; border-radius: 3px; border: 1px solid #38383a;"
         )
@@ -1429,7 +1429,7 @@ class LiveControllerMac(QWidget):
         self.count_in_font_spinbox.valueChanged.connect(self._on_count_in_font_changed)
 
         self.track_play_color_button = QPushButton()
-        self.track_play_color_button.setFixedSize(24, 14)
+        self.track_play_color_button.setFixedSize(18, 18)
         self.track_play_color_button.setStyleSheet(
             f"background-color: {DEFAULT_TRACK_PLAY_BG_COLOR}; border-radius: 3px; border: 1px solid #38383a;"
         )
@@ -1470,7 +1470,7 @@ class LiveControllerMac(QWidget):
         # Helper: create a compact color swatch button for *key* with *label* text.
         def make_swatch(key, hex_color):
             btn = QPushButton()
-            btn.setFixedSize(24, 14)
+            btn.setFixedSize(18, 18)
             btn.setStyleSheet(
                 f"background-color: {hex_color}; border-radius: 3px; border: 1px solid #38383a;"
             )
