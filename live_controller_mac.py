@@ -1418,7 +1418,7 @@ class LiveControllerMac(QWidget):
         self.count_in_color_button = QPushButton()
         self.count_in_color_button.setFixedSize(18, 18)
         self.count_in_color_button.setStyleSheet(
-            f"background-color: {DEFAULT_COUNT_IN_BG_COLOR}; border-radius: 3px; border: 1px solid #38383a;"
+            f"background-color: {DEFAULT_COUNT_IN_BG_COLOR}; border-radius: 3px; border: 1px solid #38383a; min-height: 18px; max-height: 18px;"
         )
         self.count_in_color_button.clicked.connect(self.pick_count_in_color)
 
@@ -1431,7 +1431,7 @@ class LiveControllerMac(QWidget):
         self.track_play_color_button = QPushButton()
         self.track_play_color_button.setFixedSize(18, 18)
         self.track_play_color_button.setStyleSheet(
-            f"background-color: {DEFAULT_TRACK_PLAY_BG_COLOR}; border-radius: 3px; border: 1px solid #38383a;"
+            f"background-color: {DEFAULT_TRACK_PLAY_BG_COLOR}; border-radius: 3px; border: 1px solid #38383a; min-height: 18px; max-height: 18px;"
         )
         self.track_play_color_button.clicked.connect(self.pick_track_play_color)
 
@@ -1472,7 +1472,7 @@ class LiveControllerMac(QWidget):
             btn = QPushButton()
             btn.setFixedSize(18, 18)
             btn.setStyleSheet(
-                f"background-color: {hex_color}; border-radius: 3px; border: 1px solid #38383a;"
+                f"background-color: {hex_color}; border-radius: 3px; border: 1px solid #38383a; min-height: 18px; max-height: 18px;"
             )
             btn.clicked.connect(lambda _checked, k=key: self._pick_scheme_color(k))
             return btn
@@ -1643,14 +1643,14 @@ class LiveControllerMac(QWidget):
         color = QColorDialog.getColor(QColor(self.count_in_bg_color), self, "Count-In Background Colour")
         if color.isValid():
             self.count_in_bg_color = color.name()
-            self.count_in_color_button.setStyleSheet(f"background-color: {self.count_in_bg_color};")
+            self.count_in_color_button.setStyleSheet(f"background-color: {self.count_in_bg_color}; border-radius: 3px; border: 1px solid #38383a; min-height: 18px; max-height: 18px;")
             self.apply_overlay_styles()
 
     def pick_track_play_color(self):
         color = QColorDialog.getColor(QColor(self.track_play_bg_color), self, "Track Play Background Colour")
         if color.isValid():
             self.track_play_bg_color = color.name()
-            self.track_play_color_button.setStyleSheet(f"background-color: {self.track_play_bg_color};")
+            self.track_play_color_button.setStyleSheet(f"background-color: {self.track_play_bg_color}; border-radius: 3px; border: 1px solid #38383a; min-height: 18px; max-height: 18px;")
             self.apply_overlay_styles()
 
     def _on_count_in_font_changed(self, value):
@@ -1686,7 +1686,7 @@ class LiveControllerMac(QWidget):
         for key, btn in self._scheme_swatches.items():
             color = self._color_scheme.get(key, DEFAULT_COLOR_SCHEME[key])
             btn.setStyleSheet(
-                f"background-color: {color}; border-radius: 4px; border: 1px solid #38383a;"
+                f"background-color: {color}; border-radius: 3px; border: 1px solid #38383a; min-height: 18px; max-height: 18px;"
             )
 
     def _pick_scheme_color(self, key):
@@ -1938,9 +1938,9 @@ class LiveControllerMac(QWidget):
             self.count_in_font_size = session_data.get('count_in_font_size', DEFAULT_COUNT_IN_FONT_SIZE)
             self.track_play_bg_color = session_data.get('track_play_bg_color', DEFAULT_TRACK_PLAY_BG_COLOR)
             self.track_play_font_size = session_data.get('track_play_font_size', DEFAULT_TRACK_PLAY_FONT_SIZE)
-            self.count_in_color_button.setStyleSheet(f"background-color: {self.count_in_bg_color};")
+            self.count_in_color_button.setStyleSheet(f"background-color: {self.count_in_bg_color}; border-radius: 3px; border: 1px solid #38383a; min-height: 18px; max-height: 18px;")
             self.count_in_font_spinbox.setValue(self.count_in_font_size)
-            self.track_play_color_button.setStyleSheet(f"background-color: {self.track_play_bg_color};")
+            self.track_play_color_button.setStyleSheet(f"background-color: {self.track_play_bg_color}; border-radius: 3px; border: 1px solid #38383a; min-height: 18px; max-height: 18px;")
             self.track_play_font_spinbox.setValue(self.track_play_font_size)
             self.apply_overlay_styles()
 
@@ -2264,9 +2264,9 @@ class LiveControllerMac(QWidget):
             self.count_in_font_size = loaded_data.get('count_in_font_size', DEFAULT_COUNT_IN_FONT_SIZE)
             self.track_play_bg_color = loaded_data.get('track_play_bg_color', DEFAULT_TRACK_PLAY_BG_COLOR)
             self.track_play_font_size = loaded_data.get('track_play_font_size', DEFAULT_TRACK_PLAY_FONT_SIZE)
-            self.count_in_color_button.setStyleSheet(f"background-color: {self.count_in_bg_color};")
+            self.count_in_color_button.setStyleSheet(f"background-color: {self.count_in_bg_color}; border-radius: 3px; border: 1px solid #38383a; min-height: 18px; max-height: 18px;")
             self.count_in_font_spinbox.setValue(self.count_in_font_size)
-            self.track_play_color_button.setStyleSheet(f"background-color: {self.track_play_bg_color};")
+            self.track_play_color_button.setStyleSheet(f"background-color: {self.track_play_bg_color}; border-radius: 3px; border: 1px solid #38383a; min-height: 18px; max-height: 18px;")
             self.track_play_font_spinbox.setValue(self.track_play_font_size)
             self.apply_overlay_styles()
             self.audio_only_checkbox.setChecked(loaded_data.get('audio_only', False))
