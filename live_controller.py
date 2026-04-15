@@ -18,6 +18,8 @@ import subprocess
 import time
 import json
 import ctypes
+import ctypes.wintypes
+import threading
 import datetime
 import tempfile
 import shutil
@@ -191,6 +193,64 @@ QCheckBox::indicator:checked, QRadioButton::indicator:checked {
     background-color: #3498db;
 }
 """
+
+def _lc_send_ipc_command(pipe_path, command_str):
+    """Sends a JSON command string to mpv via its Windows named pipe."""
+    try:
+        with open(pipe_path, "w", encoding='utf-8') as f:
+            f.write(command_str + '\n')
+    except Exception as e:
+        print(f"mpv IPC send error (pipe: {pipe_path}): {e}")
+
+
+def _lc_query_mpv_property(pipe_path, prop):
+    """Query a single mpv property via a Windows named pipe.
+
+    Uses the Win32 CreateFile / WriteFile / ReadFile API for bidirectional
+    access to the named pipe.  Returns the property value on success, or
+    *None* on any error (including when running on a non-Windows host).
+    """
+    try:
+        GENERIC_READ  = 0x80000000
+        GENERIC_WRITE = 0x40000000
+        OPEN_EXISTING = 3
+
+        k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        k32.CreateFileW.restype = ctypes.c_void_p
+        handle = k32.CreateFileW(
+            pipe_path, GENERIC_READ | GENERIC_WRITE, 0, None, OPEN_EXISTING, 0, None
+        )
+        invalid = ctypes.c_void_p(-1).value
+        if handle is None or handle == invalid:
+            return None
+        try:
+            cmd = json.dumps({"command": ["get_property", prop], "request_id": 42}) + '\n'
+            cmd_bytes = cmd.encode('utf-8')
+            bw = ctypes.c_uint32(0)
+            if not k32.WriteFile(handle, cmd_bytes, len(cmd_bytes), ctypes.byref(bw), None):
+                return None
+            buf = ctypes.create_string_buffer(4096)
+            br = ctypes.c_uint32(0)
+            if not k32.ReadFile(handle, buf, 4096, ctypes.byref(br), None):
+                return None
+            if br.value == 0:
+                return None
+            for line in buf.raw[:br.value].decode('utf-8', errors='ignore').split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if obj.get('request_id') == 42 and obj.get('error') == 'success':
+                        return obj.get('data')
+                except json.JSONDecodeError:
+                    pass
+        finally:
+            k32.CloseHandle(handle)
+    except Exception:
+        pass
+    return None
+
 
 class DraggableTableWidget(QTableWidget):
     """A QTableWidget subclass that supports drag-and-drop row reordering."""
@@ -2157,6 +2217,49 @@ class Switch(QAbstractButton):
         self.animation.setEndValue(end_pos)
         self.animation.start()
 
+
+class PositionPoller(QThread):
+    """Polls mpv playback position and duration via IPC at ~500 ms intervals.
+
+    Runs in its own thread so the main-thread UI is never blocked waiting on
+    IPC I/O.  Set the active pipe path with :meth:`set_socket`; pass ``None``
+    to pause polling without stopping the thread.
+    """
+    position_updated = pyqtSignal(float, float)   # (pos_seconds, dur_seconds)
+
+    _POLL_INTERVAL = 0.5   # seconds between polls
+
+    def __init__(self):
+        super().__init__()
+        self._socket_path = None
+        self._socket_lock = threading.Lock()
+        self._running = False
+
+    def set_socket(self, path):
+        """Set (or clear) the active mpv IPC pipe path (thread-safe)."""
+        with self._socket_lock:
+            self._socket_path = path
+
+    def stop(self):
+        """Signal the polling loop to exit."""
+        self._running = False
+
+    def run(self):
+        self._running = True
+        while self._running:
+            with self._socket_lock:
+                path = self._socket_path
+            if path:
+                pos = _lc_query_mpv_property(path, "time-pos")
+                dur = _lc_query_mpv_property(path, "duration")
+                if pos is not None and dur is not None:
+                    try:
+                        self.position_updated.emit(float(pos), float(dur))
+                    except Exception:
+                        pass
+            time.sleep(self._POLL_INTERVAL)
+
+
 class LiveController(QWidget):
     """The main application window and controller."""
     def __init__(self):
@@ -2197,6 +2300,18 @@ class LiveController(QWidget):
         self.calib_loop_active = False
         self.calib_loop_worker = None
         self.calib_loop_ipc_socket = None
+
+        # --- Scrub / loop state ---
+        self._current_playback_pos = 0.0       # seconds, updated by position poller
+        self._current_track_duration = 0.0     # seconds, updated by position poller
+        self._slider_being_dragged = False      # True while the user holds the scrub slider
+        self._loop_a_seconds = 0.0             # loop start point (seconds)
+        self._loop_b_seconds = 0.0             # loop end point (seconds)
+
+        # Background thread that polls mpv's playback position without blocking the UI.
+        self._position_poller = PositionPoller()
+        self._position_poller.position_updated.connect(self._on_position_updated)
+        self._position_poller.start()
         
         # --- FONT & COLOR DEFINITIONS ---
         self.current_table_font_size = DEFAULT_TABLE_FONT_SIZE
@@ -2651,6 +2766,99 @@ class LiveController(QWidget):
         lower_row.addWidget(calib_loop_group, 1)
         controls_vbox.addLayout(lower_row)
 
+        # --- Scrub & Loop Group ---
+        scrub_loop_group = QGroupBox("Scrub & Loop")
+        scrub_loop_layout = QVBoxLayout()
+        scrub_loop_layout.setContentsMargins(4, 6, 4, 4)
+        scrub_loop_layout.setSpacing(3)
+
+        # Scrub slider row: [pos] [slider] [dur]
+        scrub_row = QHBoxLayout()
+        scrub_row.setSpacing(4)
+        self.scrub_pos_label = QLabel("--:--")
+        self.scrub_pos_label.setFixedWidth(38)
+        self.scrub_pos_label.setStyleSheet("font-size: 10px; color: #aaa;")
+        self.scrub_slider = QSlider(Qt.Orientation.Horizontal)
+        self.scrub_slider.setRange(0, 1000)
+        self.scrub_slider.setValue(0)
+        self.scrub_slider.setEnabled(False)
+        self.scrub_slider.setToolTip("Drag to seek to a different position in the currently playing file.")
+        self.scrub_slider.sliderMoved.connect(self._on_scrub_slider_moved)
+        self.scrub_slider.sliderReleased.connect(self._on_scrub_slider_released)
+        self.scrub_dur_label = QLabel("--:--")
+        self.scrub_dur_label.setFixedWidth(38)
+        self.scrub_dur_label.setStyleSheet("font-size: 10px; color: #aaa;")
+        scrub_row.addWidget(self.scrub_pos_label)
+        scrub_row.addWidget(self.scrub_slider, 1)
+        scrub_row.addWidget(self.scrub_dur_label)
+
+        # Bar-based loop controls row:
+        # BPM: [120] | Bar A: [1] (00:00) | Bar B: [8] (00:15) | [□ Loop A→B]
+        loop_row = QHBoxLayout()
+        loop_row.setSpacing(6)
+        loop_row.addWidget(QLabel("BPM:"))
+        self.loop_bpm_spinbox = QSpinBox()
+        self.loop_bpm_spinbox.setRange(40, 300)
+        self.loop_bpm_spinbox.setValue(120)
+        self.loop_bpm_spinbox.setFixedWidth(60)
+        self.loop_bpm_spinbox.setToolTip(
+            "BPM of the current track. Used to convert bar numbers to playback times."
+        )
+        self.loop_bpm_spinbox.valueChanged.connect(self._on_loop_bar_changed)
+        loop_row.addWidget(self.loop_bpm_spinbox)
+
+        loop_row.addWidget(QLabel("Bar A:"))
+        self.loop_start_bar_spinbox = QSpinBox()
+        self.loop_start_bar_spinbox.setRange(1, 9999)
+        self.loop_start_bar_spinbox.setValue(1)
+        self.loop_start_bar_spinbox.setFixedWidth(60)
+        self.loop_start_bar_spinbox.setToolTip(
+            "Loop start bar. Bar 1 corresponds to the very beginning of the track."
+        )
+        self.loop_start_bar_spinbox.valueChanged.connect(self._on_loop_bar_changed)
+        loop_row.addWidget(self.loop_start_bar_spinbox)
+        self.loop_a_time_label = QLabel("(--:--)")
+        self.loop_a_time_label.setStyleSheet("font-size: 10px; color: #aaa;")
+        loop_row.addWidget(self.loop_a_time_label)
+
+        loop_row.addWidget(QLabel("Bar B:"))
+        self.loop_end_bar_spinbox = QSpinBox()
+        self.loop_end_bar_spinbox.setRange(1, 9999)
+        self.loop_end_bar_spinbox.setValue(8)
+        self.loop_end_bar_spinbox.setFixedWidth(60)
+        self.loop_end_bar_spinbox.setToolTip(
+            "Loop end bar (inclusive). The loop plays from the start of Bar A to the end of Bar B."
+        )
+        self.loop_end_bar_spinbox.valueChanged.connect(self._on_loop_bar_changed)
+        loop_row.addWidget(self.loop_end_bar_spinbox)
+        self.loop_b_time_label = QLabel("(--:--)")
+        self.loop_b_time_label.setStyleSheet("font-size: 10px; color: #aaa;")
+        loop_row.addWidget(self.loop_b_time_label)
+
+        self.loop_checkbox = QCheckBox("Loop A→B")
+        self.loop_checkbox.setToolTip(
+            "When checked, mpv will repeat the section between bar A and bar B continuously.\n"
+            "Bar positions are converted to times using the BPM above."
+        )
+        self.loop_checkbox.toggled.connect(self._on_loop_toggled)
+        loop_row.addWidget(self.loop_checkbox)
+        loop_row.addStretch(1)
+
+        # Lock row
+        self.scrub_lock_checkbox = QCheckBox("Lock scrub/loop controls")
+        self.scrub_lock_checkbox.setToolTip(
+            "When checked, the scrub slider and loop controls are disabled.\n"
+            "Use this during live shows to prevent accidental changes.\n"
+            "This setting is saved with the session."
+        )
+        self.scrub_lock_checkbox.toggled.connect(self._on_scrub_lock_changed)
+
+        scrub_loop_layout.addLayout(scrub_row)
+        scrub_loop_layout.addLayout(loop_row)
+        scrub_loop_layout.addWidget(self.scrub_lock_checkbox)
+        scrub_loop_group.setLayout(scrub_loop_layout)
+        controls_vbox.addWidget(scrub_loop_group)
+
         # MIDI Port Testing spans full width at the bottom
         controls_vbox.addWidget(midi_test_group)
 
@@ -2981,6 +3189,11 @@ class LiveController(QWidget):
             'count_in_font_size': self.count_in_font_size,
             'track_play_bg_color': self.track_play_bg_color,
             'track_play_font_size': self.track_play_font_size,
+            'scrub_locked': self.scrub_lock_checkbox.isChecked(),
+            'loop_enabled': self.loop_checkbox.isChecked(),
+            'loop_bpm': self.loop_bpm_spinbox.value(),
+            'loop_start_bar': self.loop_start_bar_spinbox.value(),
+            'loop_end_bar': self.loop_end_bar_spinbox.value(),
         }
         with open(SESSION_FILE, 'w') as f:
             json.dump(session_data, f, indent=4)
@@ -3032,6 +3245,14 @@ class LiveController(QWidget):
                 self.play_test_button.setEnabled(True)
             else:
                 self.test_track_path = None
+
+            # Restore scrub/loop settings.
+            self.scrub_lock_checkbox.setChecked(session_data.get('scrub_locked', False))
+            self.loop_checkbox.setChecked(session_data.get('loop_enabled', False))
+            self.loop_bpm_spinbox.setValue(session_data.get('loop_bpm', 120))
+            self.loop_start_bar_spinbox.setValue(session_data.get('loop_start_bar', 1))
+            self.loop_end_bar_spinbox.setValue(session_data.get('loop_end_bar', 8))
+            self._update_scrub_controls_state()
 
             self.status_label.setText(f"Status: Restored previous session: {session_data.get('setlist_name', '')}")
         except (json.JSONDecodeError, FileNotFoundError): 
@@ -3651,10 +3872,19 @@ class LiveController(QWidget):
         self.send_led_command("3")  # LED 3 (orange): song is playing
         self.send_led_command("6")  # LED 6 (green): track active indicator
         self.worker.start()
+        # Auto-populate the loop BPM spinbox with the current track's BPM and
+        # recalculate bar→time labels.  Block signals on setValue to prevent a
+        # redundant _on_loop_bar_changed call before the explicit one below.
+        self.loop_bpm_spinbox.blockSignals(True)
+        self.loop_bpm_spinbox.setValue(bpm)
+        self.loop_bpm_spinbox.blockSignals(False)
+        self._on_loop_bar_changed()
 
     def set_ipc_socket(self, path):
         """Receives the IPC socket path from the worker thread."""
         self.current_ipc_socket = path
+        self._position_poller.set_socket(path)
+        self._update_scrub_controls_state()
 
     def stop_all_activity(self):
         """Centralized method to stop any running playback, countdown, or test."""
@@ -3689,6 +3919,7 @@ class LiveController(QWidget):
         self.active_flash_timer.stop()
         self.active_label.hide()
         self.send_led_command("4")  # Turn off all LEDs when playback is manually stopped.
+        self._reset_scrub_controls()
 
     def on_playback_finished(self):
         """Cleans up the UI and state after playback finishes."""
@@ -3702,6 +3933,7 @@ class LiveController(QWidget):
             self.worker.deleteLater()
         self.worker = None
         self.current_ipc_socket = None
+        self._reset_scrub_controls()
 
         # Turn off all LEDs when any track finishes.
         self.send_led_command("4")  # "4" turns all LEDs off
@@ -3799,6 +4031,114 @@ class LiveController(QWidget):
     def toggle_active_label_visibility(self):
         """Toggles the visibility of the 'ACTIVE' label to create a flashing effect."""
         self.active_label.setVisible(not self.active_label.isVisible())
+
+    # ------------------------------------------------------------------ #
+    # Scrub & Loop
+    # ------------------------------------------------------------------ #
+
+    def _lc_send_ipc(self, command_str):
+        """Sends a JSON command string to the currently active mpv instance."""
+        if self.current_ipc_socket:
+            _lc_send_ipc_command(self.current_ipc_socket, command_str)
+
+    @staticmethod
+    def _bars_to_seconds(bar, bpm):
+        """Convert a 1-based bar number to an absolute playback time in seconds.
+
+        Assumes 4/4 time and that the track starts at bar 1 from time zero.
+        Bar 1 → 0.0 s, Bar 2 → 240/BPM s, etc.
+        240 = 4 beats/bar × 60 seconds/beat at 1 BPM.
+        """
+        # 4 beats per bar × 60 s/beat = 240 s/bar at 1 BPM
+        seconds_per_bar = 240.0 / max(1, bpm)
+        return (bar - 1) * seconds_per_bar
+
+    def _on_position_updated(self, pos: float, dur: float):
+        """Slot called by PositionPoller (via signal) whenever mpv reports a new position."""
+        self._current_playback_pos = pos
+        self._current_track_duration = dur
+        if self._slider_being_dragged:
+            return
+        if dur > 0:
+            slider_val = int((pos / dur) * 1000)
+            self.scrub_slider.blockSignals(True)
+            self.scrub_slider.setValue(slider_val)
+            self.scrub_slider.blockSignals(False)
+        self.scrub_pos_label.setText(self.format_duration(pos))
+        self.scrub_dur_label.setText(self.format_duration(dur))
+
+    def _on_scrub_slider_moved(self, value: int):
+        """Called continuously while the user drags the scrub slider handle."""
+        self._slider_being_dragged = True
+        if self._current_track_duration > 0:
+            pos = (value / 1000.0) * self._current_track_duration
+            self.scrub_pos_label.setText(self.format_duration(pos))
+
+    def _on_scrub_slider_released(self):
+        """Called when the user releases the scrub slider — seek mpv to the chosen position."""
+        if not self._slider_being_dragged:
+            return
+        self._slider_being_dragged = False
+        if self.current_ipc_socket and self._current_track_duration > 0:
+            value = self.scrub_slider.value()
+            pos = (value / 1000.0) * self._current_track_duration
+            self._lc_send_ipc(json.dumps({"command": ["seek", pos, "absolute"]}))
+
+    def _on_loop_bar_changed(self):
+        """Recalculate loop A/B times whenever the bar spinboxes or BPM changes."""
+        bpm = self.loop_bpm_spinbox.value()
+        start_bar = self.loop_start_bar_spinbox.value()
+        end_bar = self.loop_end_bar_spinbox.value()
+
+        self._loop_a_seconds = self._bars_to_seconds(start_bar, bpm)
+        # Bar B is inclusive: the loop plays through the *end* of bar B,
+        # which is the same as the *start* of bar B+1.
+        self._loop_b_seconds = self._bars_to_seconds(end_bar + 1, bpm)
+
+        self.loop_a_time_label.setText(f"({self.format_duration(self._loop_a_seconds)})")
+        self.loop_b_time_label.setText(f"({self.format_duration(self._loop_b_seconds)})")
+
+        if self.loop_checkbox.isChecked() and self.current_ipc_socket:
+            self._lc_send_ipc(json.dumps({"command": ["set_property", "ab-loop-a", self._loop_a_seconds]}))
+            self._lc_send_ipc(json.dumps({"command": ["set_property", "ab-loop-b", self._loop_b_seconds]}))
+
+    def _on_loop_toggled(self, checked: bool):
+        """Enable or disable mpv's A-B loop when the loop checkbox is toggled."""
+        if not self.current_ipc_socket:
+            return
+        if checked:
+            # Recalculate from bars and send to mpv.
+            self._on_loop_bar_changed()
+        else:
+            self._lc_send_ipc(json.dumps({"command": ["set_property", "ab-loop-a", "no"]}))
+            self._lc_send_ipc(json.dumps({"command": ["set_property", "ab-loop-b", "no"]}))
+
+    def _on_scrub_lock_changed(self, checked: bool):
+        """Lock or unlock the scrub/loop controls."""
+        self._update_scrub_controls_state()
+
+    def _update_scrub_controls_state(self):
+        """Refresh enabled/disabled state for all scrub and loop widgets."""
+        is_playing = self.worker is not None and self.worker.isRunning()
+        locked = self.scrub_lock_checkbox.isChecked()
+        self.scrub_slider.setEnabled(is_playing and not locked)
+        self.loop_bpm_spinbox.setEnabled(not locked)
+        self.loop_start_bar_spinbox.setEnabled(not locked)
+        self.loop_end_bar_spinbox.setEnabled(not locked)
+        self.loop_checkbox.setEnabled(not locked)
+
+    def _reset_scrub_controls(self):
+        """Reset scrub slider and labels to their idle state when playback stops."""
+        self._position_poller.set_socket(None)
+        self._current_track_duration = 0.0
+        self._current_playback_pos = 0.0
+        self._slider_being_dragged = False
+        self.scrub_slider.blockSignals(True)
+        self.scrub_slider.setValue(0)
+        self.scrub_slider.blockSignals(False)
+        self.scrub_pos_label.setText("--:--")
+        self.scrub_dur_label.setText("--:--")
+        self._update_scrub_controls_state()
 
     def select_test_file(self):
         """Opens a file dialog to select a video file for testing."""
