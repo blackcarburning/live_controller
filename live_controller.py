@@ -312,8 +312,8 @@ class MidiTestWorker(QThread):
 # Multi-zone zoom/crop configuration helpers
 # ---------------------------------------------------------------------------
 
-NUM_ZONES = 3
-_ZONE_COLORS = ["#00e676", "#ff9800", "#2196f3"]  # Green, Orange, Blue per zone
+NUM_ZONES = 5
+_ZONE_COLORS = ["#00e676", "#ff9800", "#2196f3", "#e040fb", "#ffeb3b"]  # Green, Orange, Blue, Purple, Yellow per zone
 
 
 def _default_zone():
