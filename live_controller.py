@@ -392,17 +392,57 @@ def _build_vf_for_zones(zoom_config):
             vf += f",pad=iw+{2*border}:ih+{2*border}:{border}:{border}:black"
         return vf
 
-    if len(enabled) == 1:
-        return _zone_vf(enabled[0])
+    def _zone_out_size(z):
+        """Return the (width, height) of a zone after crop + optional scale + border."""
+        sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
+        w = sw if sw > 0 else z["crop_w"]
+        h = sh if sh > 0 else z["crop_h"]
+        border = z.get("border_px", 0)
+        return w + 2 * border, h + 2 * border
 
-    # Multiple zones: use lavfi split + per-zone crop/scale + hstack/vstack
+    # setsar=1 is appended to every filter graph so that mpv uses the composite's
+    # own pixel dimensions for display-aspect-ratio calculations, rather than
+    # inheriting the SAR from the source video.  Without this, a source whose
+    # metadata encodes a non-square SAR (e.g. anamorphic or display-aspect
+    # overrides) causes the stitched composite to be vertically squashed or
+    # stretched when rendered fullscreen instead of being letterboxed correctly.
+    if len(enabled) == 1:
+        # Wrap in lavfi so setsar=1 is applied inside the same graph.
+        return f"lavfi=[{_zone_vf(enabled[0])},setsar=1]"
+
+    # Multiple zones: use lavfi split + per-zone crop/scale + hstack/vstack.
     n = len(enabled)
+    zone_sizes = [_zone_out_size(z) for z in enabled]
+
+    # hstack requires all inputs to share the same height; vstack requires the
+    # same width.  Compute the maximum dimension and pad shorter zones so that
+    # the stack filter never sees mismatched stream sizes (which would either
+    # error or silently truncate the composite).
+    if direction == "horizontal":
+        target_h = max(s[1] for s in zone_sizes)
+    else:
+        target_w = max(s[0] for s in zone_sizes)
+
     split_tags = "".join(f"[z{i}]" for i in range(n))
     split_part = f"split={n}{split_tags}"
-    crop_parts = [f"[z{i}]{_zone_vf(z)}[c{i}]" for i, z in enumerate(enabled)]
+
+    def _zone_segment(z, size, i):
+        vf_str = _zone_vf(z)
+        out_w, out_h = size
+        if direction == "horizontal" and out_h < target_h:
+            # Pad height to target_h with black at the bottom.
+            vf_str += f",pad=iw:{target_h}:0:0:black"
+        elif direction == "vertical" and out_w < target_w:
+            # Pad width to target_w with black on the right.
+            vf_str += f",pad={target_w}:ih:0:0:black"
+        return f"[z{i}]{vf_str}[c{i}]"
+
+    crop_parts = [_zone_segment(z, zone_sizes[i], i) for i, z in enumerate(enabled)]
     stack_inputs = "".join(f"[c{i}]" for i in range(n))
     stack_fn = "vstack" if direction == "vertical" else "hstack"
-    stack_part = f"{stack_inputs}{stack_fn}=inputs={n}"
+    # setsar=1 after the stack forces the composite's pixel dimensions to be
+    # used as-is, matching the preview display and preventing squashing.
+    stack_part = f"{stack_inputs}{stack_fn}=inputs={n},setsar=1"
     graph = ";".join([split_part] + crop_parts + [stack_part])
     return f"lavfi=[{graph}]"
 
