@@ -1965,7 +1965,7 @@ class MultiZoomScaleDialog(QDialog):
             result = result.scaled(out_w, out_h,
                                    Qt.AspectRatioMode.IgnoreAspectRatio,
                                    Qt.TransformationMode.SmoothTransformation)
-            total_w, total_h = result.width(), result.height()
+            total_w, total_h = out_w, out_h
 
         label_size = self._final_canvas.size()
         scaled = result.scaled(label_size,
