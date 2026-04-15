@@ -332,7 +332,8 @@ def _migrate_zoom_config(cfg):
     if not cfg:
         zones = [_default_zone() for _ in range(NUM_ZONES)]
         zones[0]["enabled"] = True  # Enable zone 0 by default
-        return {"zones": zones, "stack_direction": "horizontal"}
+        return {"zones": zones, "stack_direction": "horizontal",
+                "final_scale_w": -1, "final_scale_h": -1}
     if "zones" in cfg:
         zones = list(cfg["zones"])
         while len(zones) < NUM_ZONES:
@@ -345,6 +346,8 @@ def _migrate_zoom_config(cfg):
             "zones": zones[:NUM_ZONES],
             "stack_direction": cfg.get("stack_direction", "horizontal"),
             "frame_snapshot_path": cfg.get("frame_snapshot_path", ""),
+            "final_scale_w": cfg.get("final_scale_w", -1),
+            "final_scale_h": cfg.get("final_scale_h", -1),
         }
     # Old single-zone format — migrate to zone 0
     zone0 = {
@@ -359,7 +362,8 @@ def _migrate_zoom_config(cfg):
         "mode": "crop",
     }
     zones = [zone0] + [_default_zone() for _ in range(NUM_ZONES - 1)]
-    return {"zones": zones, "stack_direction": "horizontal", "frame_snapshot_path": ""}
+    return {"zones": zones, "stack_direction": "horizontal", "frame_snapshot_path": "",
+            "final_scale_w": -1, "final_scale_h": -1}
 
 
 def _build_vf_for_zones(zoom_config):
@@ -367,6 +371,9 @@ def _build_vf_for_zones(zoom_config):
 
     If *zoom_config* is empty ({}), or contains no enabled zones with a crop region,
     returns None so mpv plays without any video filter.
+
+    An optional overall final stretch (``final_scale_w`` × ``final_scale_h``) is
+    appended after all zone processing.  It is stretch-only; no crop is applied.
     """
     # An empty dict means "never configured" — apply no filter
     if not zoom_config:
@@ -393,18 +400,27 @@ def _build_vf_for_zones(zoom_config):
         return vf
 
     if len(enabled) == 1:
-        return _zone_vf(enabled[0])
+        base_vf = _zone_vf(enabled[0])
+    else:
+        # Multiple zones: use lavfi split + per-zone crop/scale + hstack/vstack
+        n = len(enabled)
+        split_tags = "".join(f"[z{i}]" for i in range(n))
+        split_part = f"split={n}{split_tags}"
+        crop_parts = [f"[z{i}]{_zone_vf(z)}[c{i}]" for i, z in enumerate(enabled)]
+        stack_inputs = "".join(f"[c{i}]" for i in range(n))
+        stack_fn = "vstack" if direction == "vertical" else "hstack"
+        stack_part = f"{stack_inputs}{stack_fn}=inputs={n}"
+        graph = ";".join([split_part] + crop_parts + [stack_part])
+        base_vf = f"lavfi=[{graph}]"
 
-    # Multiple zones: use lavfi split + per-zone crop/scale + hstack/vstack
-    n = len(enabled)
-    split_tags = "".join(f"[z{i}]" for i in range(n))
-    split_part = f"split={n}{split_tags}"
-    crop_parts = [f"[z{i}]{_zone_vf(z)}[c{i}]" for i, z in enumerate(enabled)]
-    stack_inputs = "".join(f"[c{i}]" for i in range(n))
-    stack_fn = "vstack" if direction == "vertical" else "hstack"
-    stack_part = f"{stack_inputs}{stack_fn}=inputs={n}"
-    graph = ";".join([split_part] + crop_parts + [stack_part])
-    return f"lavfi=[{graph}]"
+    # Apply optional overall final stretch (stretch-only, no crop)
+    fsw = migrated.get("final_scale_w", -1)
+    fsh = migrated.get("final_scale_h", -1)
+    if fsw > 0 or fsh > 0:
+        w_str = str(fsw) if fsw > 0 else "-1"
+        h_str = str(fsh) if fsh > 0 else "-1"
+        return f"{base_vf},scale={w_str}:{h_str}"
+    return base_vf
 
 
 class MidiSyncWorker(QThread):
@@ -1446,17 +1462,19 @@ class StretchCanvas(QWidget):
 class MultiZoomScaleDialog(QDialog):
     """Multi-zone crop/stretch configuration dialog.
 
-    Up to 3 independent crop zones can be configured and enabled; the enabled
+    Up to 5 independent crop zones can be configured and enabled; the enabled
     zones are stitched (horizontally or vertically) to produce the final output
     image sent to mpv.
 
     Per-zone the user can toggle between:
       • Crop mode   — drag the coloured rectangle on the full source frame.
-      • Stretch mode — drag handles to set output scale dimensions; the
-                       cropped sub-image is previewed stretched in real-time.
+      • Stretch mode — drag handles (including top/bottom for vertical stretch)
+                       to set output scale dimensions; the cropped sub-image is
+                       previewed stretched in real-time.
 
-    A *Final Preview* tab composites all enabled zones into one image showing
-    exactly how the final stitched output will look.
+    A *Final Preview* tab composites all enabled zones into one image and
+    exposes an optional overall final stretch (width × height) that is applied
+    to the entire composite output — stretch only, no crop.
     """
 
     def __init__(self, current_config, parent=None):
@@ -1693,6 +1711,38 @@ class MultiZoomScaleDialog(QDialog):
         final_top.addStretch()
         final_top.addWidget(self._stitch_info_label)
         final_layout.addLayout(final_top)
+
+        # ---- Final overall stretch (stretch-only, no crop) ----
+        final_stretch_bar = QHBoxLayout()
+        final_stretch_grp = QGroupBox("Final Output Stretch  (entire composite — stretch only, no crop)")
+        final_stretch_grp.setToolTip(
+            "Optionally scale the entire composited output to a specific pixel size.\n"
+            "This is a stretch-only adjustment: no cropping is performed.\n"
+            "Set both values to -1 (auto) to leave the composite at its natural size.")
+        fsg = QHBoxLayout()
+        fsg.setSpacing(8)
+        self._final_sw_sb = QSpinBox()
+        self._final_sw_sb.setRange(-1, 99999)
+        self._final_sw_sb.setSpecialValueText("auto")
+        self._final_sw_sb.setSuffix(" px")
+        self._final_sw_sb.setFixedWidth(120)
+        self._final_sw_sb.setToolTip("Final output width in pixels.  -1 = no horizontal stretch.")
+        self._final_sh_sb = QSpinBox()
+        self._final_sh_sb.setRange(-1, 99999)
+        self._final_sh_sb.setSpecialValueText("auto")
+        self._final_sh_sb.setSuffix(" px")
+        self._final_sh_sb.setFixedWidth(120)
+        self._final_sh_sb.setToolTip("Final output height in pixels.  -1 = no vertical stretch.")
+        fsg.addWidget(QLabel("Width:"))
+        fsg.addWidget(self._final_sw_sb)
+        fsg.addSpacing(12)
+        fsg.addWidget(QLabel("Height:"))
+        fsg.addWidget(self._final_sh_sb)
+        fsg.addStretch()
+        final_stretch_grp.setLayout(fsg)
+        final_stretch_bar.addWidget(final_stretch_grp)
+        final_layout.addLayout(final_stretch_bar)
+
         self._final_canvas = QLabel()
         self._final_canvas.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._final_canvas.setMinimumSize(400, 200)
@@ -1751,6 +1801,8 @@ class MultiZoomScaleDialog(QDialog):
                 self._zone_mode_crop_rbs[i].setChecked(True)
             self._zone_crop_canvases[i].set_region(x, y, w, h)
             self._zone_stretch_canvases[i].set_output(sw if sw > 0 else w, sh if sh > 0 else h)
+        self._final_sw_sb.setValue(self._cfg.get("final_scale_w", -1))
+        self._final_sh_sb.setValue(self._cfg.get("final_scale_h", -1))
         self._updating = False
 
         # Attempt to reload the persistent frame snapshot
@@ -1781,6 +1833,8 @@ class MultiZoomScaleDialog(QDialog):
             "zones": zones,
             "stack_direction": direction,
             "frame_snapshot_path": snapshot_path,
+            "final_scale_w": self._final_sw_sb.value(),
+            "final_scale_h": self._final_sh_sb.value(),
         }
 
     # ------------------------------------------------------------------
@@ -1902,15 +1956,30 @@ class MultiZoomScaleDialog(QDialog):
                 off += pm.width()
         painter.end()
 
+        # Apply final overall stretch (stretch-only, no crop)
+        fsw = cfg.get("final_scale_w", -1)
+        fsh = cfg.get("final_scale_h", -1)
+        if fsw > 0 or fsh > 0:
+            out_w = fsw if fsw > 0 else result.width()
+            out_h = fsh if fsh > 0 else result.height()
+            result = result.scaled(out_w, out_h,
+                                   Qt.AspectRatioMode.IgnoreAspectRatio,
+                                   Qt.TransformationMode.SmoothTransformation)
+            total_w, total_h = out_w, out_h
+
         label_size = self._final_canvas.size()
         scaled = result.scaled(label_size,
                                Qt.AspectRatioMode.KeepAspectRatio,
                                Qt.TransformationMode.SmoothTransformation)
         self._final_canvas.setPixmap(scaled)
         dir_txt = "vertical" if direction == "vertical" else "horizontal"
+        final_stretch_txt = (
+            f"  |  Final stretch: {total_w} × {total_h} px"
+            if (fsw > 0 or fsh > 0) else ""
+        )
         self._stitch_info_label.setText(
             f"Stitch: {dir_txt}  |  {len(zones)} zone(s)  |  "
-            f"Output: {total_w} × {total_h} px")
+            f"Output: {total_w} × {total_h} px{final_stretch_txt}")
 
     # ------------------------------------------------------------------
     # Video / mpv control
