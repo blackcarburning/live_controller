@@ -1256,8 +1256,10 @@ class StretchCanvas(QWidget):
     """Canvas that displays a cropped region and lets the user resize output dimensions.
 
     In stretch/scale edit mode the user sees the cropped sub-image drawn at the
-    *current output size* (potentially distorted) and can drag the right/bottom/
-    corner handles to change the scale_w × scale_h values.
+    *current output size* (potentially distorted) and can drag any of the eight
+    edge/corner handles to change the scale_w × scale_h values.  Top handles
+    adjust height by dragging up/down; left handles adjust width by dragging
+    left/right.
     """
 
     output_changed = pyqtSignal(int, int)  # scale_w, scale_h
@@ -1330,8 +1332,11 @@ class StretchCanvas(QWidget):
             (r.right(),  r.bottom(), 'br'),
             (r.right(),  r.top(),    'tr'),
             (r.left(),   r.bottom(), 'bl'),
+            (r.left(),   r.top(),    'tl'),
             (r.right(),  cy,         'r'),
+            (r.left(),   cy,         'l'),
             (cx,         r.bottom(), 'b'),
+            (cx,         r.top(),    't'),
         ]
         return [(QRect(px - h, py - h, h * 2, h * 2), name) for px, py, name in pts]
 
@@ -1392,10 +1397,13 @@ class StretchCanvas(QWidget):
             mode = self._hit_mode(event.pos())
             cursors = {
                 'resize_br': Qt.CursorShape.SizeFDiagCursor,
+                'resize_tl': Qt.CursorShape.SizeFDiagCursor,
                 'resize_tr': Qt.CursorShape.SizeBDiagCursor,
                 'resize_bl': Qt.CursorShape.SizeBDiagCursor,
                 'resize_r':  Qt.CursorShape.SizeHorCursor,
+                'resize_l':  Qt.CursorShape.SizeHorCursor,
                 'resize_b':  Qt.CursorShape.SizeVerCursor,
+                'resize_t':  Qt.CursorShape.SizeVerCursor,
             }
             self.setCursor(cursors.get(mode, Qt.CursorShape.ArrowCursor))
             return
@@ -1405,10 +1413,17 @@ class StretchCanvas(QWidget):
         dx = (event.pos().x() - self._drag_start.x()) / max(1e-6, scale)
         dy = (event.pos().y() - self._drag_start.y()) / max(1e-6, scale)
         ow, oh = self._drag_orig
-        if 'r' in self._drag_mode:
+        # Extract the handle suffix (e.g. 'br', 't', 'l') to avoid matching
+        # against the 'r' in the "resize_" prefix.
+        handle = self._drag_mode[len('resize_'):]
+        if 'r' in handle:
             ow = max(1, int(ow + dx))
-        if 'b' in self._drag_mode:
+        elif 'l' in handle:
+            ow = max(1, int(ow - dx))
+        if 'b' in handle:
             oh = max(1, int(oh + dy))
+        elif 't' in handle:
+            oh = max(1, int(oh - dy))
         self._out_w = ow
         self._out_h = oh
         self.update()
