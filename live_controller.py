@@ -333,9 +333,12 @@ def _migrate_zoom_config(cfg):
         zones = [_default_zone() for _ in range(NUM_ZONES)]
         zones[0]["enabled"] = True  # Enable zone 0 by default
         return {"zones": zones, "stack_direction": "horizontal",
+                "frame_snapshot_path": "",
                 "final_scale_w": -1, "final_scale_h": -1}
     if "zones" in cfg:
-        zones = list(cfg["zones"])
+        # Use shallow copies of each zone dict so that setdefault calls below
+        # do not mutate the caller's original zone objects.
+        zones = [dict(z) for z in cfg["zones"]]
         while len(zones) < NUM_ZONES:
             zones.append(_default_zone())
         # Ensure every existing zone has the newer fields
@@ -1956,16 +1959,24 @@ class MultiZoomScaleDialog(QDialog):
                 off += pm.width()
         painter.end()
 
-        # Apply final overall stretch (stretch-only, no crop)
+        # Apply final overall stretch (stretch-only, no crop).
+        # When only one dimension is positive the other is treated as "auto"
+        # (keep aspect ratio), which matches mpv's scale=W:-1 / scale=-1:H
+        # semantics so the preview stays in sync with actual playback.
         fsw = cfg.get("final_scale_w", -1)
         fsh = cfg.get("final_scale_h", -1)
         if fsw > 0 or fsh > 0:
-            out_w = fsw if fsw > 0 else result.width()
-            out_h = fsh if fsh > 0 else result.height()
-            result = result.scaled(out_w, out_h,
-                                   Qt.AspectRatioMode.IgnoreAspectRatio,
-                                   Qt.TransformationMode.SmoothTransformation)
-            total_w, total_h = out_w, out_h
+            if fsw > 0 and fsh > 0:
+                result = result.scaled(fsw, fsh,
+                                       Qt.AspectRatioMode.IgnoreAspectRatio,
+                                       Qt.TransformationMode.SmoothTransformation)
+            elif fsw > 0:
+                result = result.scaledToWidth(fsw,
+                                              Qt.TransformationMode.SmoothTransformation)
+            else:
+                result = result.scaledToHeight(fsh,
+                                               Qt.TransformationMode.SmoothTransformation)
+            total_w, total_h = result.width(), result.height()
 
         label_size = self._final_canvas.size()
         scaled = result.scaled(label_size,
@@ -2972,7 +2983,13 @@ class LiveController(QWidget):
                 border_txt = f" +{border}b" if border > 0 else ""
                 parts.append(f"Z{idx+1}:{cw}×{ch}{scale_txt}{border_txt}")
             dir_sym = "↔" if direction != "vertical" else "↕"
-            self.zoom_status_label.setText(f"{dir_sym} " + "  ".join(parts))
+            # Show final composite scale when configured so users can confirm it is active.
+            fsw = migrated.get("final_scale_w", -1)
+            fsh = migrated.get("final_scale_h", -1)
+            fsw_txt = str(fsw) if fsw > 0 else "auto"
+            fsh_txt = str(fsh) if fsh > 0 else "auto"
+            final_txt = f"  → final {fsw_txt}×{fsh_txt}" if (fsw > 0 or fsh > 0) else ""
+            self.zoom_status_label.setText(f"{dir_sym} " + "  ".join(parts) + final_txt)
             self.zoom_status_label.setStyleSheet("font-size: 10px; color: #00b894; font-style: italic;")
 
     def open_zoom_dialog(self):
