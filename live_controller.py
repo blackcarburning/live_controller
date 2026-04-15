@@ -1852,7 +1852,7 @@ class MultiZoomScaleDialog(QDialog):
             cx, cy = max(0, z["crop_x"]), max(0, z["crop_y"])
             cw, ch = max(1, z["crop_w"]), max(1, z["crop_h"])
             sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
-            border = max(0, z.get("border_px", 0))
+            border = z.get("border_px", 0)
             pm = self._full_pixmap.copy(cx, cy, cw, ch)
             if sw > 0 and sh > 0:
                 pm = pm.scaled(sw, sh,
@@ -1969,7 +1969,7 @@ class MultiZoomScaleDialog(QDialog):
             return
         # Save a persistent copy to the local project directory
         try:
-            shutil.copy2(self._frame_path, ZOOM_FRAME_SNAPSHOT)
+            shutil.copy(self._frame_path, ZOOM_FRAME_SNAPSHOT)
             self._cfg["frame_snapshot_path"] = os.path.abspath(ZOOM_FRAME_SNAPSHOT)
         except OSError:
             self._cfg["frame_snapshot_path"] = self._frame_path
@@ -2068,8 +2068,6 @@ class MultiZoomScaleDialog(QDialog):
             self._status.setText(f"Import failed: {exc}")
             return
         self._cfg = _migrate_zoom_config(raw)
-        # Preserve the frame_snapshot_path from the imported file if present
-        self._cfg["frame_snapshot_path"] = raw.get("frame_snapshot_path", "")
         self._load_config_to_ui()
         self._status.setText(
             f"Editor state imported from '{os.path.basename(path)}'.")
