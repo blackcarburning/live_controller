@@ -2653,6 +2653,7 @@ class LiveController(QWidget):
 
         timing_group = QGroupBox("MIDI Timing Method")
         timing_layout = QHBoxLayout()
+        timing_layout.setContentsMargins(8, 14, 8, 8)
         self.standard_timing_radio = QRadioButton("Standard")
         self.high_precision_timing_radio = QRadioButton("High-Precision")
         timing_layout.addWidget(self.standard_timing_radio)
