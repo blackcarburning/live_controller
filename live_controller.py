@@ -379,7 +379,8 @@ def _composite_dims(migrated):
     """
     zones = migrated.get("zones", [])
     direction = migrated.get("stack_direction", "horizontal")
-    enabled = [z for z in zones if z.get("enabled") and z.get("crop_w", 0) > 0]
+    enabled = [z for z in zones
+               if z.get("enabled") and z.get("crop_w", 0) > 0 and z.get("crop_h", 0) > 0]
     if not enabled:
         return 0, 0
     piece_dims = []
