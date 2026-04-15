@@ -436,14 +436,55 @@ def _build_vf_for_zones(zoom_config):
             vf += f",pad=iw+{2*border}:ih+{2*border}:{border}:{border}:black"
         return vf
 
+    def _zone_output_dims(z):
+        """Return the (width, height) produced by _zone_vf for zone *z*."""
+        w = max(1, z.get("crop_w", 1))
+        h = max(1, z.get("crop_h", 1))
+        sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
+        if sw > 0 and sh > 0:
+            w, h = sw, sh
+        border = z.get("border_px", 0)
+        if border > 0:
+            w += 2 * border
+            h += 2 * border
+        return w, h
+
     if len(enabled) == 1:
         base_vf = _zone_vf(enabled[0])
     else:
         # Multiple zones: use lavfi split + per-zone crop/scale + hstack/vstack
+        #
+        # ffmpeg's hstack requires every input to have exactly the same height;
+        # vstack requires the same width.  The preview compositor uses
+        # max(heights) / max(widths) as the canvas size and renders each piece
+        # at offset 0 with black filling the remainder.  We replicate that here
+        # by appending a pad filter to any zone whose dimension is below the
+        # maximum, keeping the content top-left-aligned (pad x/y = 0:0).
         n = len(enabled)
+        zone_dims = [_zone_output_dims(z) for z in enabled]
+        if direction == "vertical":
+            # vstack: normalise widths
+            target_w = max(d[0] for d in zone_dims)
+            target_h = None
+        else:
+            # hstack: normalise heights
+            target_w = None
+            target_h = max(d[1] for d in zone_dims)
+
+        def _zone_vf_normalised(z, zw, zh):
+            vf = _zone_vf(z)
+            pad_w = target_w if target_w is not None and zw < target_w else zw
+            pad_h = target_h if target_h is not None and zh < target_h else zh
+            if pad_w != zw or pad_h != zh:
+                vf += f",pad={pad_w}:{pad_h}:0:0:black"
+            return vf
+
         split_tags = "".join(f"[z{i}]" for i in range(n))
         split_part = f"split={n}{split_tags}"
-        crop_parts = [f"[z{i}]{_zone_vf(z)}[c{i}]" for i, z in enumerate(enabled)]
+        crop_parts = [
+            f"[z{i}]{_zone_vf_normalised(z, zone_dims[i][0], zone_dims[i][1])}[c{i}]"
+            for i, z in enumerate(enabled)
+        ]
         stack_inputs = "".join(f"[c{i}]" for i in range(n))
         stack_fn = "vstack" if direction == "vertical" else "hstack"
         stack_part = f"{stack_inputs}{stack_fn}=inputs={n}"
