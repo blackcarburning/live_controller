@@ -762,6 +762,7 @@ class ZoomCropCanvas(QWidget):
     are reported live via the region_changed signal.
     """
     region_changed = pyqtSignal(int, int, int, int)  # x, y, w, h in source pixels
+    handle_dragged = pyqtSignal(str, int, int)        # drag_mode, abs_x, abs_y
 
     HANDLE_SIZE = 9  # Half-size of resize handles in canvas pixels
 
@@ -780,6 +781,7 @@ class ZoomCropCanvas(QWidget):
         self._drag_start = None
         self._drag_mode = None
         self._drag_orig_rect = QRect()
+        self._drag_handle_pos = None  # (mode, src_x, src_y) while dragging
 
         self.setMinimumSize(480, 270)
         self.setMouseTracking(True)
@@ -921,6 +923,30 @@ class ZoomCropCanvas(QWidget):
             for rect, _ in self._handle_rects():
                 painter.drawRect(rect)
 
+        # Coordinate overlay while a handle is being dragged
+        if self._drag_handle_pos:
+            mode, src_x, src_y = self._drag_handle_pos
+            vertical_modes = ('resize_t', 'resize_b',
+                              'resize_tl', 'resize_tr',
+                              'resize_bl', 'resize_br')
+            if mode in vertical_modes and self.source_h > 0:
+                y_from_bottom = self.source_h - src_y - 1
+                coord_text = f"X:{src_x}  Y:{src_y}  (↑{y_from_bottom} from bottom)"
+            else:
+                coord_text = f"X:{src_x}  Y:{src_y}"
+            canvas_pos = self._to_canvas(src_x, src_y)
+            fm = painter.fontMetrics()
+            tw = fm.horizontalAdvance(coord_text) + 10
+            th = fm.height() + 6
+            tx = canvas_pos.x() + 15
+            ty = canvas_pos.y() - th // 2
+            # Keep the tooltip within the canvas area
+            tx = max(2, min(self.width() - tw - 2, tx))
+            ty = max(2, min(self.height() - th - 2, ty))
+            painter.fillRect(tx, ty, tw, th, QColor(0, 0, 0, 200))
+            painter.setPen(QColor(self.selection_color))
+            painter.drawText(tx + 5, ty + th - 4, coord_text)
+
     # ------------------------------------------------------------------
     # Mouse interaction
     # ------------------------------------------------------------------
@@ -989,17 +1015,37 @@ class ZoomCropCanvas(QWidget):
             r.setRight(r.right() + dx_s)
 
         r = r.normalized()
-        # Clamp to source image bounds
+        # Hard-clamp to source image bounds — no handle can escape the frame
         r.setLeft(max(0, r.left()))
         r.setTop(max(0, r.top()))
-        r.setRight(min(self.source_w, r.right()))
-        r.setBottom(min(self.source_h, r.bottom()))
+        r.setRight(min(self.source_w - 1, r.right()))
+        r.setBottom(min(self.source_h - 1, r.bottom()))
         if r.width() < 1:
             r.setWidth(1)
         if r.height() < 1:
             r.setHeight(1)
 
         self._sel = r
+
+        # Determine the active handle position in source coordinates and emit
+        cx_s = self._sel.center().x()
+        cy_s = self._sel.center().y()
+        _pos_map = {
+            'move':      (self._sel.left(), self._sel.top()),
+            'new':       (self._sel.right(), self._sel.bottom()),
+            'resize_tl': (self._sel.left(),  self._sel.top()),
+            'resize_tr': (self._sel.right(), self._sel.top()),
+            'resize_bl': (self._sel.left(),  self._sel.bottom()),
+            'resize_br': (self._sel.right(), self._sel.bottom()),
+            'resize_t':  (cx_s,              self._sel.top()),
+            'resize_b':  (cx_s,              self._sel.bottom()),
+            'resize_l':  (self._sel.left(),  cy_s),
+            'resize_r':  (self._sel.right(), cy_s),
+        }
+        hx, hy = _pos_map.get(self._drag_mode, (cx_s, cy_s))
+        self._drag_handle_pos = (self._drag_mode, hx, hy)
+        self.handle_dragged.emit(self._drag_mode, hx, hy)
+
         self.update()
         self.region_changed.emit(r.x(), r.y(), r.width(), r.height())
 
@@ -1007,6 +1053,9 @@ class ZoomCropCanvas(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = None
             self._drag_mode = None
+            self._drag_handle_pos = None
+            self.handle_dragged.emit("", 0, 0)
+            self.update()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1089,6 +1138,7 @@ class ZoomScaleDialog(QDialog):
 
         self._canvas = ZoomCropCanvas()
         self._canvas.region_changed.connect(self._on_region_changed)
+        self._canvas.handle_dragged.connect(self._on_handle_dragged)
         body.addWidget(self._canvas, 3)
 
         right = QVBoxLayout()
@@ -1177,6 +1227,15 @@ class ZoomScaleDialog(QDialog):
         self._status = QLabel("Select a video to begin, or adjust the values directly.")
         self._status.setStyleSheet("font-style: italic; color: #888; font-size: 12px;")
         root.addWidget(self._status)
+
+        # Live coordinate readout during handle drag
+        self._coord_label = QLabel("")
+        self._coord_label.setStyleSheet(
+            "font-size: 11px; color: #00e676; font-family: monospace; "
+            "background-color: #1a1a2e; padding: 2px 6px; border-radius: 3px;"
+        )
+        self._coord_label.setVisible(False)
+        root.addWidget(self._coord_label)
 
     # ------------------------------------------------------------------
     # Config helpers
@@ -1301,6 +1360,24 @@ class ZoomScaleDialog(QDialog):
         self._w_sb.setValue(max(1, w))
         self._h_sb.setValue(max(1, h))
         self._updating_spinboxes = False
+
+    def _on_handle_dragged(self, mode, abs_x, abs_y):
+        """Update live coordinate readout while dragging a crop handle."""
+        if not mode:
+            self._coord_label.setVisible(False)
+            self._coord_label.setText("")
+            return
+        vertical_modes = ('resize_t', 'resize_b',
+                          'resize_tl', 'resize_tr',
+                          'resize_bl', 'resize_br')
+        if mode in vertical_modes and self._canvas.source_h > 0:
+            y_from_bottom = self._canvas.source_h - abs_y - 1
+            text = (f"  Handle: {mode}   X: {abs_x} px   Y: {abs_y} px"
+                    f"   (Y from bottom: {y_from_bottom} px)")
+        else:
+            text = f"  Handle: {mode}   X: {abs_x} px   Y: {abs_y} px"
+        self._coord_label.setText(text)
+        self._coord_label.setVisible(True)
 
     def _on_spinbox_changed(self):
         """Called when a spinbox changes — update the canvas."""
