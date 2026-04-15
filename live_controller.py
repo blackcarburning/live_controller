@@ -59,6 +59,7 @@ TRACK_NAME_STORE_FILE = "track_names.json"
 CONFIG_FILE = "config.json"
 SESSION_FILE = "session.json"
 ZOOM_CONFIG_FILE = "zoom_config.json"
+ZOOM_FRAME_SNAPSHOT = "zoom_frame_snapshot.png"  # Persistent frame snapshot in project dir
 SETLISTS_DIR = "setlists"
 
 # Default settings for playback and display
@@ -321,6 +322,8 @@ def _default_zone():
         "enabled": False,
         "crop_x": 0, "crop_y": 0, "crop_w": 1920, "crop_h": 1080,
         "scale_w": -1, "scale_h": -1,
+        "border_px": 0,
+        "mode": "crop",
     }
 
 
@@ -334,7 +337,15 @@ def _migrate_zoom_config(cfg):
         zones = list(cfg["zones"])
         while len(zones) < NUM_ZONES:
             zones.append(_default_zone())
-        return {"zones": zones[:NUM_ZONES], "stack_direction": cfg.get("stack_direction", "horizontal")}
+        # Ensure every existing zone has the newer fields
+        for z in zones:
+            z.setdefault("border_px", 0)
+            z.setdefault("mode", "crop")
+        return {
+            "zones": zones[:NUM_ZONES],
+            "stack_direction": cfg.get("stack_direction", "horizontal"),
+            "frame_snapshot_path": cfg.get("frame_snapshot_path", ""),
+        }
     # Old single-zone format — migrate to zone 0
     zone0 = {
         "enabled": cfg.get("enabled", True),
@@ -344,9 +355,11 @@ def _migrate_zoom_config(cfg):
         "crop_h": cfg.get("crop_h", 1080),
         "scale_w": cfg.get("scale_w", -1),
         "scale_h": cfg.get("scale_h", -1),
+        "border_px": 0,
+        "mode": "crop",
     }
     zones = [zone0] + [_default_zone() for _ in range(NUM_ZONES - 1)]
-    return {"zones": zones, "stack_direction": "horizontal"}
+    return {"zones": zones, "stack_direction": "horizontal", "frame_snapshot_path": ""}
 
 
 def _build_vf_for_zones(zoom_config):
@@ -374,6 +387,9 @@ def _build_vf_for_zones(zoom_config):
         sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
         if sw > 0 and sh > 0:
             vf += f",scale={sw}:{sh}"
+        border = z.get("border_px", 0)
+        if border > 0:
+            vf += f",pad=iw+{2*border}:ih+{2*border}:{border}:{border}:black"
         return vf
 
     if len(enabled) == 1:
@@ -1491,6 +1507,17 @@ class MultiZoomScaleDialog(QDialog):
         stitch_bar.addWidget(self._stitch_h)
         stitch_bar.addWidget(self._stitch_v)
         stitch_bar.addStretch()
+        # Import / Export buttons
+        self._export_btn = QPushButton("⬆  Export State…")
+        self._export_btn.setToolTip(
+            "Export the current editor state (zones, borders, frame snapshot path) to a JSON file.")
+        self._export_btn.clicked.connect(self._export_state)
+        self._import_btn = QPushButton("⬇  Import State…")
+        self._import_btn.setToolTip(
+            "Import a previously exported editor state JSON file to restore all settings.")
+        self._import_btn.clicked.connect(self._import_state)
+        stitch_bar.addWidget(self._export_btn)
+        stitch_bar.addWidget(self._import_btn)
         root.addLayout(stitch_bar)
 
         # ---- Tab widget ----
@@ -1503,12 +1530,13 @@ class MultiZoomScaleDialog(QDialog):
         self._zone_enable_cbs       = []
         self._zone_mode_crop_rbs    = []
         self._zone_mode_stretch_rbs = []
-        self._zone_x_sbs   = []
-        self._zone_y_sbs   = []
-        self._zone_w_sbs   = []
-        self._zone_h_sbs   = []
-        self._zone_sw_sbs  = []
-        self._zone_sh_sbs  = []
+        self._zone_x_sbs    = []
+        self._zone_y_sbs    = []
+        self._zone_w_sbs    = []
+        self._zone_h_sbs    = []
+        self._zone_sw_sbs   = []
+        self._zone_sh_sbs   = []
+        self._zone_border_sbs = []
 
         for i in range(NUM_ZONES):
             color = _ZONE_COLORS[i]
@@ -1586,8 +1614,23 @@ class MultiZoomScaleDialog(QDialog):
             sg.addWidget(QLabel("Scale H:"), 1, 0); sg.addWidget(sh_sb, 1, 1)
             scale_grp.setLayout(sg)
 
+            border_grp = QGroupBox("Black Border")
+            border_grp.setStyleSheet(f"QGroupBox::title {{ color: {color}; }}")
+            border_grp.setToolTip(
+                "Add a solid black border around this zone's output.\n"
+                "0 = no border.  The border is applied after cropping and scaling.")
+            bg = QGridLayout(); bg.setSpacing(4)
+            border_sb = QSpinBox()
+            border_sb.setRange(0, 500)
+            border_sb.setSuffix(" px")
+            border_sb.setFixedWidth(110)
+            border_sb.setToolTip("Border thickness in pixels (applied to all four sides).")
+            bg.addWidget(QLabel("Thickness:"), 0, 0); bg.addWidget(border_sb, 0, 1)
+            border_grp.setLayout(bg)
+
             right.addWidget(crop_grp)
             right.addWidget(scale_grp)
+            right.addWidget(border_grp)
             right.addStretch()
             body.addLayout(right, 1)
             tl.addLayout(body, 1)
@@ -1621,6 +1664,7 @@ class MultiZoomScaleDialog(QDialog):
             self._zone_h_sbs.append(h_sb)
             self._zone_sw_sbs.append(sw_sb)
             self._zone_sh_sbs.append(sh_sb)
+            self._zone_border_sbs.append(border_sb)
 
         # ---- Final Preview tab ----
         final_tab = QWidget()
@@ -1677,30 +1721,52 @@ class MultiZoomScaleDialog(QDialog):
             h  = max(1, zone.get("crop_h", 1080))
             sw = zone.get("scale_w", -1)
             sh = zone.get("scale_h", -1)
+            border = max(0, zone.get("border_px", 0))
+            mode   = zone.get("mode", "crop")
             self._zone_x_sbs[i].setValue(x)
             self._zone_y_sbs[i].setValue(y)
             self._zone_w_sbs[i].setValue(w)
             self._zone_h_sbs[i].setValue(h)
             self._zone_sw_sbs[i].setValue(sw)
             self._zone_sh_sbs[i].setValue(sh)
+            self._zone_border_sbs[i].setValue(border)
+            if mode == "stretch":
+                self._zone_mode_stretch_rbs[i].setChecked(True)
+            else:
+                self._zone_mode_crop_rbs[i].setChecked(True)
             self._zone_crop_canvases[i].set_region(x, y, w, h)
             self._zone_stretch_canvases[i].set_output(sw if sw > 0 else w, sh if sh > 0 else h)
         self._updating = False
+
+        # Attempt to reload the persistent frame snapshot
+        saved_path = self._cfg.get("frame_snapshot_path", "")
+        if saved_path and os.path.isfile(saved_path):
+            self._load_frame_from_path(saved_path)
+            self._status.setText(
+                f"Restored saved frame snapshot from '{os.path.basename(saved_path)}'.")
 
     def _collect_config(self):
         direction = "vertical" if self._stitch_v.isChecked() else "horizontal"
         zones = []
         for i in range(NUM_ZONES):
+            mode = "stretch" if self._zone_mode_stretch_rbs[i].isChecked() else "crop"
             zones.append({
-                "enabled":  self._zone_enable_cbs[i].isChecked(),
-                "crop_x":   self._zone_x_sbs[i].value(),
-                "crop_y":   self._zone_y_sbs[i].value(),
-                "crop_w":   self._zone_w_sbs[i].value(),
-                "crop_h":   self._zone_h_sbs[i].value(),
-                "scale_w":  self._zone_sw_sbs[i].value(),
-                "scale_h":  self._zone_sh_sbs[i].value(),
+                "enabled":   self._zone_enable_cbs[i].isChecked(),
+                "crop_x":    self._zone_x_sbs[i].value(),
+                "crop_y":    self._zone_y_sbs[i].value(),
+                "crop_w":    self._zone_w_sbs[i].value(),
+                "crop_h":    self._zone_h_sbs[i].value(),
+                "scale_w":   self._zone_sw_sbs[i].value(),
+                "scale_h":   self._zone_sh_sbs[i].value(),
+                "border_px": self._zone_border_sbs[i].value(),
+                "mode":      mode,
             })
-        return {"zones": zones, "stack_direction": direction}
+        snapshot_path = self._cfg.get("frame_snapshot_path", "")
+        return {
+            "zones": zones,
+            "stack_direction": direction,
+            "frame_snapshot_path": snapshot_path,
+        }
 
     # ------------------------------------------------------------------
     # Zone signal handlers
@@ -1786,11 +1852,19 @@ class MultiZoomScaleDialog(QDialog):
             cx, cy = max(0, z["crop_x"]), max(0, z["crop_y"])
             cw, ch = max(1, z["crop_w"]), max(1, z["crop_h"])
             sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
+            border = max(0, z.get("border_px", 0))
             pm = self._full_pixmap.copy(cx, cy, cw, ch)
             if sw > 0 and sh > 0:
                 pm = pm.scaled(sw, sh,
                                Qt.AspectRatioMode.IgnoreAspectRatio,
                                Qt.TransformationMode.SmoothTransformation)
+            if border > 0:
+                bordered = QPixmap(pm.width() + 2 * border, pm.height() + 2 * border)
+                bordered.fill(QColor("black"))
+                bp = QPainter(bordered)
+                bp.drawPixmap(border, border, pm)
+                bp.end()
+                pm = bordered
             pieces.append(pm)
 
         if direction == "vertical":
@@ -1893,13 +1967,29 @@ class MultiZoomScaleDialog(QDialog):
         if not os.path.exists(self._frame_path):
             self._status.setText("Frame capture failed — is mpv still running?")
             return
-        pm = QPixmap(self._frame_path)
+        # Save a persistent copy to the local project directory
+        try:
+            shutil.copy2(self._frame_path, ZOOM_FRAME_SNAPSHOT)
+            self._cfg["frame_snapshot_path"] = os.path.abspath(ZOOM_FRAME_SNAPSHOT)
+        except OSError:
+            self._cfg["frame_snapshot_path"] = self._frame_path
+        self._load_frame_from_path(self._frame_path)
+        pm = self._full_pixmap
+        if pm and not pm.isNull():
+            self._status.setText(
+                f"Frame captured ({pm.width()} × {pm.height()} px) and saved to "
+                f"'{ZOOM_FRAME_SNAPSHOT}'. "
+                "Drag each zone's coloured rectangle to define its crop region.")
+
+    def _load_frame_from_path(self, path):
+        """Load a frame image from *path* into all zone canvases."""
+        pm = QPixmap(path)
         if pm.isNull():
-            self._status.setText("Frame capture failed — could not load image.")
+            self._status.setText(f"Could not load frame image from '{path}'.")
             return
         self._full_pixmap = pm
         for i in range(NUM_ZONES):
-            self._zone_crop_canvases[i].load_frame(self._frame_path)
+            self._zone_crop_canvases[i].load_frame(path)
             # Restore the previously configured crop region after loading
             self._zone_crop_canvases[i].set_region(
                 self._zone_x_sbs[i].value(),
@@ -1908,9 +1998,6 @@ class MultiZoomScaleDialog(QDialog):
                 self._zone_h_sbs[i].value(),
             )
             self._sync_stretch_canvas(i)
-        self._status.setText(
-            f"Frame captured ({pm.width()} × {pm.height()} px). "
-            "Drag each zone's coloured rectangle to define its crop region.")
 
     def _stop_mpv(self):
         if self._mpv_process and self._mpv_process.poll() is None:
@@ -1945,6 +2032,47 @@ class MultiZoomScaleDialog(QDialog):
         except Exception:
             pass
         super().closeEvent(event)
+
+    # ------------------------------------------------------------------
+    # Import / Export
+    # ------------------------------------------------------------------
+
+    def _export_state(self):
+        """Export the current editor state (zones, borders, snapshot path) to a JSON file."""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Editor State", "zoom_editor_state.json",
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if not path:
+            return
+        state = self._collect_config()
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=4)
+            self._status.setText(f"Editor state exported to '{os.path.basename(path)}'.")
+        except OSError as exc:
+            self._status.setText(f"Export failed: {exc}")
+
+    def _import_state(self):
+        """Import a previously exported editor state JSON file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Editor State", "",
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            self._status.setText(f"Import failed: {exc}")
+            return
+        self._cfg = _migrate_zoom_config(raw)
+        # Preserve the frame_snapshot_path from the imported file if present
+        self._cfg["frame_snapshot_path"] = raw.get("frame_snapshot_path", "")
+        self._load_config_to_ui()
+        self._status.setText(
+            f"Editor state imported from '{os.path.basename(path)}'.")
 
 
 class Switch(QAbstractButton):
@@ -2757,8 +2885,10 @@ class LiveController(QWidget):
             for idx, z in enumerate(enabled_zones):
                 cw, ch = z.get("crop_w", 0), z.get("crop_h", 0)
                 sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
+                border = z.get("border_px", 0)
                 scale_txt = f"→{sw}×{sh}" if sw > 0 and sh > 0 else ""
-                parts.append(f"Z{idx+1}:{cw}×{ch}{scale_txt}")
+                border_txt = f" +{border}b" if border > 0 else ""
+                parts.append(f"Z{idx+1}:{cw}×{ch}{scale_txt}{border_txt}")
             dir_sym = "↔" if direction != "vertical" else "↕"
             self.zoom_status_label.setText(f"{dir_sym} " + "  ".join(parts))
             self.zoom_status_label.setStyleSheet("font-size: 10px; color: #00b894; font-style: italic;")
