@@ -369,6 +369,36 @@ def _migrate_zoom_config(cfg):
             "final_scale_w": -1, "final_scale_h": -1}
 
 
+def _composite_dims(migrated):
+    """Return the (width, height) of the composited output *before* any final scale.
+
+    This mirrors the dimension logic used by the preview and by the lavfi filter
+    graph so that the final-scale step in :func:`_build_vf_for_zones` can supply
+    explicit pixel values for both dimensions, guaranteeing stretch-only (no
+    aspect-ratio preservation) behaviour that matches the preview exactly.
+    """
+    zones = migrated.get("zones", [])
+    direction = migrated.get("stack_direction", "horizontal")
+    enabled = [z for z in zones if z.get("enabled") and z.get("crop_w", 0) > 0]
+    if not enabled:
+        return 0, 0
+    piece_dims = []
+    for z in enabled:
+        w = max(1, z.get("crop_w", 1))
+        h = max(1, z.get("crop_h", 1))
+        sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
+        if sw > 0 and sh > 0:
+            w, h = sw, sh
+        border = z.get("border_px", 0)
+        if border > 0:
+            w += 2 * border
+            h += 2 * border
+        piece_dims.append((w, h))
+    if direction == "vertical":
+        return max(p[0] for p in piece_dims), sum(p[1] for p in piece_dims)
+    return sum(p[0] for p in piece_dims), max(p[1] for p in piece_dims)
+
+
 def _build_vf_for_zones(zoom_config):
     """Build the mpv --vf string for a multi-zone config. Returns None if no transform needed.
 
@@ -377,6 +407,9 @@ def _build_vf_for_zones(zoom_config):
 
     An optional overall final stretch (``final_scale_w`` × ``final_scale_h``) is
     appended after all zone processing.  It is stretch-only; no crop is applied.
+    When only one dimension is supplied the other is taken from the natural
+    composite size so that mpv uses an explicit ``scale=W:H`` (no aspect-ratio
+    magic) — identical to the preview's IgnoreAspectRatio behaviour.
     """
     # An empty dict means "never configured" — apply no filter
     if not zoom_config:
@@ -416,13 +449,20 @@ def _build_vf_for_zones(zoom_config):
         graph = ";".join([split_part] + crop_parts + [stack_part])
         base_vf = f"lavfi=[{graph}]"
 
-    # Apply optional overall final stretch (stretch-only, no crop)
+    # Apply optional overall final stretch (stretch-only, no crop).
+    # Always resolve both dimensions explicitly so that mpv's scale filter
+    # receives an exact target size (scale=W:H) rather than scale=W:-1 or
+    # scale=-1:H.  Using -1 asks ffmpeg to *preserve the aspect ratio*, which
+    # is NOT what "stretch only" means and causes the output to differ from the
+    # preview when only one dimension is supplied.
     fsw = migrated.get("final_scale_w", -1)
     fsh = migrated.get("final_scale_h", -1)
     if fsw > 0 or fsh > 0:
-        w_str = str(fsw) if fsw > 0 else "-1"
-        h_str = str(fsh) if fsh > 0 else "-1"
-        return f"{base_vf},scale={w_str}:{h_str}"
+        if fsw <= 0 or fsh <= 0:
+            comp_w, comp_h = _composite_dims(migrated)
+            fsw = fsw if fsw > 0 else comp_w
+            fsh = fsh if fsh > 0 else comp_h
+        return f"{base_vf},scale={fsw}:{fsh}"
     return base_vf
 
 
@@ -1960,23 +2000,19 @@ class MultiZoomScaleDialog(QDialog):
         painter.end()
 
         # Apply final overall stretch (stretch-only, no crop).
-        # When only one dimension is positive the other is treated as "auto"
-        # (keep aspect ratio), which matches mpv's scale=W:-1 / scale=-1:H
-        # semantics so the preview stays in sync with actual playback.
+        # When only one dimension is positive the other keeps its current value
+        # so the scale is IgnoreAspectRatio in both axes — matching the explicit
+        # scale=W:H that _build_vf_for_zones now sends to mpv (where the
+        # "missing" dimension is filled in from the natural composite size).
         fsw = cfg.get("final_scale_w", -1)
         fsh = cfg.get("final_scale_h", -1)
         if fsw > 0 or fsh > 0:
-            if fsw > 0 and fsh > 0:
-                result = result.scaled(fsw, fsh,
-                                       Qt.AspectRatioMode.IgnoreAspectRatio,
-                                       Qt.TransformationMode.SmoothTransformation)
-            elif fsw > 0:
-                result = result.scaledToWidth(fsw,
-                                              Qt.TransformationMode.SmoothTransformation)
-            else:
-                result = result.scaledToHeight(fsh,
-                                               Qt.TransformationMode.SmoothTransformation)
-            total_w, total_h = result.width(), result.height()
+            out_w = fsw if fsw > 0 else total_w
+            out_h = fsh if fsh > 0 else total_h
+            result = result.scaled(out_w, out_h,
+                                   Qt.AspectRatioMode.IgnoreAspectRatio,
+                                   Qt.TransformationMode.SmoothTransformation)
+            total_w, total_h = out_w, out_h
 
         label_size = self._final_canvas.size()
         scaled = result.scaled(label_size,
