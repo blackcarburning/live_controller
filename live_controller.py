@@ -2471,8 +2471,8 @@ class LiveController(QWidget):
         # --- Playback & Setlist Group ---
         main_controls_group = QGroupBox("")
         main_controls_layout = QVBoxLayout()
-        main_controls_layout.setContentsMargins(4, 4, 4, 4)
-        main_controls_layout.setSpacing(3)
+        main_controls_layout.setContentsMargins(8, 8, 8, 8)
+        main_controls_layout.setSpacing(6)
         add_buttons_layout = QHBoxLayout()
         self.add_button = QPushButton("Add Track(s)")
         self.add_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 11px; padding: 3px 6px;")
@@ -2527,8 +2527,8 @@ class LiveController(QWidget):
         # --- Settings Group (Compact Grid Layout) ---
         settings_group = QGroupBox("Settings")
         settings_layout = QGridLayout()
-        settings_layout.setContentsMargins(4, 4, 4, 4)
-        settings_layout.setSpacing(2)
+        settings_layout.setContentsMargins(8, 16, 8, 8)
+        settings_layout.setSpacing(6)
 
         self.display_combo = QComboBox(); self.display_combo.addItems([str(i) for i in range(1, 5)])
         self.display_combo.currentIndexChanged.connect(self.setting_changed)
@@ -2587,8 +2587,8 @@ class LiveController(QWidget):
         # --- Test Track Group ---
         test_track_group = QGroupBox("Test Track")
         test_track_layout = QHBoxLayout()
-        test_track_layout.setContentsMargins(6, 6, 6, 6)
-        test_track_layout.setSpacing(4)
+        test_track_layout.setContentsMargins(8, 14, 8, 8)
+        test_track_layout.setSpacing(6)
         self.test_file_button = QPushButton("Select Test File...")
         self.test_file_button.clicked.connect(self.select_test_file)
         self.test_file_label = QLabel("No file selected.")
@@ -2609,8 +2609,8 @@ class LiveController(QWidget):
         # --- Sync Calibration Loop Group ---
         calib_loop_group = QGroupBox("Sync Calibration Loop (Edit Mode)")
         calib_loop_layout = QHBoxLayout()
-        calib_loop_layout.setContentsMargins(6, 6, 6, 6)
-        calib_loop_layout.setSpacing(4)
+        calib_loop_layout.setContentsMargins(8, 14, 8, 8)
+        calib_loop_layout.setSpacing(6)
         calib_loop_layout.addWidget(QLabel("Loop:"))
         self.calib_loop_duration_spinbox = QSpinBox()
         self.calib_loop_duration_spinbox.setRange(1, 20)
@@ -2642,8 +2642,8 @@ class LiveController(QWidget):
         # --- Overlay Colours Group ---
         overlay_colours_group = QGroupBox("Overlay Colours")
         overlay_colours_layout = QGridLayout()
-        overlay_colours_layout.setContentsMargins(6, 6, 6, 6)
-        overlay_colours_layout.setSpacing(4)
+        overlay_colours_layout.setContentsMargins(8, 16, 8, 8)
+        overlay_colours_layout.setSpacing(6)
 
         self.count_in_color_button = QPushButton()
         self.count_in_color_button.setFixedSize(60, 25)
@@ -2676,8 +2676,8 @@ class LiveController(QWidget):
         overlay_colours_group.setLayout(overlay_colours_layout)
         midi_test_group = QGroupBox("MIDI Port Testing")
         midi_test_grid_layout = QGridLayout()
-        midi_test_grid_layout.setContentsMargins(6, 6, 6, 6)
-        midi_test_grid_layout.setSpacing(3)
+        midi_test_grid_layout.setContentsMargins(6, 14, 6, 4)
+        midi_test_grid_layout.setSpacing(2)
         midi_test_grid_layout.addWidget(QLabel("<b>Port</b>"), 0, 0, Qt.AlignmentFlag.AlignCenter)
         midi_test_grid_layout.addWidget(QLabel("<b>Enabled</b>"), 0, 1, Qt.AlignmentFlag.AlignCenter)
         midi_test_grid_layout.addWidget(QLabel("<b>Send Start</b>"), 0, 2, Qt.AlignmentFlag.AlignCenter)
@@ -2705,8 +2705,8 @@ class LiveController(QWidget):
         # --- Video Zoom / Scale Group (Edit Mode Only) ---
         zoom_group = QGroupBox("Multi-Zone Video Zoom / Scale")
         zoom_layout = QVBoxLayout()
-        zoom_layout.setContentsMargins(4, 4, 4, 4)
-        zoom_layout.setSpacing(3)
+        zoom_layout.setContentsMargins(8, 16, 8, 8)
+        zoom_layout.setSpacing(6)
         self.apply_zoom_checkbox = QCheckBox("Apply zoom/scale during playback")
         self.apply_zoom_checkbox.setChecked(True)  # Default: scaling enabled on startup
         self.apply_zoom_checkbox.setToolTip(
@@ -2736,21 +2736,21 @@ class LiveController(QWidget):
         # --- Right-side panel: 2-column layout, no scroll needed at 1920×1080 ---
         controls_widget = QWidget()
         controls_vbox = QVBoxLayout(controls_widget)
-        controls_vbox.setContentsMargins(0, 0, 0, 0)
-        controls_vbox.setSpacing(3)
+        controls_vbox.setContentsMargins(6, 6, 6, 6)
+        controls_vbox.setSpacing(8)
 
         # Upper row: left column (playback + zoom) | right column (settings + overlay colours)
         upper_row = QHBoxLayout()
-        upper_row.setSpacing(4)
+        upper_row.setSpacing(8)
 
         left_col = QVBoxLayout()
-        left_col.setSpacing(3)
+        left_col.setSpacing(8)
         left_col.addWidget(main_controls_group)
         left_col.addWidget(zoom_group)
         left_col.addStretch(1)
 
         right_col = QVBoxLayout()
-        right_col.setSpacing(3)
+        right_col.setSpacing(8)
         right_col.addWidget(settings_group)
         right_col.addWidget(overlay_colours_group)
         right_col.addStretch(1)
@@ -2761,7 +2761,7 @@ class LiveController(QWidget):
 
         # Lower row: test track | calib loop  (side by side — both are small horizontal groups)
         lower_row = QHBoxLayout()
-        lower_row.setSpacing(4)
+        lower_row.setSpacing(8)
         lower_row.addWidget(test_track_group, 2)
         lower_row.addWidget(calib_loop_group, 1)
         controls_vbox.addLayout(lower_row)
@@ -2769,12 +2769,12 @@ class LiveController(QWidget):
         # --- Scrub & Loop Group ---
         scrub_loop_group = QGroupBox("Scrub & Loop")
         scrub_loop_layout = QVBoxLayout()
-        scrub_loop_layout.setContentsMargins(4, 6, 4, 4)
-        scrub_loop_layout.setSpacing(3)
+        scrub_loop_layout.setContentsMargins(8, 16, 8, 8)
+        scrub_loop_layout.setSpacing(6)
 
         # Scrub slider row: [pos] [slider] [dur]
         scrub_row = QHBoxLayout()
-        scrub_row.setSpacing(4)
+        scrub_row.setSpacing(6)
         self.scrub_pos_label = QLabel("--:--")
         self.scrub_pos_label.setFixedWidth(38)
         self.scrub_pos_label.setStyleSheet("font-size: 10px; color: #aaa;")
