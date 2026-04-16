@@ -27,6 +27,7 @@ from collections import deque
 import math
 import socketserver
 from http.server import BaseHTTPRequestHandler
+import http.client as http_client
 
 # --- Third-Party Library Imports ---
 # This solution requires the 'keyboard' and 'psutil' libraries.
@@ -82,6 +83,15 @@ SD_STATE_FILE = "sd_state.json"
 
 # Default port for the Companion HTTP integration server.
 COMPANION_DEFAULT_PORT = 5005
+# Default port for Bitfocus Companion's own REST HTTP API.
+COMPANION_API_DEFAULT_PORT = 8888
+# Button colours used when pushing labels to Companion (RGB packed as 0xRRGGBB).
+COMPANION_COLOR_TEXT       = 0xFFFFFF   # white text
+COMPANION_COLOR_UNPLAYED   = 0x27AE60   # green — switch1 / unplayed
+COMPANION_COLOR_PLAYED     = 0xB43232   # red   — switch2 / played
+COMPANION_COLOR_CLOSE_BG   = 0x643214   # dark brown — divider / archive
+# Number of physical columns on a Stream Deck XL (used for row/column mapping).
+SD_XL_COLUMNS = 8
 
 # Configuration and session files for the application state
 CONFIG_FILE = "config.json"
@@ -2377,6 +2387,14 @@ class _CompanionHTTPHandler(BaseHTTPRequestHandler):
 
     Supported endpoints
     -------------------
+    POST /companion/key/<letter>
+        Fire the keyboard key *letter* directly (e.g. ``a``, ``b``, ``1``).
+        This is the recommended button action to configure in Companion: each
+        populated track button's Press action should POST to the URL returned
+        in the ``action_url`` field of ``GET /companion/layout``.  Because the
+        URL is key-specific (not slot-specific) the same URL is correct for
+        *both* states of a two-state (latch/hotkey-switch) button.
+
     POST /companion/trigger/slot/<N>
         Trigger the Nth ordered track slot (1-indexed, 1–29) on the current
         Companion page.  The app maps the slot to the actual setlist track and
@@ -2387,7 +2405,8 @@ class _CompanionHTTPHandler(BaseHTTPRequestHandler):
 
     GET /companion/layout
         Return a JSON snapshot of the current page's slot→track mapping so
-        Companion (or any other client) can read track names and played state.
+        Companion (or any other client) can read track names, played state,
+        and the ``action_url`` to configure as the button's Press action.
     """
 
     # Set to the LiveController instance by the factory below.
@@ -2413,7 +2432,14 @@ class _CompanionHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "not found"})
 
     def do_POST(self):
-        if self.path.startswith("/companion/trigger/slot/"):
+        if self.path.startswith("/companion/key/"):
+            letter = self.path[len("/companion/key/"):]
+            if not letter:
+                self._send_json(400, {"error": "key must not be empty"})
+                return
+            self.controller._companion_key_signal.emit(letter)
+            self._send_json(200, {"ok": True, "key": letter})
+        elif self.path.startswith("/companion/trigger/slot/"):
             tail = self.path[len("/companion/trigger/slot/"):]
             try:
                 slot_num = int(tail)
@@ -2448,6 +2474,9 @@ class LiveController(QWidget):
     # page navigation happen safely on the main Qt thread.
     _companion_slot_signal = pyqtSignal(int)
     _companion_page_signal = pyqtSignal()
+    # Emitted when a /companion/key/<letter> request is received so the key
+    # press is performed on the main Qt thread.
+    _companion_key_signal = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -2546,9 +2575,10 @@ class LiveController(QWidget):
         # background callback thread are handled safely on the main Qt thread.
         self._sd_key_pressed.connect(self._handle_sd_button_press)
         # Connect Companion signals so HTTP handler requests are processed on
-        # the main Qt thread (slot triggering, page navigation).
+        # the main Qt thread (slot triggering, page navigation, direct key press).
         self._companion_slot_signal.connect(self._companion_trigger_slot)
         self._companion_page_signal.connect(self._companion_next_page)
+        self._companion_key_signal.connect(self._companion_press_key)
         self.load_session()
 
         # --- Arduino LED Controller Setup ---
@@ -3011,9 +3041,12 @@ class LiveController(QWidget):
             "background-color: #27ae60; color: white; font-size: 11px; padding: 3px 6px;"
         )
         self.companion_start_button.setToolTip(
-            "Start the Companion HTTP server so Bitfocus Companion can trigger\n"
-            "track slots via POST /companion/trigger/slot/<N> and advance pages\n"
-            "via POST /companion/next_page."
+            "Start the Companion HTTP server.\n\n"
+            "Each populated track button's Press action in Companion should be\n"
+            "set to POST the URL shown in action_url from GET /companion/layout.\n"
+            "The URL has the form  http://localhost:<port>/companion/key/<letter>\n"
+            "so pressing the button fires the track's assigned setlist key directly.\n"
+            "Both states of a two-state (latch / hotkey-switch) button use the same URL."
         )
         self.companion_start_button.clicked.connect(self._start_companion_server)
         companion_btn_row.addWidget(self.companion_start_button)
@@ -3026,11 +3059,41 @@ class LiveController(QWidget):
         self.companion_stop_button.clicked.connect(self._stop_companion_server)
         companion_btn_row.addWidget(self.companion_stop_button)
 
+        # "Push Labels" row — pushes button styles to Companion's own REST API
+        companion_push_row = QHBoxLayout()
+        companion_push_row.setSpacing(4)
+        companion_push_row.addWidget(QLabel("Companion API port:"))
+        self.companion_api_port_spin = QSpinBox()
+        self.companion_api_port_spin.setRange(1024, 65535)
+        self.companion_api_port_spin.setValue(COMPANION_API_DEFAULT_PORT)
+        self.companion_api_port_spin.setFixedWidth(70)
+        self.companion_api_port_spin.setToolTip(
+            "Port that Bitfocus Companion's own HTTP API is listening on.\n"
+            "Default is 8888 for Companion 3.x."
+        )
+        companion_push_row.addWidget(self.companion_api_port_spin)
+        self.companion_push_labels_button = QPushButton("⬆  Push Labels to Companion")
+        self.companion_push_labels_button.setStyleSheet(
+            "background-color: #2980b9; color: white; font-size: 11px; padding: 3px 6px;"
+        )
+        self.companion_push_labels_button.setToolTip(
+            "Push the current setlist track names and played-state colours to\n"
+            "Bitfocus Companion via its HTTP API (default port 8888).\n\n"
+            "This updates the button text on Companion page 1 (buttons in\n"
+            "columns 3–31).  After pushing, open each button in Companion and\n"
+            "add a Press action: HTTP POST to the action_url shown in\n"
+            "GET /companion/layout (e.g.  /companion/key/a)."
+        )
+        self.companion_push_labels_button.setEnabled(False)
+        self.companion_push_labels_button.clicked.connect(self._push_to_companion)
+        companion_push_row.addWidget(self.companion_push_labels_button)
+
         self.companion_status_label = QLabel("Server: not running")
         self.companion_status_label.setStyleSheet("font-size: 10px; color: #888; font-style: italic;")
 
         companion_layout.addLayout(companion_port_row)
         companion_layout.addLayout(companion_btn_row)
+        companion_layout.addLayout(companion_push_row)
         companion_layout.addWidget(self.companion_status_label)
         companion_group.setLayout(companion_layout)
 
@@ -3835,10 +3898,14 @@ class LiveController(QWidget):
     # physical button positions 3–31 on a 32-key deck.  Page 0
     # covers slots 1–29, page 1 covers slots 30–58, and so on.
     #
-    # Companion button wiring (done in the Companion UI, not here)
+    # Companion button wiring
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    # • Buttons 3–31 send  POST http://localhost:<port>/companion/trigger/slot/<1-29>
-    # • Button 32 sends    POST http://localhost:<port>/companion/next_page
+    # • Buttons 3–31 Press action: POST http://localhost:<port>/companion/key/<letter>
+    #   where <letter> is the track's assigned setlist key returned in the
+    #   ``action_url`` field of GET /companion/layout.  Use the SAME URL for
+    #   both states of a two-state (latch / hotkey-switch) button so that
+    #   pressing in either state fires the identical assigned key.
+    # • Button 32 Press action: POST http://localhost:<port>/companion/next_page
     # • Button 1 sends the quit hotkey directly (configured in Companion)
 
     def _companion_flat_slots(self):
@@ -3942,6 +4009,42 @@ class LiveController(QWidget):
             "font-size: 10px; color: #00b894; font-style: italic;"
         )
 
+    def _companion_press_key(self, letter):
+        """Fire *letter* as a keyboard event — the action for a populated button.
+
+        Called on the main Qt thread via ``_companion_key_signal`` when the
+        HTTP handler receives ``POST /companion/key/<letter>``.
+
+        This is the preferred action endpoint for Companion buttons.  Each
+        populated track button should have its Press action set to POST to
+        ``http://localhost:<port>/companion/key/<hotkey>`` (the exact URL is
+        returned in ``action_url`` from ``GET /companion/layout``).  Using
+        the key-specific URL rather than the slot-based trigger means:
+
+        - The action is directly tied to the track's assigned setlist key, not
+          an indirect slot lookup that depends on the current page state.
+        - Both states of a two-state (latch / hotkey-switch) button share the
+          same URL and therefore fire the same assigned key regardless of state.
+        """
+        if not letter:
+            return
+        try:
+            keyboard.press_and_release(letter)
+        except Exception as exc:
+            self.companion_status_label.setText(
+                f"Companion key error ({letter!r}): {exc}"
+            )
+            self.companion_status_label.setStyleSheet(
+                "font-size: 10px; color: #e74c3c; font-style: italic;"
+            )
+            return
+        self.companion_status_label.setText(
+            f"Companion: key {letter!r} pressed"
+        )
+        self.companion_status_label.setStyleSheet(
+            "font-size: 10px; color: #00b894; font-style: italic;"
+        )
+
     def _companion_next_page(self):
         """Advance the Companion page counter by one (wraps on last page).
 
@@ -3977,19 +4080,35 @@ class LiveController(QWidget):
         thread.  ``_companion_lock`` is held while reading ``_companion_page``
         so the snapshot is consistent with the most recent page change made on
         the main Qt thread.
+
+        Each track slot includes an ``action_url`` field with the path to
+        POST when the button is pressed, e.g. ``/companion/key/a``.  This is
+        the key-specific endpoint (not a generic slot trigger) so configuring
+        the same URL as the action for both states of a two-state (latch /
+        hotkey-switch) button will always fire the correct assigned key.
         """
         with self._companion_lock:
             page = self._companion_page
+        port = self.companion_port_spin.value()
         slot_map = self._companion_slot_map_for_page(page)
         total_pages = self._companion_total_pages()
         slots_out = {}
         for slot_num, slot in slot_map.items():
             path = slot.get("path", "")
+            hotkey = slot.get("hotkey", "")
+            # action_url uses the key-specific endpoint so both states of a
+            # two-state Companion button fire the same assigned setlist key.
+            action_url = (
+                f"http://localhost:{port}/companion/key/{hotkey}"
+                if hotkey
+                else ""
+            )
             slots_out[str(slot_num)] = {
                 "type": slot.get("type", "track"),
                 "label": slot.get("label", ""),
-                "hotkey": slot.get("hotkey", ""),
+                "hotkey": hotkey,
                 "played": path in self.sd_played_paths,
+                "action_url": action_url,
             }
         return {
             "page": page,
@@ -4021,6 +4140,7 @@ class LiveController(QWidget):
         self.companion_port_spin.setEnabled(False)
         self.companion_start_button.setEnabled(False)
         self.companion_stop_button.setEnabled(True)
+        self.companion_push_labels_button.setEnabled(True)
         total = self._companion_total_pages()
         self.companion_status_label.setText(
             f"Companion: listening on port {port}  "
@@ -4042,10 +4162,98 @@ class LiveController(QWidget):
         self.companion_port_spin.setEnabled(True)
         self.companion_start_button.setEnabled(True)
         self.companion_stop_button.setEnabled(False)
+        self.companion_push_labels_button.setEnabled(False)
         self.companion_status_label.setText("Server: not running")
         self.companion_status_label.setStyleSheet(
             "font-size: 10px; color: #888; font-style: italic;"
         )
+
+    def _push_to_companion(self):
+        """Push button labels and colours to Bitfocus Companion via its REST API.
+
+        Calls ``POST http://localhost:<api_port>/api/location/<page>/<row>/<col>/style``
+        for each populated track slot on the current Companion page so that
+        Companion button faces show the setlist track names and played-state
+        colours without requiring manual text entry in the Companion web UI.
+
+        After the push each button still needs a Press action configured in
+        Companion's web UI.  The correct action for every populated button is:
+            HTTP POST  <action_url>
+        where ``action_url`` is the URL returned in ``GET /companion/layout``
+        for that slot (e.g. ``http://localhost:5005/companion/key/a``).
+        Using this key-specific URL means:
+        - The button fires the track's assigned setlist key directly.
+        - Both states of a two-state (latch / hotkey-switch) button use the
+          same URL and therefore fire the same assigned key.
+        """
+        api_port = self.companion_api_port_spin.value()
+        layout = self._companion_get_layout()
+        page = layout["page"] + 1          # Companion pages are 1-indexed
+
+        # Stream Deck XL button positions used for track slots:
+        #   buttons 3–31  →  grid positions computed from 1-indexed button number
+        # Companion /api/location uses 1-indexed page and 0-indexed row/column.
+        _SD_FIRST = self._SD_FIRST_TRACK_BTN   # 3 (1-indexed button)
+
+        pushed = 0
+        errors = []
+        for slot_str, slot in layout["slots"].items():
+            slot_num = int(slot_str)          # 1-indexed slot number
+            btn_1indexed = _SD_FIRST + slot_num - 1   # 1-indexed button number
+            row = (btn_1indexed - 1) // SD_XL_COLUMNS      # 0-indexed row
+            col = (btn_1indexed - 1) % SD_XL_COLUMNS       # 0-indexed column
+
+            if slot.get("type") == "close":
+                text = "---"
+                bgcolor = COMPANION_COLOR_CLOSE_BG
+                color = COMPANION_COLOR_TEXT
+            else:
+                text = slot.get("label", "")
+                bgcolor = COMPANION_COLOR_PLAYED if slot.get("played") else COMPANION_COLOR_UNPLAYED
+                color = COMPANION_COLOR_TEXT
+
+            body = json.dumps({
+                "text": text,
+                "size": "auto",
+                "color": color,
+                "bgcolor": bgcolor,
+                "alignment": "center:center",
+                "show_topbar": False,
+            }).encode()
+
+            url_path = f"/api/location/{page}/{row}/{col}/style"
+            conn = http_client.HTTPConnection("127.0.0.1", api_port, timeout=3)
+            try:
+                conn.request(
+                    "POST",
+                    url_path,
+                    body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                resp = conn.getresponse()
+                resp.read()
+                if resp.status < 300:
+                    pushed += 1
+                else:
+                    errors.append(f"slot {slot_num}: HTTP {resp.status}")
+            except OSError as exc:
+                errors.append(f"slot {slot_num}: {exc}")
+            finally:
+                conn.close()
+
+        if errors:
+            msg = f"Companion push: {pushed} ok, {len(errors)} error(s): {errors[0]}"
+            self.companion_status_label.setText(msg)
+            self.companion_status_label.setStyleSheet(
+                "font-size: 10px; color: #e67e22; font-style: italic;"
+            )
+        else:
+            self.companion_status_label.setText(
+                f"Companion push: {pushed} button(s) updated on page {page}."
+            )
+            self.companion_status_label.setStyleSheet(
+                "font-size: 10px; color: #00b894; font-style: italic;"
+            )
 
     def setting_changed(self):
         """Saves the config whenever a setting is changed."""
