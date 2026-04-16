@@ -75,6 +75,7 @@ MPLAYER_PATH = r"d:\mplayer\mplayer.exe"
 # JSON files for persistent storage of track-specific data
 BPM_STORE_FILE = "bpm_store.json"
 TRACK_NAME_STORE_FILE = "track_names.json"
+SD_STATE_FILE = "sd_state.json"
 
 # Configuration and session files for the application state
 CONFIG_FILE = "config.json"
@@ -2375,6 +2376,8 @@ class LiveController(QWidget):
         self.zoom_config = self.load_zoom_config()
         self.bpm_data = self.load_json_store(BPM_STORE_FILE)
         self.track_name_data = self.load_json_store(TRACK_NAME_STORE_FILE)
+        sd_state = self.load_json_store(SD_STATE_FILE)
+        self.sd_played_paths = set(sd_state.get("played_paths", []))
         self.worker = None
         self.current_ipc_socket = None
         self.is_live_mode = False
@@ -3419,12 +3422,27 @@ class LiveController(QWidget):
     def _push_to_stream_deck(self):
         """Pushes the current setlist layout to the selected Stream Deck device.
 
-        Track buttons 3–31 (1-indexed) are written with track name labels on a
-        green background.  Encore/archive dividers insert a system:close marker
-        key and then continue populating subsequent tracks on the same page.
-        Keys 1 and 32 (reserved) and any unused track slots are reset to a dark
-        blank image.  Only the deck selected in the combo box is modified; the
-        other deck is left completely untouched.
+        Track buttons 3–31 (1-indexed) are written with track name labels.
+        Tracks that have been played during this session (or a previous one) are
+        rendered with an amber background so their toggled state is visible when
+        the deck is re-pushed.  Unplayed tracks use the default green background.
+        Encore/archive dividers insert a system:close marker key and then continue
+        populating subsequent tracks on the same page.  Keys 1 and 32 (reserved)
+        and any unused track slots are reset to a dark blank image.  Only the deck
+        selected in the combo box is modified; the other deck is left completely
+        untouched.
+
+        Button labels use the track name currently shown in the setlist table
+        (column 1), which may be a user-set name or the filename stem default.
+        The raw filename is not used as a separate fallback source.
+
+        Limitation: the python-streamdeck library only delivers hardware button-
+        press events while the deck device is held open.  Because this app opens
+        the deck briefly for image writes and then closes it (so that Elgato's own
+        software can reattach), physical button presses cannot be intercepted
+        directly.  Toggle state is therefore tracked through the application's own
+        playback events (start_playback / execute_playback) and persisted in
+        sd_state.json, which is the most reliable path given this architecture.
         """
         if not _STREAMDECK_AVAILABLE:
             self.sd_status_label.setText("streamdeck library not installed.")
@@ -3440,6 +3458,17 @@ class LiveController(QWidget):
         if selected_idx is None:
             self.sd_status_label.setText("No deck selected.")
             return
+
+        # Build a map from track path to the label currently shown in the
+        # setlist table (the QLineEdit in column 1).  Reading directly from the
+        # widget ensures the button label matches what the user sees in the
+        # table, without re-deriving a name from the raw file path.
+        table_name_map = {}
+        for row_idx, track_item in enumerate(self.tracks):
+            if track_item.get("type") == "track":
+                name_widget = self.table.cellWidget(row_idx, 1)
+                if name_widget is not None:
+                    table_name_map[track_item["path"]] = name_widget.text()
 
         # Build a flat slot list: tracks become track entries, dividers become
         # system:close marker entries.  Processing continues past every divider
@@ -3482,12 +3511,22 @@ class LiveController(QWidget):
                             deck, "system:close", "", bg_color=(100, 50, 20)
                         )
                     else:
-                        raw_name = self.track_name_data.get(
+                        # Use the name from the table widget as the label source.
+                        # Fall back to track_name_data if the table widget is not
+                        # available (e.g., the table has not been rendered yet).
+                        raw_name = table_name_map.get(
                             slot["path"],
-                            os.path.splitext(os.path.basename(slot["path"]))[0]
+                            self.track_name_data.get(slot["path"], ""),
                         )
                         hotkey = slot.get("hotkey", "")
-                        img = self._make_sd_key_image(deck, raw_name, hotkey)
+                        # Tracks that have been played are rendered with an amber
+                        # background so their toggled/played state is visible when
+                        # the setlist is re-pushed to the deck.
+                        if slot["path"] in self.sd_played_paths:
+                            bg = (160, 100, 20)  # amber — played / toggled on
+                        else:
+                            bg = (39, 174, 96)   # green  — unplayed / toggled off
+                        img = self._make_sd_key_image(deck, raw_name, hotkey, bg_color=bg)
                         keys_written += 1
                 else:
                     img = blank_img
@@ -3509,6 +3548,7 @@ class LiveController(QWidget):
         self.sd_status_label.setText(msg)
         self.sd_status_label.setStyleSheet("font-size: 10px; color: #00b894; font-style: italic;")
         self.status_label.setText(f"Status: Stream Deck updated ({keys_written}/{total_tracks} tracks).")
+
 
     def setting_changed(self):
         """Saves the config whenever a setting is changed."""
@@ -4215,6 +4255,10 @@ class LiveController(QWidget):
         if row_index is not None:
             self.highlight_row(row_index, is_playing=True)
             self.currently_playing_row = row_index
+            # Record that this track has been played and persist state so the
+            # Stream Deck can restore the toggled visual on the next push.
+            self.sd_played_paths.add(track_path)
+            self.save_json_store(SD_STATE_FILE, {"played_paths": list(self.sd_played_paths)})
         else: # It's the test track
             self.test_file_label.setStyleSheet("font-weight: bold; color: #27ae60;")
 
