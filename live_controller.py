@@ -27,7 +27,7 @@ from collections import deque
 import math
 import socketserver
 from http.server import BaseHTTPRequestHandler
-import http.client as _http_client
+import http.client as http_client
 
 # --- Third-Party Library Imports ---
 # This solution requires the 'keyboard' and 'psutil' libraries.
@@ -90,6 +90,8 @@ COMPANION_COLOR_TEXT       = 0xFFFFFF   # white text
 COMPANION_COLOR_UNPLAYED   = 0x27AE60   # green — switch1 / unplayed
 COMPANION_COLOR_PLAYED     = 0xB43232   # red   — switch2 / played
 COMPANION_COLOR_CLOSE_BG   = 0x643214   # dark brown — divider / archive
+# Number of physical columns on a Stream Deck XL (used for row/column mapping).
+SD_XL_COLUMNS = 8
 
 # Configuration and session files for the application state
 CONFIG_FILE = "config.json"
@@ -4192,15 +4194,14 @@ class LiveController(QWidget):
         #   buttons 3–31  →  grid positions computed from 1-indexed button number
         # Companion /api/location uses 1-indexed page and 0-indexed row/column.
         _SD_FIRST = self._SD_FIRST_TRACK_BTN   # 3 (1-indexed button)
-        _COLS_PER_ROW = 8                       # Stream Deck XL has 8 columns
 
         pushed = 0
         errors = []
         for slot_str, slot in layout["slots"].items():
             slot_num = int(slot_str)          # 1-indexed slot number
             btn_1indexed = _SD_FIRST + slot_num - 1   # 1-indexed button number
-            row = (btn_1indexed - 1) // _COLS_PER_ROW      # 0-indexed row
-            col = (btn_1indexed - 1) % _COLS_PER_ROW       # 0-indexed column
+            row = (btn_1indexed - 1) // SD_XL_COLUMNS      # 0-indexed row
+            col = (btn_1indexed - 1) % SD_XL_COLUMNS       # 0-indexed column
 
             if slot.get("type") == "close":
                 text = "---"
@@ -4221,8 +4222,8 @@ class LiveController(QWidget):
             }).encode()
 
             url_path = f"/api/location/{page}/{row}/{col}/style"
+            conn = http_client.HTTPConnection("127.0.0.1", api_port, timeout=3)
             try:
-                conn = _http_client.HTTPConnection("127.0.0.1", api_port, timeout=3)
                 conn.request(
                     "POST",
                     url_path,
@@ -4231,13 +4232,14 @@ class LiveController(QWidget):
                 )
                 resp = conn.getresponse()
                 resp.read()
-                conn.close()
                 if resp.status < 300:
                     pushed += 1
                 else:
                     errors.append(f"slot {slot_num}: HTTP {resp.status}")
             except OSError as exc:
                 errors.append(f"slot {slot_num}: {exc}")
+            finally:
+                conn.close()
 
         if errors:
             msg = f"Companion push: {pushed} ok, {len(errors)} error(s): {errors[0]}"
