@@ -32,11 +32,30 @@ from collections import deque
 #
 # python -m pip install keyboard psutil rtmidi-python
 #
+# Stream Deck support (optional) requires two additional packages:
+#   python -m pip install streamdeck Pillow
+# The Elgato Stream Deck software must be closed before using the push feature.
+#
 import rtmidi                  # For sending MIDI messages
 import keyboard                # For global hotkey listening
 import psutil                  # For setting process priority
 import serial                  # For Arduino serial communication
 from serial.tools import list_ports  # For discovering serial ports
+
+# Optional Stream Deck support — imported lazily inside methods so the rest of
+# the app still works even if the packages are not installed.
+try:
+    from StreamDeck.DeviceManager import DeviceManager as _SDDeviceManager
+    from StreamDeck.ImageHelpers import PILHelper as _SDPILHelper
+    _STREAMDECK_AVAILABLE = True
+except ImportError:
+    _STREAMDECK_AVAILABLE = False
+
+try:
+    from PIL import Image as _PILImage, ImageDraw as _PILImageDraw, ImageFont as _PILImageFont
+    _PIL_AVAILABLE = True
+except ImportError:
+    _PIL_AVAILABLE = False
 
 # --- PyQt6 Imports ---
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
@@ -2811,6 +2830,50 @@ class LiveController(QWidget):
         zoom_group.setLayout(zoom_layout)
         self._update_zoom_status_label()
 
+        # --- Stream Deck Layout Group ---
+        stream_deck_group = QGroupBox("Stream Deck Layout")
+        sd_layout = QVBoxLayout()
+        sd_layout.setContentsMargins(8, 16, 8, 8)
+        sd_layout.setSpacing(6)
+
+        sd_selector_row = QHBoxLayout()
+        sd_selector_row.setSpacing(4)
+        sd_selector_row.addWidget(QLabel("Target Deck:"))
+        self.stream_deck_combo = QComboBox()
+        self.stream_deck_combo.setToolTip(
+            "Select which connected Stream Deck device to push the setlist layout to.\n"
+            "Click 🔄 to scan for attached devices."
+        )
+        sd_selector_row.addWidget(self.stream_deck_combo, 1)
+        self.sd_refresh_button = QPushButton("🔄")
+        self.sd_refresh_button.setFixedWidth(32)
+        self.sd_refresh_button.setToolTip("Scan for connected Stream Deck devices.")
+        self.sd_refresh_button.clicked.connect(self._refresh_stream_deck_list)
+        sd_selector_row.addWidget(self.sd_refresh_button)
+
+        self.sd_push_button = QPushButton("⬆  Push Setlist to Stream Deck")
+        self.sd_push_button.setStyleSheet(
+            "background-color: #2980b9; color: white; font-size: 11px; padding: 3px 6px;"
+        )
+        self.sd_push_button.setToolTip(
+            "Write the current setlist track labels to buttons 3–31 of the selected Stream Deck.\n"
+            "Buttons 1 and 32 (reserved) are not modified.\n"
+            "Encore dividers act as page breaks: tracks after a divider start on the next page.\n\n"
+            "REQUIREMENT: Close the Elgato Stream Deck software before pressing this button,\n"
+            "then reopen it afterwards.  Both 'streamdeck' and 'Pillow' Python packages must\n"
+            "be installed:  pip install streamdeck Pillow"
+        )
+        self.sd_push_button.setEnabled(False)
+        self.sd_push_button.clicked.connect(self._push_to_stream_deck)
+
+        self.sd_status_label = QLabel("Deck: not scanned")
+        self.sd_status_label.setStyleSheet("font-size: 10px; color: #888; font-style: italic;")
+
+        sd_layout.addLayout(sd_selector_row)
+        sd_layout.addWidget(self.sd_push_button)
+        sd_layout.addWidget(self.sd_status_label)
+        stream_deck_group.setLayout(sd_layout)
+
         # --- Right-side panel: 2-column layout, no scroll needed at 1920×1080 ---
         controls_widget = QWidget()
         controls_vbox = QVBoxLayout(controls_widget)
@@ -2825,6 +2888,7 @@ class LiveController(QWidget):
         left_col.setSpacing(8)
         left_col.addWidget(main_controls_group)
         left_col.addWidget(zoom_group)
+        left_col.addWidget(stream_deck_group)
         left_col.addStretch(1)
 
         right_col = QVBoxLayout()
@@ -3225,6 +3289,245 @@ class LiveController(QWidget):
             self.save_zoom_config()
             self._update_zoom_status_label()
             self.status_label.setText("Status: Multi-zone zoom/scale settings saved and will apply in play mode.")
+
+    # ------------------------------------------------------------------
+    # Stream Deck helpers
+    # ------------------------------------------------------------------
+
+    # Slot layout constants (1-indexed button numbers as shown in Elgato software)
+    _SD_FIRST_TRACK_BTN = 3   # Button 3 is the first track slot
+    _SD_LAST_TRACK_BTN  = 31  # Button 31 is the last track slot
+    _SD_TRACKS_PER_PAGE = _SD_LAST_TRACK_BTN - _SD_FIRST_TRACK_BTN + 1  # 29
+
+    def _refresh_stream_deck_list(self):
+        """Scans for connected Stream Deck devices and populates the selector combo box."""
+        self.stream_deck_combo.clear()
+        self.sd_push_button.setEnabled(False)
+
+        if not _STREAMDECK_AVAILABLE:
+            self.stream_deck_combo.addItem("streamdeck package not installed")
+            self.sd_status_label.setText("Install:  pip install streamdeck Pillow")
+            self.sd_status_label.setStyleSheet("font-size: 10px; color: #e74c3c; font-style: italic;")
+            return
+
+        try:
+            decks = _SDDeviceManager().enumerate()
+        except Exception as exc:
+            self.stream_deck_combo.addItem(f"Scan error: {exc}")
+            self.sd_status_label.setText("Could not enumerate devices.")
+            self.sd_status_label.setStyleSheet("font-size: 10px; color: #e74c3c; font-style: italic;")
+            return
+
+        if not decks:
+            self.stream_deck_combo.addItem("No Stream Decks found")
+            self.sd_status_label.setText("Deck: none detected")
+            self.sd_status_label.setStyleSheet("font-size: 10px; color: #888; font-style: italic;")
+            return
+
+        for idx, deck in enumerate(decks):
+            try:
+                deck.open()
+                name = deck.deck_type()
+                key_count = deck.key_count()
+                try:
+                    serial = deck.get_serial_number()
+                except Exception:
+                    serial = f"#{idx}"
+                deck.close()
+                self.stream_deck_combo.addItem(
+                    f"{name}  ({key_count} keys)  S/N: {serial}", userData=idx
+                )
+            except Exception:
+                self.stream_deck_combo.addItem(f"Stream Deck #{idx} (could not open)")
+
+        self.sd_push_button.setEnabled(True)
+        count = self.stream_deck_combo.count()
+        self.sd_status_label.setText(f"Deck: {count} device(s) found")
+        self.sd_status_label.setStyleSheet("font-size: 10px; color: #00b894; font-style: italic;")
+
+    def _make_sd_key_image(self, deck, label_top, label_bottom="", bg_color=(39, 174, 96)):
+        """Renders a PIL image for a single Stream Deck key.
+
+        Parameters
+        ----------
+        deck        : open StreamDeck device (used to determine image dimensions).
+        label_top   : primary text (track name), shown in the upper-centre of the key.
+        label_bottom: secondary text (hotkey), shown near the bottom of the key.
+        bg_color    : RGB tuple for the background fill (default green).
+
+        Returns the image in the deck's native wire format.
+        """
+        fmt = deck.key_image_format()
+        w, h = fmt["size"]
+
+        img = _PILImage.new("RGB", (w, h), color=bg_color)
+        draw = _PILImageDraw.Draw(img)
+
+        # Try a system font; fall back to the built-in default if not found.
+        font_sm = font_lg = None
+        for font_name in ("arialbd.ttf", "arial.ttf", "DejaVuSans-Bold.ttf", "DejaVuSans.ttf"):
+            try:
+                font_lg = _PILImageFont.truetype(font_name, max(10, h // 6))
+                font_sm = _PILImageFont.truetype(font_name, max(8, h // 8))
+                break
+            except (IOError, OSError):
+                continue
+        if font_lg is None:
+            font_lg = _PILImageFont.load_default()
+            font_sm = font_lg
+
+        # Wrap long track names over two lines if needed.
+        # Measure approximate character width using getbbox on a reference glyph.
+        try:
+            char_w = max(1, font_lg.getbbox("M")[2])
+        except Exception:
+            char_w = max(1, h // 8)
+        max_chars = max(1, w // char_w)
+        if len(label_top) > max_chars:
+            mid = max_chars
+            # Try to break at a space.
+            space_pos = label_top.rfind(" ", 0, mid)
+            if space_pos > 0:
+                mid = space_pos
+            line1 = label_top[:mid].strip()
+            line2 = label_top[mid:].strip()
+        else:
+            line1 = label_top
+            line2 = ""
+
+        cx = w // 2
+
+        def _draw_centred(text, y, font):
+            """Draw *text* centred at (cx, y) without relying on the 'anchor' kwarg."""
+            try:
+                bbox = font.getbbox(text)
+                tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            except Exception:
+                tw, th = len(text) * (h // 8), h // 8
+            draw.text((cx - tw // 2, y - th // 2), text, font=font, fill="white")
+
+        def _draw_centred_coloured(text, y, font, fill):
+            try:
+                bbox = font.getbbox(text)
+                tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            except Exception:
+                tw, th = len(text) * (h // 8), h // 8
+            draw.text((cx - tw // 2, y - th // 2), text, font=font, fill=fill)
+
+        if line2:
+            _draw_centred(line1, h // 3, font_lg)
+            _draw_centred(line2, h * 2 // 3 - 4, font_sm)
+        else:
+            _draw_centred(line1, h // 2 - 4, font_lg)
+
+        if label_bottom:
+            _draw_centred_coloured(label_bottom.upper(), h - 8, font_sm, (200, 255, 200))
+
+        return _SDPILHelper.to_native_format(deck, img)
+
+    def _push_to_stream_deck(self):
+        """Pushes the current setlist layout to the selected Stream Deck device.
+
+        Track buttons 3–31 (1-indexed) are written with track name labels on a
+        green background.  Encore dividers act as page breaks.  Keys 1 and 32
+        (reserved) and any unused track slots are reset to a dark blank image.
+        Only the deck selected in the combo box is modified; the other deck is
+        left completely untouched.
+        """
+        if not _STREAMDECK_AVAILABLE:
+            self.sd_status_label.setText("streamdeck library not installed.")
+            self.sd_status_label.setStyleSheet("font-size: 10px; color: #e74c3c; font-style: italic;")
+            return
+
+        if not _PIL_AVAILABLE:
+            self.sd_status_label.setText("Pillow library not installed (pip install Pillow).")
+            self.sd_status_label.setStyleSheet("font-size: 10px; color: #e74c3c; font-style: italic;")
+            return
+
+        selected_idx = self.stream_deck_combo.currentData()
+        if selected_idx is None:
+            self.sd_status_label.setText("No deck selected.")
+            return
+
+        # Build ordered list of track items only (dividers = page breaks).
+        # Each page holds _SD_TRACKS_PER_PAGE slots (buttons 3–31).
+        pages = [[]]  # pages[page_idx] = list of track items for that page
+        for item in self.tracks:
+            if item.get("type") == "divider":
+                if pages[-1]:          # start a new page only if current has content
+                    pages.append([])
+            elif item.get("type") == "track":
+                if len(pages[-1]) >= self._SD_TRACKS_PER_PAGE:
+                    pages.append([])
+                pages[-1].append(item)
+
+        # Flatten to a mapping: (page, slot_index) → track_item
+        # slot_index is 0-based within that page.
+        slot_map = {}
+        for page_idx, page_tracks in enumerate(pages):
+            for slot_idx, track_item in enumerate(page_tracks):
+                slot_map[(page_idx, slot_idx)] = track_item
+
+        # Open the selected deck exclusively.
+        try:
+            decks = _SDDeviceManager().enumerate()
+            if selected_idx >= len(decks):
+                self.sd_status_label.setText("Selected deck no longer available — rescan.")
+                return
+            deck = decks[selected_idx]
+            deck.open()
+        except Exception as exc:
+            self.sd_status_label.setText(f"Could not open deck: {exc}")
+            self.sd_status_label.setStyleSheet("font-size: 10px; color: #e74c3c; font-style: italic;")
+            return
+
+        try:
+            total_keys = deck.key_count()
+            first_slot = self._SD_FIRST_TRACK_BTN - 1  # convert to 0-based
+            last_slot  = self._SD_LAST_TRACK_BTN  - 1
+
+            # Blank image for non-track keys and unused slots.
+            blank_img = self._make_sd_key_image(deck, "", bg_color=(30, 30, 30))
+
+            keys_written = 0
+            # We write only page 0 here (the first page of setlist tracks).
+            # Subsequent pages require the "next page" key on the deck.
+            for key_idx in range(first_slot, last_slot + 1):
+                slot_idx = key_idx - first_slot
+                track_item = slot_map.get((0, slot_idx))
+                if track_item:
+                    raw_name = self.track_name_data.get(
+                        track_item["path"],
+                        os.path.splitext(os.path.basename(track_item["path"]))[0]
+                    )
+                    hotkey = track_item.get("hotkey", "")
+                    img = self._make_sd_key_image(deck, raw_name, hotkey)
+                    keys_written += 1
+                else:
+                    img = blank_img
+                if key_idx < total_keys:
+                    deck.set_key_image(key_idx, img)
+
+        except Exception as exc:
+            self.sd_status_label.setText(f"Write error: {exc}")
+            self.sd_status_label.setStyleSheet("font-size: 10px; color: #e74c3c; font-style: italic;")
+            return
+        finally:
+            try:
+                deck.close()
+            except Exception:
+                pass
+
+        total_tracks = sum(1 for item in self.tracks if item.get("type") == "track")
+        page_count = len([p for p in pages if p])
+        msg = (
+            f"Deck updated -- {keys_written} key(s) written"
+            + (f"  ({page_count} page(s) in setlist)" if page_count > 1 else "")
+            + "."
+        )
+        self.sd_status_label.setText(msg)
+        self.sd_status_label.setStyleSheet("font-size: 10px; color: #00b894; font-style: italic;")
+        self.status_label.setText(f"Status: Stream Deck updated ({keys_written}/{total_tracks} tracks on page 1).")
 
     def setting_changed(self):
         """Saves the config whenever a setting is changed."""
