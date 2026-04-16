@@ -24,6 +24,9 @@ import datetime
 import tempfile
 import shutil
 from collections import deque
+import math
+import socketserver
+from http.server import BaseHTTPRequestHandler
 
 # --- Third-Party Library Imports ---
 # This solution requires the 'keyboard' and 'psutil' libraries.
@@ -76,6 +79,9 @@ MPLAYER_PATH = r"d:\mplayer\mplayer.exe"
 BPM_STORE_FILE = "bpm_store.json"
 TRACK_NAME_STORE_FILE = "track_names.json"
 SD_STATE_FILE = "sd_state.json"
+
+# Default port for the Companion HTTP integration server.
+COMPANION_DEFAULT_PORT = 5005
 
 # Configuration and session files for the application state
 CONFIG_FILE = "config.json"
@@ -2357,12 +2363,91 @@ class PositionPoller(QThread):
             time.sleep(self._POLL_INTERVAL)
 
 
+# ---------------------------------------------------------------------------
+# Companion HTTP integration
+# ---------------------------------------------------------------------------
+
+class _CompanionHTTPHandler(BaseHTTPRequestHandler):
+    """Minimal HTTP request handler for Bitfocus Companion slot-trigger API.
+
+    Each request handler instance is created by the socketserver framework for
+    every incoming connection.  ``controller`` is a class-level attribute set
+    via :func:`_make_companion_handler` so every handler shares the same
+    ``LiveController`` reference without constructor changes.
+
+    Supported endpoints
+    -------------------
+    POST /companion/trigger/slot/<N>
+        Trigger the Nth ordered track slot (1-indexed, 1–29) on the current
+        Companion page.  The app maps the slot to the actual setlist track and
+        simulates the track's hotkey.
+
+    POST /companion/next_page
+        Advance the Companion page counter by one.
+
+    GET /companion/layout
+        Return a JSON snapshot of the current page's slot→track mapping so
+        Companion (or any other client) can read track names and played state.
+    """
+
+    # Set to the LiveController instance by the factory below.
+    controller = None
+
+    # Suppress the default per-request console logging.
+    def log_message(self, fmt, *args):
+        pass
+
+    def _send_json(self, code, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/companion/layout":
+            layout = self.controller._companion_get_layout()
+            self._send_json(200, layout)
+        else:
+            self._send_json(404, {"error": "not found"})
+
+    def do_POST(self):
+        if self.path.startswith("/companion/trigger/slot/"):
+            tail = self.path[len("/companion/trigger/slot/"):]
+            try:
+                slot_num = int(tail)
+            except ValueError:
+                self._send_json(400, {"error": "slot must be an integer"})
+                return
+            self.controller._companion_slot_signal.emit(slot_num)
+            self._send_json(200, {"ok": True, "slot": slot_num})
+        elif self.path == "/companion/next_page":
+            self.controller._companion_page_signal.emit()
+            self._send_json(200, {"ok": True})
+        else:
+            self._send_json(404, {"error": "not found"})
+
+
+def _make_companion_handler(controller):
+    """Return a ``_CompanionHTTPHandler`` subclass bound to *controller*."""
+    class _Handler(_CompanionHTTPHandler):
+        pass
+    _Handler.controller = controller
+    return _Handler
+
+
 class LiveController(QWidget):
     """The main application window and controller."""
 
     # Emitted from the Stream Deck button-press callback (background thread) so
     # that state updates and image writes happen safely on the main Qt thread.
     _sd_key_pressed = pyqtSignal(int)
+
+    # Emitted from the Companion HTTP handler thread so that slot triggering and
+    # page navigation happen safely on the main Qt thread.
+    _companion_slot_signal = pyqtSignal(int)
+    _companion_page_signal = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -2387,6 +2472,12 @@ class LiveController(QWidget):
         # successful push so that physical button presses can be intercepted.
         self._sd_open_deck = None
         self._sd_button_map = {}  # key_idx (0-based) → slot dict
+        # Companion integration state.  The HTTP server runs in a daemon thread;
+        # page and slot mapping are managed here on the main Qt thread.
+        self._companion_page = 0        # current Companion page (0-indexed)
+        self._companion_server = None   # socketserver.TCPServer instance, or None
+        self._companion_server_thread = None  # daemon Thread running the server
+        self._companion_lock = threading.Lock()  # guards _companion_page reads from HTTP thread
         self.worker = None
         self.current_ipc_socket = None
         self.is_live_mode = False
@@ -2454,6 +2545,10 @@ class LiveController(QWidget):
         # Connect the Stream Deck button signal so presses dispatched from the
         # background callback thread are handled safely on the main Qt thread.
         self._sd_key_pressed.connect(self._handle_sd_button_press)
+        # Connect Companion signals so HTTP handler requests are processed on
+        # the main Qt thread (slot triggering, page navigation).
+        self._companion_slot_signal.connect(self._companion_trigger_slot)
+        self._companion_page_signal.connect(self._companion_next_page)
         self.load_session()
 
         # --- Arduino LED Controller Setup ---
@@ -2871,6 +2966,8 @@ class LiveController(QWidget):
             "background-color: #2980b9; color: white; font-size: 11px; padding: 3px 6px;"
         )
         self.sd_push_button.setToolTip(
+            "Legacy: write the setlist directly to the Stream Deck hardware.\n"
+            "The preferred path is now the Companion Server panel below.\n\n"
             "Write the current setlist track labels to buttons 3–31 of the selected Stream Deck.\n"
             "Buttons 1 and 32 (reserved) are not modified.\n"
             "Encore/archive dividers insert a system:close marker key; tracks after the divider\n"
@@ -2890,6 +2987,53 @@ class LiveController(QWidget):
         sd_layout.addWidget(self.sd_status_label)
         stream_deck_group.setLayout(sd_layout)
 
+        # --- Companion Server group ---
+        companion_group = QGroupBox("Companion Server")
+        companion_layout = QVBoxLayout()
+        companion_layout.setContentsMargins(8, 16, 8, 8)
+        companion_layout.setSpacing(6)
+
+        companion_port_row = QHBoxLayout()
+        companion_port_row.setSpacing(4)
+        companion_port_row.addWidget(QLabel("Port:"))
+        self.companion_port_spin = QSpinBox()
+        self.companion_port_spin.setRange(1024, 65535)
+        self.companion_port_spin.setValue(COMPANION_DEFAULT_PORT)
+        self.companion_port_spin.setFixedWidth(70)
+        self.companion_port_spin.setToolTip("TCP port the Companion HTTP server listens on.")
+        companion_port_row.addWidget(self.companion_port_spin)
+        companion_port_row.addStretch(1)
+
+        companion_btn_row = QHBoxLayout()
+        companion_btn_row.setSpacing(4)
+        self.companion_start_button = QPushButton("▶  Start")
+        self.companion_start_button.setStyleSheet(
+            "background-color: #27ae60; color: white; font-size: 11px; padding: 3px 6px;"
+        )
+        self.companion_start_button.setToolTip(
+            "Start the Companion HTTP server so Bitfocus Companion can trigger\n"
+            "track slots via POST /companion/trigger/slot/<N> and advance pages\n"
+            "via POST /companion/next_page."
+        )
+        self.companion_start_button.clicked.connect(self._start_companion_server)
+        companion_btn_row.addWidget(self.companion_start_button)
+
+        self.companion_stop_button = QPushButton("■  Stop")
+        self.companion_stop_button.setStyleSheet(
+            "background-color: #c0392b; color: white; font-size: 11px; padding: 3px 6px;"
+        )
+        self.companion_stop_button.setEnabled(False)
+        self.companion_stop_button.clicked.connect(self._stop_companion_server)
+        companion_btn_row.addWidget(self.companion_stop_button)
+
+        self.companion_status_label = QLabel("Server: not running")
+        self.companion_status_label.setStyleSheet("font-size: 10px; color: #888; font-style: italic;")
+
+        companion_layout.addLayout(companion_port_row)
+        companion_layout.addLayout(companion_btn_row)
+        companion_layout.addWidget(self.companion_status_label)
+        companion_group.setLayout(companion_layout)
+
         # --- Right-side panel: 2-column layout, no scroll needed at 1920×1080 ---
         controls_widget = QWidget()
         controls_vbox = QVBoxLayout(controls_widget)
@@ -2905,6 +3049,7 @@ class LiveController(QWidget):
         left_col.addWidget(main_controls_group)
         left_col.addWidget(zoom_group)
         left_col.addWidget(stream_deck_group)
+        left_col.addWidget(companion_group)
         left_col.addStretch(1)
 
         right_col = QVBoxLayout()
@@ -3432,12 +3577,18 @@ class LiveController(QWidget):
         return _SDPILHelper.to_native_format(deck, img)
 
     def _push_to_stream_deck(self):
-        """Pushes the current setlist layout to the selected Stream Deck device.
+        """(Legacy) Pushes the current setlist layout directly to a Stream Deck device.
+
+        .. note::
+            The preferred integration path is now the **Companion HTTP server**
+            (see the "Companion Server" panel).  Use this button only if you
+            want the app to own the Stream Deck hardware directly, which
+            requires the Elgato software to be closed.
 
         Track buttons 3–31 (1-indexed) are written with track name labels.
         Tracks that have been played during this session (or a previous one) are
-        rendered with a red background (switch2 state) so their toggled/played
-        state is visible.  Unplayed tracks use the green background (switch1
+        rendered with a red background (played state) so their toggled/played
+        state is visible.  Unplayed tracks use the green background (unplayed
         state).  Encore/archive dividers insert a system:close marker key and
         then continue populating subsequent tracks on the same page.  Keys 1 and
         32 (reserved) and any unused track slots are reset to a dark blank image.
@@ -3447,14 +3598,8 @@ class LiveController(QWidget):
         (column 1), which may be a user-set name or the filename stem default.
         The raw filename is not used as a separate fallback source.
 
-        Each track button is configured as a two-state Hotkey Switch: pressing
-        the button simulates the track's trigger key (both in state 1 and state
-        2) and the visual toggles between green (switch1) and red (switch2).
         The deck connection is kept open after the push so that physical button
-        presses are intercepted directly by this application rather than being
-        passed to the Elgato software.  This is the most reliable way to keep
-        the configuration stable across Elgato software page navigation, since
-        the Python app retains exclusive ownership of the device.
+        presses are intercepted directly by this application.
         """
         if not _STREAMDECK_AVAILABLE:
             self.sd_status_label.setText("streamdeck library not installed.")
@@ -3673,6 +3818,234 @@ class LiveController(QWidget):
             "button_layout": self._sd_button_layout_dict(),
         })
 
+    # ------------------------------------------------------------------
+    # Companion integration helpers
+    # ------------------------------------------------------------------
+    #
+    # Layout model
+    # ~~~~~~~~~~~~
+    # The setlist is flattened into an ordered list where every track
+    # becomes a numbered slot and every divider (archive/encore boundary)
+    # becomes a special ``system:close`` marker entry.  The marker occupies
+    # a slot so it is visible on the deck but the full set continues past
+    # it — Companion buttons can still trigger tracks on either side of the
+    # boundary.
+    #
+    # Slot numbering is 1-indexed (1–_SD_TRACKS_PER_PAGE) matching the
+    # physical button positions 3–31 on a 32-key deck.  Page 0
+    # covers slots 1–29, page 1 covers slots 30–58, and so on.
+    #
+    # Companion button wiring (done in the Companion UI, not here)
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # • Buttons 3–31 send  POST http://localhost:<port>/companion/trigger/slot/<1-29>
+    # • Button 32 sends    POST http://localhost:<port>/companion/next_page
+    # • Button 1 sends the quit hotkey directly (configured in Companion)
+
+    def _companion_flat_slots(self):
+        """Return the full setlist as a flat ordered slot list.
+
+        Every track becomes a dict with ``type='track'``; every divider
+        becomes ``{"type": "close"}``.  The list is ordered to match the
+        table, and processing continues past every archive/encore boundary
+        so the complete set (including encores) is reachable.
+
+        Track labels come from the table widget name column (as displayed
+        to the user) with a fallback to ``track_name_data``.
+        """
+        table_name_map = {}
+        for row_idx, track_item in enumerate(self.tracks):
+            if track_item.get("type") == "track":
+                name_widget = self.table.cellWidget(row_idx, 1)
+                if name_widget is not None:
+                    table_name_map[track_item["path"]] = name_widget.text()
+
+        flat = []
+        for item in self.tracks:
+            if item.get("type") == "divider":
+                flat.append({"type": "close"})
+            elif item.get("type") == "track":
+                label = table_name_map.get(
+                    item["path"],
+                    self.track_name_data.get(item["path"], ""),
+                )
+                flat.append({
+                    "type": "track",
+                    "path": item["path"],
+                    "hotkey": item.get("hotkey", ""),
+                    "label": label,
+                })
+        return flat
+
+    def _companion_slot_map_for_page(self, page):
+        """Return a dict mapping slot number (1-indexed) to slot data for *page*.
+
+        Slot numbers run from 1 to ``_SD_TRACKS_PER_PAGE`` (29).  Slots that
+        have no corresponding setlist entry are absent from the returned dict.
+        *page* is 0-indexed.
+        """
+        flat = self._companion_flat_slots()
+        per_page = self._SD_TRACKS_PER_PAGE
+        start = page * per_page
+        end = start + per_page
+        page_slice = flat[start:end]
+        slot_map = {}
+        for i, slot in enumerate(page_slice):
+            slot_map[i + 1] = slot  # 1-indexed
+        return slot_map
+
+    def _companion_trigger_slot(self, slot_num):
+        """Trigger the track in *slot_num* (1-indexed) on the current Companion page.
+
+        This method runs on the main Qt thread (connected via
+        ``_companion_slot_signal``).  It simulates the track's hotkey,
+        updates the played state, and refreshes the status label.
+        """
+        slot_map = self._companion_slot_map_for_page(self._companion_page)
+        slot = slot_map.get(slot_num)
+        if slot is None:
+            self.companion_status_label.setText(
+                f"Companion: slot {slot_num} not found on page {self._companion_page + 1}"
+            )
+            self.companion_status_label.setStyleSheet(
+                "font-size: 10px; color: #e67e22; font-style: italic;"
+            )
+            return
+
+        if slot.get("type") == "close":
+            # Close/divider slots are informational only; nothing to trigger.
+            return
+
+        hotkey = slot.get("hotkey", "")
+        path = slot.get("path", "")
+        label = slot.get("label", hotkey)
+
+        if hotkey:
+            try:
+                keyboard.press_and_release(hotkey)
+            except Exception as exc:
+                self.companion_status_label.setText(f"Companion hotkey error ({hotkey}): {exc}")
+                self.companion_status_label.setStyleSheet(
+                    "font-size: 10px; color: #e74c3c; font-style: italic;"
+                )
+                return
+
+        # Mark as played (shared with direct Stream Deck state).
+        self.sd_played_paths.add(path)
+        self.save_json_store(SD_STATE_FILE, {"played_paths": list(self.sd_played_paths)})
+
+        total_pages = self._companion_total_pages()
+        self.companion_status_label.setText(
+            f"Companion: triggered slot {slot_num} — {label!r}  "
+            f"(page {self._companion_page + 1}/{total_pages})"
+        )
+        self.companion_status_label.setStyleSheet(
+            "font-size: 10px; color: #00b894; font-style: italic;"
+        )
+
+    def _companion_next_page(self):
+        """Advance the Companion page counter by one (wraps on last page).
+
+        Runs on the main Qt thread via ``_companion_page_signal``.
+        ``_companion_lock`` is held while updating ``_companion_page`` so that
+        a concurrent ``_companion_get_layout`` call on the HTTP thread always
+        sees a consistent value.
+        """
+        total = self._companion_total_pages()
+        if total == 0:
+            return
+        with self._companion_lock:
+            self._companion_page = (self._companion_page + 1) % total
+            new_page = self._companion_page
+        self.companion_status_label.setText(
+            f"Companion: page {new_page + 1}/{total}"
+        )
+        self.companion_status_label.setStyleSheet(
+            "font-size: 10px; color: #00b894; font-style: italic;"
+        )
+
+    def _companion_total_pages(self):
+        """Return the total number of Companion pages for the current setlist."""
+        total_slots = len(self._companion_flat_slots())
+        if total_slots == 0:
+            return 0
+        return math.ceil(total_slots / self._SD_TRACKS_PER_PAGE)
+
+    def _companion_get_layout(self):
+        """Return a JSON-serialisable layout snapshot for the current page.
+
+        Called from the HTTP handler GET /companion/layout on the HTTP server
+        thread.  ``_companion_lock`` is held while reading ``_companion_page``
+        so the snapshot is consistent with the most recent page change made on
+        the main Qt thread.
+        """
+        with self._companion_lock:
+            page = self._companion_page
+        slot_map = self._companion_slot_map_for_page(page)
+        total_pages = self._companion_total_pages()
+        slots_out = {}
+        for slot_num, slot in slot_map.items():
+            path = slot.get("path", "")
+            slots_out[str(slot_num)] = {
+                "type": slot.get("type", "track"),
+                "label": slot.get("label", ""),
+                "hotkey": slot.get("hotkey", ""),
+                "played": path in self.sd_played_paths,
+            }
+        return {
+            "page": page,
+            "total_pages": total_pages,
+            "slots_per_page": self._SD_TRACKS_PER_PAGE,
+            "slots": slots_out,
+        }
+
+    def _start_companion_server(self):
+        """Start the Companion HTTP server on the configured port."""
+        if self._companion_server is not None:
+            self.companion_status_label.setText("Companion: server already running.")
+            return
+        port = self.companion_port_spin.value()
+        handler_class = _make_companion_handler(self)
+        try:
+            server = socketserver.TCPServer(("127.0.0.1", port), handler_class)
+            server.allow_reuse_address = True
+        except OSError as exc:
+            self.companion_status_label.setText(f"Companion: could not bind port {port}: {exc}")
+            self.companion_status_label.setStyleSheet(
+                "font-size: 10px; color: #e74c3c; font-style: italic;"
+            )
+            return
+        self._companion_server = server
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        self._companion_server_thread = t
+        t.start()
+        self.companion_port_spin.setEnabled(False)
+        self.companion_start_button.setEnabled(False)
+        self.companion_stop_button.setEnabled(True)
+        total = self._companion_total_pages()
+        self.companion_status_label.setText(
+            f"Companion: listening on port {port}  "
+            f"(page {self._companion_page + 1}/{max(total, 1)})"
+        )
+        self.companion_status_label.setStyleSheet(
+            "font-size: 10px; color: #00b894; font-style: italic;"
+        )
+
+    def _stop_companion_server(self):
+        """Shut down the Companion HTTP server."""
+        if self._companion_server is None:
+            return
+        self._companion_server.shutdown()
+        self._companion_server.server_close()
+        self._companion_server = None
+        self._companion_server_thread = None
+        self._companion_page = 0
+        self.companion_port_spin.setEnabled(True)
+        self.companion_start_button.setEnabled(True)
+        self.companion_stop_button.setEnabled(False)
+        self.companion_status_label.setText("Server: not running")
+        self.companion_status_label.setStyleSheet(
+            "font-size: 10px; color: #888; font-style: italic;"
+        )
 
     def setting_changed(self):
         """Saves the config whenever a setting is changed."""
@@ -4861,6 +5234,15 @@ class LiveController(QWidget):
             except Exception:
                 pass
             self._sd_open_deck = None
+
+        # Shut down the Companion HTTP server if it is running.
+        if self._companion_server is not None:
+            try:
+                self._companion_server.shutdown()
+                self._companion_server.server_close()
+            except Exception:
+                pass
+            self._companion_server = None
 
         # Close the Arduino serial connection if open.
         if self.arduino_serial is not None and self.arduino_serial.is_open:
