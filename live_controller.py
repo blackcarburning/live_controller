@@ -2359,6 +2359,11 @@ class PositionPoller(QThread):
 
 class LiveController(QWidget):
     """The main application window and controller."""
+
+    # Emitted from the Stream Deck button-press callback (background thread) so
+    # that state updates and image writes happen safely on the main Qt thread.
+    _sd_key_pressed = pyqtSignal(int)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"Live Controller - blackcarburning - 2025-07-26 10:54:03")
@@ -2378,6 +2383,10 @@ class LiveController(QWidget):
         self.track_name_data = self.load_json_store(TRACK_NAME_STORE_FILE)
         sd_state = self.load_json_store(SD_STATE_FILE)
         self.sd_played_paths = set(sd_state.get("played_paths", []))
+        # Stream Deck live connection state.  The deck is held open after a
+        # successful push so that physical button presses can be intercepted.
+        self._sd_open_deck = None
+        self._sd_button_map = {}  # key_idx (0-based) → slot dict
         self.worker = None
         self.current_ipc_socket = None
         self.is_live_mode = False
@@ -2442,6 +2451,9 @@ class LiveController(QWidget):
         self.hotkey_listener = GlobalHotkeyListener()
         self.hotkey_listener.hotkey_pressed.connect(self.on_global_hotkey)
         self.hotkey_listener.start()
+        # Connect the Stream Deck button signal so presses dispatched from the
+        # background callback thread are handled safely on the main Qt thread.
+        self._sd_key_pressed.connect(self._handle_sd_button_press)
         self.load_session()
 
         # --- Arduino LED Controller Setup ---
@@ -3424,25 +3436,25 @@ class LiveController(QWidget):
 
         Track buttons 3–31 (1-indexed) are written with track name labels.
         Tracks that have been played during this session (or a previous one) are
-        rendered with an amber background so their toggled state is visible when
-        the deck is re-pushed.  Unplayed tracks use the default green background.
-        Encore/archive dividers insert a system:close marker key and then continue
-        populating subsequent tracks on the same page.  Keys 1 and 32 (reserved)
-        and any unused track slots are reset to a dark blank image.  Only the deck
-        selected in the combo box is modified; the other deck is left completely
-        untouched.
+        rendered with a red background (switch2 state) so their toggled/played
+        state is visible.  Unplayed tracks use the green background (switch1
+        state).  Encore/archive dividers insert a system:close marker key and
+        then continue populating subsequent tracks on the same page.  Keys 1 and
+        32 (reserved) and any unused track slots are reset to a dark blank image.
+        Only the deck selected in the combo box is modified.
 
         Button labels use the track name currently shown in the setlist table
         (column 1), which may be a user-set name or the filename stem default.
         The raw filename is not used as a separate fallback source.
 
-        Limitation: the python-streamdeck library only delivers hardware button-
-        press events while the deck device is held open.  Because this app opens
-        the deck briefly for image writes and then closes it (so that Elgato's own
-        software can reattach), physical button presses cannot be intercepted
-        directly.  Toggle state is therefore tracked through the application's own
-        playback events (start_playback / execute_playback) and persisted in
-        sd_state.json, which is the most reliable path given this architecture.
+        Each track button is configured as a two-state Hotkey Switch: pressing
+        the button simulates the track's trigger key (both in state 1 and state
+        2) and the visual toggles between green (switch1) and red (switch2).
+        The deck connection is kept open after the push so that physical button
+        presses are intercepted directly by this application rather than being
+        passed to the Elgato software.  This is the most reliable way to keep
+        the configuration stable across Elgato software page navigation, since
+        the Python app retains exclusive ownership of the device.
         """
         if not _STREAMDECK_AVAILABLE:
             self.sd_status_label.setText("streamdeck library not installed.")
@@ -3458,6 +3470,17 @@ class LiveController(QWidget):
         if selected_idx is None:
             self.sd_status_label.setText("No deck selected.")
             return
+
+        # Close any previously open deck connection so we can re-open cleanly.
+        if self._sd_open_deck is not None:
+            try:
+                self._sd_open_deck.set_key_callback(None)
+                self._sd_open_deck.reset()
+                self._sd_open_deck.close()
+            except Exception:
+                pass
+            self._sd_open_deck = None
+            self._sd_button_map = {}
 
         # Build a map from track path to the label currently shown in the
         # setlist table (the QLineEdit in column 1).  Reading directly from the
@@ -3480,7 +3503,7 @@ class LiveController(QWidget):
             elif item.get("type") == "track":
                 flat_slots.append(item)
 
-        # Open the selected deck exclusively.
+        # Open the selected deck exclusively and keep it open.
         try:
             decks = _SDDeviceManager().enumerate()
             if selected_idx >= len(decks):
@@ -3501,6 +3524,7 @@ class LiveController(QWidget):
             # Blank image for non-track keys and unused slots.
             blank_img = self._make_sd_key_image(deck, "", bg_color=(30, 30, 30))
 
+            new_button_map = {}
             keys_written = 0
             for key_idx in range(first_slot, last_slot + 1):
                 slot_idx = key_idx - first_slot
@@ -3510,6 +3534,7 @@ class LiveController(QWidget):
                         img = self._make_sd_key_image(
                             deck, "system:close", "", bg_color=(100, 50, 20)
                         )
+                        new_button_map[key_idx] = {"type": "close"}
                     else:
                         # Use the name from the table widget as the label source.
                         # Fall back to track_name_data if the table widget is not
@@ -3519,15 +3544,20 @@ class LiveController(QWidget):
                             self.track_name_data.get(slot["path"], ""),
                         )
                         hotkey = slot.get("hotkey", "")
-                        # Tracks that have been played are rendered with an amber
-                        # background so their toggled/played state is visible when
-                        # the setlist is re-pushed to the deck.
+                        # switch1 = green (unplayed), switch2 = red (played).
+                        # Both states share the same trigger hotkey.
                         if slot["path"] in self.sd_played_paths:
-                            bg = (160, 100, 20)  # amber — played / toggled on
+                            bg = (180, 50, 50)   # red  — switch2 / played
                         else:
-                            bg = (39, 174, 96)   # green  — unplayed / toggled off
+                            bg = (39, 174, 96)   # green — switch1 / unplayed
                         img = self._make_sd_key_image(deck, raw_name, hotkey, bg_color=bg)
                         keys_written += 1
+                        new_button_map[key_idx] = {
+                            "type": "track",
+                            "path": slot["path"],
+                            "hotkey": hotkey,
+                            "label": raw_name,
+                        }
                 else:
                     img = blank_img
                 if key_idx < total_keys:
@@ -3536,18 +3566,112 @@ class LiveController(QWidget):
         except Exception as exc:
             self.sd_status_label.setText(f"Write error: {exc}")
             self.sd_status_label.setStyleSheet("font-size: 10px; color: #e74c3c; font-style: italic;")
-            return
-        finally:
             try:
                 deck.close()
             except Exception:
                 pass
+            return
+
+        # Keep the deck open and register the button-press callback so that
+        # physical button presses are intercepted by this app.  The callback
+        # runs on a background thread; it emits _sd_key_pressed so the actual
+        # state update and image write happen on the main Qt thread.
+        self._sd_button_map = new_button_map
+        self._sd_open_deck = deck
+        deck.set_key_callback(self._on_sd_button_pressed)
+
+        # Persist the button layout so the configuration can be restored on
+        # app restart or if _push_to_stream_deck is called again.
+        self.save_json_store(SD_STATE_FILE, {
+            "played_paths": list(self.sd_played_paths),
+            "button_layout": self._sd_button_layout_dict(),
+        })
 
         total_tracks = sum(1 for item in self.tracks if item.get("type") == "track")
-        msg = f"Deck updated -- {keys_written} track key(s) written."
+        msg = f"Deck updated -- {keys_written} track key(s) written.  Listening for button presses."
         self.sd_status_label.setText(msg)
         self.sd_status_label.setStyleSheet("font-size: 10px; color: #00b894; font-style: italic;")
         self.status_label.setText(f"Status: Stream Deck updated ({keys_written}/{total_tracks} tracks).")
+
+    # ------------------------------------------------------------------
+    # Stream Deck button-press handling
+    # ------------------------------------------------------------------
+
+    def _sd_button_layout_dict(self):
+        """Return a JSON-serialisable dict of the current button layout.
+
+        Only track slots are included; close/divider slots are omitted.
+        This is a single source of truth used by both _push_to_stream_deck
+        and _handle_sd_button_press when persisting sd_state.json.
+        """
+        return {
+            str(k): {
+                "path": v.get("path", ""),
+                "hotkey": v.get("hotkey", ""),
+                "label": v.get("label", ""),
+            }
+            for k, v in self._sd_button_map.items()
+            if v.get("type") == "track"
+        }
+
+    def _on_sd_button_pressed(self, deck, key_index, state):
+        """Raw callback invoked by the python-streamdeck library on a background thread.
+
+        Only key-down events (state=True) are forwarded.  The actual work is
+        done on the main Qt thread via _handle_sd_button_press to keep UI and
+        state updates thread-safe.
+        """
+        if state:
+            self._sd_key_pressed.emit(key_index)
+
+    def _handle_sd_button_press(self, key_index):
+        """Handle a physical Stream Deck button press on the main Qt thread.
+
+        Implements the Hotkey Switch behaviour:
+          - Both switch states (green and red) trigger the same track hotkey.
+          - The button image toggles between green (switch1/unplayed) and
+            red (switch2/played) on each press.
+          - The new played state is saved to sd_state.json for persistence.
+        """
+        slot = self._sd_button_map.get(key_index)
+        if not slot or slot.get("type") != "track":
+            return
+
+        path = slot.get("path", "")
+        hotkey = slot.get("hotkey", "")
+
+        # Simulate the track trigger key — same key for both switch states.
+        if hotkey:
+            try:
+                keyboard.press_and_release(hotkey)
+            except Exception as exc:
+                self.sd_status_label.setText(f"Hotkey error ({hotkey}): {exc}")
+                self.sd_status_label.setStyleSheet("font-size: 10px; color: #e74c3c; font-style: italic;")
+
+        # Toggle between switch1 (green / unplayed) and switch2 (red / played).
+        if path in self.sd_played_paths:
+            self.sd_played_paths.discard(path)
+            bg = (39, 174, 96)   # green — switch1 / unplayed
+        else:
+            self.sd_played_paths.add(path)
+            bg = (180, 50, 50)   # red   — switch2 / played
+
+        # Update the button image to reflect the new state.
+        deck = self._sd_open_deck
+        if deck is not None:
+            label = slot.get("label", "")
+            try:
+                img = self._make_sd_key_image(deck, label, hotkey, bg_color=bg)
+                deck.set_key_image(key_index, img)
+            except Exception as exc:
+                self.sd_status_label.setText(f"Image update error (key {key_index}): {exc}")
+                self.sd_status_label.setStyleSheet("font-size: 10px; color: #e74c3c; font-style: italic;")
+
+        # Persist the updated played set and layout.
+        self.save_json_store(SD_STATE_FILE, {
+            "played_paths": list(self.sd_played_paths),
+            "button_layout": self._sd_button_layout_dict(),
+        })
 
 
     def setting_changed(self):
@@ -4726,6 +4850,17 @@ class LiveController(QWidget):
         self.hotkey_listener.stop()
         self.hotkey_listener.wait()
         self.stop_all_activity()
+
+        # Release any open Stream Deck connection so the device is not left
+        # locked after the application exits.
+        if self._sd_open_deck is not None:
+            try:
+                self._sd_open_deck.set_key_callback(None)
+                self._sd_open_deck.reset()
+                self._sd_open_deck.close()
+            except Exception:
+                pass
+            self._sd_open_deck = None
 
         # Close the Arduino serial connection if open.
         if self.arduino_serial is not None and self.arduino_serial.is_open:
