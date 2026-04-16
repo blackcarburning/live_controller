@@ -3605,7 +3605,11 @@ class LiveController(QWidget):
         and _handle_sd_button_press when persisting sd_state.json.
         """
         return {
-            str(k): {"path": v["path"], "hotkey": v["hotkey"], "label": v["label"]}
+            str(k): {
+                "path": v.get("path", ""),
+                "hotkey": v.get("hotkey", ""),
+                "label": v.get("label", ""),
+            }
             for k, v in self._sd_button_map.items()
             if v.get("type") == "track"
         }
