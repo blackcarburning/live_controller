@@ -2858,7 +2858,8 @@ class LiveController(QWidget):
         self.sd_push_button.setToolTip(
             "Write the current setlist track labels to buttons 3–31 of the selected Stream Deck.\n"
             "Buttons 1 and 32 (reserved) are not modified.\n"
-            "Encore dividers act as page breaks: tracks after a divider start on the next page.\n\n"
+            "Encore/archive dividers insert a system:close marker key; tracks after the divider\n"
+            "continue on subsequent buttons so the full setlist is always visible.\n\n"
             "REQUIREMENT: Close the Elgato Stream Deck software before pressing this button,\n"
             "then reopen it afterwards.  Both 'streamdeck' and 'Pillow' Python packages must\n"
             "be installed:  pip install streamdeck Pillow"
@@ -3376,24 +3377,9 @@ class LiveController(QWidget):
             font_lg = _PILImageFont.load_default()
             font_sm = font_lg
 
-        # Wrap long track names over two lines if needed.
-        # Measure approximate character width using getbbox on a reference glyph.
-        try:
-            char_w = max(1, font_lg.getbbox("M")[2])
-        except Exception:
-            char_w = max(1, h // 8)
-        max_chars = max(1, w // char_w)
-        if len(label_top) > max_chars:
-            mid = max_chars
-            # Try to break at a space.
-            space_pos = label_top.rfind(" ", 0, mid)
-            if space_pos > 0:
-                mid = space_pos
-            line1 = label_top[:mid].strip()
-            line2 = label_top[mid:].strip()
-        else:
-            line1 = label_top
-            line2 = ""
+        # Split the track name so that each word appears on its own line.
+        # A uniform font size is used for every line so labels stay consistent.
+        words = label_top.split() if label_top else []
 
         cx = w // 2
 
@@ -3414,11 +3400,16 @@ class LiveController(QWidget):
                 tw, th = len(text) * (h // 8), h // 8
             draw.text((cx - tw // 2, y - th // 2), text, font=font, fill=fill)
 
-        if line2:
-            _draw_centred(line1, h // 3, font_lg)
-            _draw_centred(line2, h * 2 // 3 - 4, font_sm)
-        else:
-            _draw_centred(line1, h // 2 - 4, font_lg)
+        if words:
+            # Reserve space at the bottom for the hotkey label if present
+            # (matches the fixed label position used by _draw_centred_coloured below).
+            bottom_reserve = 16 if label_bottom else 0
+            usable_h = h - bottom_reserve
+            n = len(words)
+            # Distribute words evenly across the usable vertical space.
+            for i, word in enumerate(words):
+                y = usable_h * (i + 1) // (n + 1)
+                _draw_centred(word, y, font_lg)
 
         if label_bottom:
             _draw_centred_coloured(label_bottom.upper(), h - 8, font_sm, (200, 255, 200))
@@ -3429,10 +3420,11 @@ class LiveController(QWidget):
         """Pushes the current setlist layout to the selected Stream Deck device.
 
         Track buttons 3–31 (1-indexed) are written with track name labels on a
-        green background.  Encore dividers act as page breaks.  Keys 1 and 32
-        (reserved) and any unused track slots are reset to a dark blank image.
-        Only the deck selected in the combo box is modified; the other deck is
-        left completely untouched.
+        green background.  Encore/archive dividers insert a system:close marker
+        key and then continue populating subsequent tracks on the same page.
+        Keys 1 and 32 (reserved) and any unused track slots are reset to a dark
+        blank image.  Only the deck selected in the combo box is modified; the
+        other deck is left completely untouched.
         """
         if not _STREAMDECK_AVAILABLE:
             self.sd_status_label.setText("streamdeck library not installed.")
@@ -3449,24 +3441,15 @@ class LiveController(QWidget):
             self.sd_status_label.setText("No deck selected.")
             return
 
-        # Build ordered list of track items only (dividers = page breaks).
-        # Each page holds _SD_TRACKS_PER_PAGE slots (buttons 3–31).
-        pages = [[]]  # pages[page_idx] = list of track items for that page
+        # Build a flat slot list: tracks become track entries, dividers become
+        # system:close marker entries.  Processing continues past every divider
+        # so the full setlist (including encores) is written to the deck.
+        flat_slots = []
         for item in self.tracks:
             if item.get("type") == "divider":
-                if pages[-1]:          # start a new page only if current has content
-                    pages.append([])
+                flat_slots.append({"type": "close"})
             elif item.get("type") == "track":
-                if len(pages[-1]) >= self._SD_TRACKS_PER_PAGE:
-                    pages.append([])
-                pages[-1].append(item)
-
-        # Flatten to a mapping: (page, slot_index) → track_item
-        # slot_index is 0-based within that page.
-        slot_map = {}
-        for page_idx, page_tracks in enumerate(pages):
-            for slot_idx, track_item in enumerate(page_tracks):
-                slot_map[(page_idx, slot_idx)] = track_item
+                flat_slots.append(item)
 
         # Open the selected deck exclusively.
         try:
@@ -3490,19 +3473,22 @@ class LiveController(QWidget):
             blank_img = self._make_sd_key_image(deck, "", bg_color=(30, 30, 30))
 
             keys_written = 0
-            # We write only page 0 here (the first page of setlist tracks).
-            # Subsequent pages require the "next page" key on the deck.
             for key_idx in range(first_slot, last_slot + 1):
                 slot_idx = key_idx - first_slot
-                track_item = slot_map.get((0, slot_idx))
-                if track_item:
-                    raw_name = self.track_name_data.get(
-                        track_item["path"],
-                        os.path.splitext(os.path.basename(track_item["path"]))[0]
-                    )
-                    hotkey = track_item.get("hotkey", "")
-                    img = self._make_sd_key_image(deck, raw_name, hotkey)
-                    keys_written += 1
+                if slot_idx < len(flat_slots):
+                    slot = flat_slots[slot_idx]
+                    if slot.get("type") == "close":
+                        img = self._make_sd_key_image(
+                            deck, "system:close", "", bg_color=(100, 50, 20)
+                        )
+                    else:
+                        raw_name = self.track_name_data.get(
+                            slot["path"],
+                            os.path.splitext(os.path.basename(slot["path"]))[0]
+                        )
+                        hotkey = slot.get("hotkey", "")
+                        img = self._make_sd_key_image(deck, raw_name, hotkey)
+                        keys_written += 1
                 else:
                     img = blank_img
                 if key_idx < total_keys:
@@ -3519,15 +3505,10 @@ class LiveController(QWidget):
                 pass
 
         total_tracks = sum(1 for item in self.tracks if item.get("type") == "track")
-        page_count = len([p for p in pages if p])
-        msg = (
-            f"Deck updated -- {keys_written} key(s) written"
-            + (f"  ({page_count} page(s) in setlist)" if page_count > 1 else "")
-            + "."
-        )
+        msg = f"Deck updated -- {keys_written} track key(s) written."
         self.sd_status_label.setText(msg)
         self.sd_status_label.setStyleSheet("font-size: 10px; color: #00b894; font-style: italic;")
-        self.status_label.setText(f"Status: Stream Deck updated ({keys_written}/{total_tracks} tracks on page 1).")
+        self.status_label.setText(f"Status: Stream Deck updated ({keys_written}/{total_tracks} tracks).")
 
     def setting_changed(self):
         """Saves the config whenever a setting is changed."""
