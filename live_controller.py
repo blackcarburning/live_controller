@@ -27,6 +27,7 @@ from collections import deque
 import math
 import socketserver
 from http.server import BaseHTTPRequestHandler
+import http.client as _http_client
 
 # --- Third-Party Library Imports ---
 # This solution requires the 'keyboard' and 'psutil' libraries.
@@ -84,6 +85,11 @@ SD_STATE_FILE = "sd_state.json"
 COMPANION_DEFAULT_PORT = 5005
 # Default port for Bitfocus Companion's own REST HTTP API.
 COMPANION_API_DEFAULT_PORT = 8888
+# Button colours used when pushing labels to Companion (RGB packed as 0xRRGGBB).
+COMPANION_COLOR_TEXT       = 0xFFFFFF   # white text
+COMPANION_COLOR_UNPLAYED   = 0x27AE60   # green — switch1 / unplayed
+COMPANION_COLOR_PLAYED     = 0xB43232   # red   — switch2 / played
+COMPANION_COLOR_CLOSE_BG   = 0x643214   # dark brown — divider / archive
 
 # Configuration and session files for the application state
 CONFIG_FILE = "config.json"
@@ -4178,14 +4184,12 @@ class LiveController(QWidget):
         - Both states of a two-state (latch / hotkey-switch) button use the
           same URL and therefore fire the same assigned key.
         """
-        import http.client as _http_client
-
         api_port = self.companion_api_port_spin.value()
         layout = self._companion_get_layout()
         page = layout["page"] + 1          # Companion pages are 1-indexed
 
         # Stream Deck XL button positions used for track slots:
-        #   buttons 3–31  →  columns 3–31 on row 0 (0-indexed)
+        #   buttons 3–31  →  grid positions computed from 1-indexed button number
         # Companion /api/location uses 1-indexed page and 0-indexed row/column.
         _SD_FIRST = self._SD_FIRST_TRACK_BTN   # 3 (1-indexed button)
         _COLS_PER_ROW = 8                       # Stream Deck XL has 8 columns
@@ -4200,15 +4204,12 @@ class LiveController(QWidget):
 
             if slot.get("type") == "close":
                 text = "---"
-                bgcolor = 0x643214   # dark brown
-                color = 0xffffff
+                bgcolor = COMPANION_COLOR_CLOSE_BG
+                color = COMPANION_COLOR_TEXT
             else:
                 text = slot.get("label", "")
-                if slot.get("played"):
-                    bgcolor = 0xb43232   # red — played
-                else:
-                    bgcolor = 0x27ae60   # green — unplayed
-                color = 0xffffff
+                bgcolor = COMPANION_COLOR_PLAYED if slot.get("played") else COMPANION_COLOR_UNPLAYED
+                color = COMPANION_COLOR_TEXT
 
             body = json.dumps({
                 "text": text,
@@ -4219,7 +4220,7 @@ class LiveController(QWidget):
                 "show_topbar": False,
             }).encode()
 
-            url_path = f"/api/location/{page}/0/{col}/style"
+            url_path = f"/api/location/{page}/{row}/{col}/style"
             try:
                 conn = _http_client.HTTPConnection("127.0.0.1", api_port, timeout=3)
                 conn.request(
