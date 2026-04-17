@@ -3871,9 +3871,9 @@ class LiveController(QWidget):
         The generated bundle is zipped and saved to the user's Downloads folder
         as  <setlist_name>_<date>.streamDeckProfile.
         """
-        # ── Gather tracks (dividers will become inert encore buttons) ─────────
-        tracks_only = [item for item in self.tracks if item['type'] == 'track']
-        if not tracks_only:
+        # ── Guard: require at least one track before attempting export ───────
+        has_tracks = any(item['type'] == 'track' for item in self.tracks)
+        if not has_tracks:
             self.status_label.setText("Status: No tracks to export to Stream Deck profile.")
             return
 
