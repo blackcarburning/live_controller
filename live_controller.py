@@ -2395,6 +2395,7 @@ class LiveController(QWidget):
         
         # --- FONT & COLOR DEFINITIONS ---
         self.current_table_font_size = DEFAULT_TABLE_FONT_SIZE
+        self.streamdeck_font_size = DEFAULT_STREAMDECK_FONT_SIZE
         self.playing_color = QColor("#2ecc71") # Brighter Green for playing track
         self.default_color = QColor("#2a2a2a") # Default background
         self.count_in_bg_color = DEFAULT_COUNT_IN_BG_COLOR
