@@ -3930,9 +3930,6 @@ class LiveController(QWidget):
                 with open(target_manifest_path, 'r', encoding='utf-8') as f:
                     manifest = json.load(f)
 
-                # Font size to embed in each generated button state
-                sd_font_size = self.streamdeck_font_spinbox.value()
-
                 # Compute the set of button positions for buttons 3–31
                 button_positions = set()
                 for btn_num in range(3, 32):
@@ -3988,8 +3985,8 @@ class LiveController(QWidget):
                         "Settings": {"Coalesce": True, "Hotkeys": hotkeys_list},
                         "State": 0,
                         "States": [
-                            {"Font": {"Size": sd_font_size}, "Image": "Images/GREEN.png", "Title": self._wrap_button_title(track_name)},
-                            {"Font": {"Size": sd_font_size}, "Image": "Images/RED.png"},
+                            {"Image": "Images/GREEN.png", "Title": self._wrap_button_title(track_name)},
+                            {"Image": "Images/RED.png"},
                         ],
                         "UUID": "com.elgato.streamdeck.system.hotkeyswitch",
                     }
