@@ -23,6 +23,8 @@ import threading
 import datetime
 import tempfile
 import shutil
+import uuid
+import zipfile
 from collections import deque
 
 # --- Third-Party Library Imports ---
@@ -2475,9 +2477,13 @@ class LiveController(QWidget):
         self.export_setlist_button = QPushButton("Export Set List")
         self.export_setlist_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
         self.export_setlist_button.clicked.connect(self.export_setlist)
+        self.export_streamdeck_button = QPushButton("Export Stream Deck Profile")
+        self.export_streamdeck_button.setStyleSheet("background-color: #1a6b8a; color: white; font-size: 11px; padding: 3px 6px;")
+        self.export_streamdeck_button.clicked.connect(self.export_streamdeck_profile)
         title_layout.addWidget(self.title_label)
         title_layout.addWidget(self.running_time_label)
         title_layout.addWidget(self.export_setlist_button)
+        title_layout.addWidget(self.export_streamdeck_button)
         # Right side for mode switch
         right_container = QWidget()
         right_layout = QHBoxLayout(right_container)
@@ -3056,6 +3062,7 @@ class LiveController(QWidget):
         self.reset_offset_button.setEnabled(is_edit_mode)
         self.quit_button.setEnabled(is_edit_mode)
         self.export_setlist_button.setEnabled(is_edit_mode)
+        self.export_streamdeck_button.setEnabled(is_edit_mode)
         self.setlist_name_input.setEnabled(is_edit_mode)
         self.table.setDragEnabled(is_edit_mode)
         self.rename_button.setEnabled(is_edit_mode)
@@ -3802,6 +3809,182 @@ class LiveController(QWidget):
             f.write('\n'.join(lines))
 
         self.status_label.setText(f"Status: Set list exported to {file_path}")
+
+    def export_streamdeck_profile(self):
+        """Generates a Stream Deck .streamDeckProfile bundle from the current setlist.
+
+        Buttons 3–31 of the target profile page are populated with Hotkey Switch
+        actions in the same order they appear in the setlist.  Divider items are
+        skipped — only track entries are assigned to buttons.
+
+        Icons for the two button states are sourced from:
+            <run directory>\\STREAMDECK ICONS\\GREEN.png   (state 0 – ready/unplayed)
+            <run directory>\\STREAMDECK ICONS\\RED.png     (state 1 – played/done)
+
+        The template profile is cloned from:
+            <run directory>\\MESH LIVE TTDM 2026\\
+
+        The generated bundle is zipped and saved to the user's Downloads folder
+        as  <setlist_name>_<date>.streamDeckProfile.
+        """
+        # ── Gather tracks (dividers are intentionally skipped) ────────────────
+        tracks_only = [item for item in self.tracks if item['type'] == 'track']
+        if not tracks_only:
+            self.status_label.setText("Status: No tracks to export to Stream Deck profile.")
+            return
+
+        # ── Locate run directory and assets ──────────────────────────────────
+        run_dir = os.path.dirname(os.path.abspath(__file__))
+
+        icons_dir = os.path.join(run_dir, "STREAMDECK ICONS")
+        green_icon_path = os.path.join(icons_dir, "GREEN.png")
+        red_icon_path   = os.path.join(icons_dir, "RED.png")
+        if not os.path.isfile(green_icon_path):
+            self.status_label.setText(
+                f"Status: Stream Deck export failed – GREEN.png not found in '{icons_dir}'.")
+            return
+        if not os.path.isfile(red_icon_path):
+            self.status_label.setText(
+                f"Status: Stream Deck export failed – RED.png not found in '{icons_dir}'.")
+            return
+
+        template_dir = os.path.join(run_dir, "MESH LIVE TTDM 2026")
+        if not os.path.isdir(template_dir):
+            self.status_label.setText(
+                f"Status: Stream Deck export failed – template folder not found at '{template_dir}'.")
+            return
+
+        # ── Profile structure constants ───────────────────────────────────────
+        PROFILE_ROOT = "52FB4CB0-A358-4700-9F38-2B0D2B5BF661.sdProfile"
+        TARGET_PAGE  = "CD5DC3C1-B5B2-4D89-9F22-8D8ED7BB8F3C"
+        DECK_COLS    = 8   # Stream Deck XL: 8 columns × 4 rows
+
+        # Null key used as a placeholder in the Hotkeys array (no binding)
+        NULL_KEY = {
+            "KeyCmd": False, "KeyCtrl": False, "KeyModifiers": 0,
+            "KeyOption": False, "KeyShift": False,
+            "NativeCode": 146, "QTKeyCode": 33554431, "VKeyCode": -1,
+        }
+
+        try:
+            tmp_dir = tempfile.mkdtemp()
+            try:
+                # ── Clone the template profile into the temp directory ────────
+                dest_root = os.path.join(tmp_dir, "MESH LIVE TTDM 2026")
+                shutil.copytree(template_dir, dest_root)
+
+                target_page_dir     = os.path.join(
+                    dest_root, "Profiles", PROFILE_ROOT, "Profiles", TARGET_PAGE)
+                target_manifest_path = os.path.join(target_page_dir, "manifest.json")
+                target_images_dir   = os.path.join(target_page_dir, "Images")
+                os.makedirs(target_images_dir, exist_ok=True)
+
+                # ── Copy the two state icons into the page's Images folder ────
+                shutil.copy2(green_icon_path, os.path.join(target_images_dir, "GREEN.png"))
+                shutil.copy2(red_icon_path,   os.path.join(target_images_dir, "RED.png"))
+
+                # ── Load and update the page manifest ─────────────────────────
+                with open(target_manifest_path, 'r', encoding='utf-8') as f:
+                    manifest = json.load(f)
+
+                # Compute the set of button positions for buttons 3–31
+                button_positions = set()
+                for btn_num in range(3, 32):
+                    idx = btn_num - 1
+                    button_positions.add(f"{idx % DECK_COLS},{idx // DECK_COLS}")
+
+                # Keep all existing entries that are NOT in the buttons 3–31 range
+                # (e.g. navigation buttons, buttons 1–2 which stay from the template)
+                new_actions = {
+                    pos: action
+                    for pos, action in manifest["Controllers"][0]["Actions"].items()
+                    if pos not in button_positions
+                }
+
+                # Assign up to 29 tracks to buttons 3–31 as Hotkey Switch actions
+                for slot, track in enumerate(tracks_only[:29]):
+                    btn_num = slot + 3
+                    idx     = btn_num - 1
+                    pos     = f"{idx % DECK_COLS},{idx // DECK_COLS}"
+
+                    track_name = self.track_name_data.get(
+                        track['path'],
+                        os.path.splitext(os.path.basename(track['path']))[0]
+                    ).replace('_', ' ').upper()
+
+                    hotkey = track.get('hotkey', '')
+                    if hotkey and len(hotkey) == 1:
+                        # Convert the app hotkey character to its keyboard NativeCode:
+                        # digit keys use their ASCII value; letter keys use the
+                        # uppercase ASCII value (Stream Deck VKey convention).
+                        native_code = ord(hotkey) if hotkey.isdigit() else ord(hotkey.upper())
+                        key_entry = {
+                            "KeyCmd": False, "KeyCtrl": False, "KeyModifiers": 0,
+                            "KeyOption": False, "KeyShift": False,
+                            "NativeCode": native_code,
+                            "QTKeyCode": native_code,
+                            "VKeyCode":  native_code,
+                        }
+                        hotkeys_list = [key_entry, key_entry, NULL_KEY, NULL_KEY]
+                    else:
+                        hotkeys_list = [NULL_KEY, NULL_KEY, NULL_KEY, NULL_KEY]
+
+                    new_actions[pos] = {
+                        "ActionID": str(uuid.uuid4()).upper(),
+                        "LinkedTitle": True,
+                        "Name": "Hotkey Switch",
+                        "Plugin": {
+                            "Name": "Hotkey Switch",
+                            "UUID": "com.elgato.streamdeck.system.hotkeyswitch",
+                            "Version": "1.0",
+                        },
+                        "Resources": None,
+                        "Settings": {"Coalesce": True, "Hotkeys": hotkeys_list},
+                        "State": 0,
+                        "States": [
+                            {"Image": "Images/GREEN.png", "Title": track_name},
+                            {"Image": "Images/RED.png"},
+                        ],
+                        "UUID": "com.elgato.streamdeck.system.hotkeyswitch",
+                    }
+
+                manifest["Controllers"][0]["Actions"] = new_actions
+
+                with open(target_manifest_path, 'w', encoding='utf-8') as f:
+                    json.dump(manifest, f, separators=(',', ':'))
+
+                # ── Build the output file path ────────────────────────────────
+                setlist_name = self.title_label.text()
+                safe_name = re.sub(r'[\\/*?:"<>|]', '', setlist_name).strip() or "streamdeck"
+                date_str  = datetime.date.today().strftime("%Y-%m-%d")
+                base_name = f"{safe_name}_{date_str}"
+
+                downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+                os.makedirs(downloads_dir, exist_ok=True)
+                zip_path    = os.path.join(downloads_dir, base_name + ".zip")
+                output_path = os.path.join(downloads_dir, base_name + ".streamDeckProfile")
+
+                # ── Zip the cloned bundle ─────────────────────────────────────
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for root, _dirs, files in os.walk(dest_root):
+                        for file in files:
+                            abs_path = os.path.join(root, file)
+                            arc_name = os.path.relpath(abs_path, tmp_dir)
+                            zf.write(abs_path, arc_name)
+
+                # ── Rename .zip → .streamDeckProfile ─────────────────────────
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                os.rename(zip_path, output_path)
+
+                self.status_label.setText(
+                    f"Status: Stream Deck profile exported to {output_path}")
+
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        except Exception as exc:
+            self.status_label.setText(f"Status: Stream Deck export failed – {exc}")
 
     def update_total_running_time(self):
         """Calculates and displays the total running time for the setlist."""
