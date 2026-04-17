@@ -74,6 +74,7 @@ DEFAULT_COUNT_IN_SECONDS = 20
 DEFAULT_TABLE_FONT_SIZE = 16
 DEFAULT_COUNT_IN_FONT_SIZE = 250
 DEFAULT_TRACK_PLAY_FONT_SIZE = 80
+DEFAULT_STREAMDECK_FONT_SIZE = 12
 DEFAULT_COUNT_IN_BG_COLOR = "#c80000"
 DEFAULT_TRACK_PLAY_BG_COLOR = "#00c800"
 TRACK_OVERHEAD_SECONDS = 15  # Extra time added to total running time per track for transitions
@@ -2480,10 +2481,22 @@ class LiveController(QWidget):
         self.export_streamdeck_button = QPushButton("Export Stream Deck Profile")
         self.export_streamdeck_button.setStyleSheet("background-color: #1a6b8a; color: white; font-size: 11px; padding: 3px 6px;")
         self.export_streamdeck_button.clicked.connect(self.export_streamdeck_profile)
+        sd_font_layout = QHBoxLayout()
+        sd_font_layout.setSpacing(4)
+        sd_font_label = QLabel("SD Font:")
+        sd_font_label.setFont(QFont("Segoe UI", 9))
+        self.streamdeck_font_spinbox = QSpinBox()
+        self.streamdeck_font_spinbox.setRange(6, 36)
+        self.streamdeck_font_spinbox.setValue(self.streamdeck_font_size)
+        self.streamdeck_font_spinbox.setSuffix(" pt")
+        self.streamdeck_font_spinbox.setFixedWidth(70)
+        sd_font_layout.addWidget(sd_font_label)
+        sd_font_layout.addWidget(self.streamdeck_font_spinbox)
         title_layout.addWidget(self.title_label)
         title_layout.addWidget(self.running_time_label)
         title_layout.addWidget(self.export_setlist_button)
         title_layout.addWidget(self.export_streamdeck_button)
+        title_layout.addLayout(sd_font_layout)
         # Right side for mode switch
         right_container = QWidget()
         right_layout = QHBoxLayout(right_container)
@@ -3274,6 +3287,7 @@ class LiveController(QWidget):
             'count_in_font_size': self.count_in_font_size,
             'track_play_bg_color': self.track_play_bg_color,
             'track_play_font_size': self.track_play_font_size,
+            'streamdeck_font_size': self.streamdeck_font_spinbox.value(),
             'scrub_locked': self.scrub_lock_checkbox.isChecked(),
             'loop_enabled': self.loop_checkbox.isChecked(),
             'loop_bpm': self.loop_bpm_spinbox.value(),
@@ -3307,6 +3321,7 @@ class LiveController(QWidget):
             
             self.current_table_font_size = session_data.get('table_font_size', DEFAULT_TABLE_FONT_SIZE)
             self.font_size_spinbox.setValue(self.current_table_font_size)
+            self.streamdeck_font_spinbox.setValue(session_data.get('streamdeck_font_size', DEFAULT_STREAMDECK_FONT_SIZE))
             
             self.count_in_bg_color = session_data.get('count_in_bg_color', DEFAULT_COUNT_IN_BG_COLOR)
             self.count_in_font_size = session_data.get('count_in_font_size', DEFAULT_COUNT_IN_FONT_SIZE)
@@ -3914,6 +3929,9 @@ class LiveController(QWidget):
                 with open(target_manifest_path, 'r', encoding='utf-8') as f:
                     manifest = json.load(f)
 
+                # Font size to embed in each generated button state
+                sd_font_size = self.streamdeck_font_spinbox.value()
+
                 # Compute the set of button positions for buttons 3–31
                 button_positions = set()
                 for btn_num in range(3, 32):
@@ -3969,8 +3987,8 @@ class LiveController(QWidget):
                         "Settings": {"Coalesce": True, "Hotkeys": hotkeys_list},
                         "State": 0,
                         "States": [
-                            {"Image": "Images/GREEN.png", "Title": self._wrap_button_title(track_name)},
-                            {"Image": "Images/RED.png"},
+                            {"Font": {"Size": sd_font_size}, "Image": "Images/GREEN.png", "Title": self._wrap_button_title(track_name)},
+                            {"Font": {"Size": sd_font_size}, "Image": "Images/RED.png"},
                         ],
                         "UUID": "com.elgato.streamdeck.system.hotkeyswitch",
                     }
