@@ -4058,6 +4058,14 @@ class LiveController(QWidget):
                 self.status_label.setText(
                     f"Status: Stream Deck profile exported to {output_path}")
 
+                # ── Auto-open the exported profile ────────────────────────────
+                try:
+                    os.startfile(output_path)
+                except (OSError, AttributeError) as open_exc:
+                    self.status_label.setText(
+                        f"Status: Stream Deck profile exported to {output_path}"
+                        f" (could not open automatically: {open_exc})")
+
             finally:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
 
