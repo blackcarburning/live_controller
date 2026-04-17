@@ -3906,7 +3906,6 @@ class LiveController(QWidget):
         # ── Profile structure constants ───────────────────────────────────────
         PROFILE_ROOT = "52FB4CB0-A358-4700-9F38-2B0D2B5BF661.sdProfile"
         TARGET_PAGE  = "1A0CE7C8-07E7-4B8E-AB58-C2D49FAB0D49"  # page 1 – setlist page (generated)
-        PAGE_2       = "919A58B2-2F02-4E1B-8F30-C27A154F1C44"  # page 2 – fixed buttons (never overwrite)
         DECK_COLS    = 8   # Stream Deck XL: 8 columns × 4 rows
 
         # Null key used as a placeholder in the Hotkeys array (no binding)
@@ -3922,27 +3921,6 @@ class LiveController(QWidget):
                 # ── Clone the template profile into the temp directory ────────
                 dest_root = os.path.join(tmp_dir, "MESH LIVE TTDM 2026")
                 shutil.copytree(template_dir, dest_root)
-
-                # ── Exclude page 2 from the export so it is never overwritten ─
-                # Page 2 contains fixed/manually-configured buttons that must
-                # be preserved on the user's device between setlist exports.
-                # Removing its directory and entry from the root manifest means
-                # importing this profile will not touch the user's page 2.
-                page2_dir = os.path.join(
-                    dest_root, "Profiles", PROFILE_ROOT, "Profiles", PAGE_2)
-                if os.path.isdir(page2_dir):
-                    shutil.rmtree(page2_dir)
-                root_manifest_path = os.path.join(
-                    dest_root, "Profiles", PROFILE_ROOT, "manifest.json")
-                with open(root_manifest_path, 'r', encoding='utf-8') as f:
-                    root_manifest = json.load(f)
-                page2_lower = PAGE_2.lower()
-                root_manifest["Pages"]["Pages"] = [
-                    p for p in root_manifest["Pages"]["Pages"]
-                    if p.lower() != page2_lower
-                ]
-                with open(root_manifest_path, 'w', encoding='utf-8') as f:
-                    json.dump(root_manifest, f, separators=(',', ':'))
 
                 target_page_dir     = os.path.join(
                     dest_root, "Profiles", PROFILE_ROOT, "Profiles", TARGET_PAGE)
