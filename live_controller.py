@@ -3965,11 +3965,15 @@ class LiveController(QWidget):
                 output_path = os.path.join(downloads_dir, base_name + ".streamDeckProfile")
 
                 # ── Zip the cloned bundle ─────────────────────────────────────
+                # Archive entries must be relative to dest_root so that the
+                # archive root contains package.json and Profiles/ directly,
+                # with no wrapping folder (Stream Deck will not import profiles
+                # where these entries are nested inside a sub-folder).
                 with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
                     for root, _dirs, files in os.walk(dest_root):
                         for file in files:
                             abs_path = os.path.join(root, file)
-                            arc_name = os.path.relpath(abs_path, tmp_dir)
+                            arc_name = os.path.relpath(abs_path, dest_root)
                             zf.write(abs_path, arc_name)
 
                 # ── Rename .zip → .streamDeckProfile ─────────────────────────
