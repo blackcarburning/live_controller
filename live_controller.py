@@ -3856,13 +3856,14 @@ class LiveController(QWidget):
     def export_streamdeck_profile(self):
         """Generates a Stream Deck .streamDeckProfile bundle from the current setlist.
 
-        Buttons 3–31 of the target profile page are populated with Hotkey Switch
-        actions in the same order they appear in the setlist.  Divider items are
-        skipped — only track entries are assigned to buttons.
+        Buttons 3–31 of the target profile page are populated in setlist order:
+        track entries become Hotkey Switch actions; divider/encore entries become
+        inert system-close actions (encore1, encore2, …).
 
-        Icons for the two button states are sourced from:
+        Icons are sourced from:
             <run directory>\\STREAMDECK ICONS\\GREEN.png   (state 0 – ready/unplayed)
             <run directory>\\STREAMDECK ICONS\\RED.png     (state 1 – played/done)
+            <run directory>\\STREAMDECK ICONS\\GREY.png    (encore divider buttons)
 
         The template profile is cloned from:
             <run directory>\\MESH LIVE TTDM 2026\\
@@ -3870,7 +3871,7 @@ class LiveController(QWidget):
         The generated bundle is zipped and saved to the user's Downloads folder
         as  <setlist_name>_<date>.streamDeckProfile.
         """
-        # ── Gather tracks (dividers are intentionally skipped) ────────────────
+        # ── Gather tracks (dividers will become inert encore buttons) ─────────
         tracks_only = [item for item in self.tracks if item['type'] == 'track']
         if not tracks_only:
             self.status_label.setText("Status: No tracks to export to Stream Deck profile.")
@@ -3882,6 +3883,7 @@ class LiveController(QWidget):
         icons_dir = os.path.join(run_dir, "STREAMDECK ICONS")
         green_icon_path = os.path.join(icons_dir, "GREEN.png")
         red_icon_path   = os.path.join(icons_dir, "RED.png")
+        grey_icon_path  = os.path.join(icons_dir, "GREY.png")
         if not os.path.isfile(green_icon_path):
             self.status_label.setText(
                 f"Status: Stream Deck export failed – GREEN.png not found in '{icons_dir}'.")
@@ -3889,6 +3891,10 @@ class LiveController(QWidget):
         if not os.path.isfile(red_icon_path):
             self.status_label.setText(
                 f"Status: Stream Deck export failed – RED.png not found in '{icons_dir}'.")
+            return
+        if not os.path.isfile(grey_icon_path):
+            self.status_label.setText(
+                f"Status: Stream Deck export failed – GREY.png not found in '{icons_dir}'.")
             return
 
         template_dir = os.path.join(run_dir, "MESH LIVE TTDM 2026")
@@ -3922,9 +3928,10 @@ class LiveController(QWidget):
                 target_images_dir   = os.path.join(target_page_dir, "Images")
                 os.makedirs(target_images_dir, exist_ok=True)
 
-                # ── Copy the two state icons into the page's Images folder ────
+                # ── Copy the three state icons into the page's Images folder ─
                 shutil.copy2(green_icon_path, os.path.join(target_images_dir, "GREEN.png"))
                 shutil.copy2(red_icon_path,   os.path.join(target_images_dir, "RED.png"))
+                shutil.copy2(grey_icon_path,  os.path.join(target_images_dir, "GREY.png"))
 
                 # ── Load and update the page manifest ─────────────────────────
                 with open(target_manifest_path, 'r', encoding='utf-8') as f:
@@ -3944,18 +3951,42 @@ class LiveController(QWidget):
                     if pos not in button_positions
                 }
 
-                # Assign up to 29 tracks to buttons 3–31 as Hotkey Switch actions
-                for slot, track in enumerate(tracks_only[:29]):
+                # Assign up to 29 setlist items to buttons 3–31.
+                # Tracks → Hotkey Switch actions; dividers → inert Close actions.
+                encore_counter = 0
+                for slot, item in enumerate(self.tracks[:29]):
                     btn_num = slot + 3
                     idx     = btn_num - 1
                     pos     = f"{idx % DECK_COLS},{idx // DECK_COLS}"
 
+                    if item['type'] == 'divider':
+                        encore_counter += 1
+                        encore_label = f"encore{encore_counter}"
+                        new_actions[pos] = {
+                            "ActionID": str(uuid.uuid4()).upper(),
+                            "LinkedTitle": True,
+                            "Name": "Close",
+                            "Plugin": {
+                                "Name": "Close",
+                                "UUID": "com.elgato.streamdeck.system.close",
+                                "Version": "1.0",
+                            },
+                            "Resources": None,
+                            "Settings": {"forceQuit": False, "path": ""},
+                            "State": 0,
+                            "States": [
+                                {"Image": "Images/GREY.png", "Title": encore_label},
+                            ],
+                            "UUID": "com.elgato.streamdeck.system.close",
+                        }
+                        continue
+
                     track_name = self.track_name_data.get(
-                        track['path'],
-                        os.path.splitext(os.path.basename(track['path']))[0]
+                        item['path'],
+                        os.path.splitext(os.path.basename(item['path']))[0]
                     ).replace('_', ' ').upper()
 
-                    hotkey = track.get('hotkey', '')
+                    hotkey = item.get('hotkey', '')
                     if hotkey and len(hotkey) == 1:
                         # Convert the app hotkey character to its keyboard NativeCode:
                         # digit keys use their ASCII value; letter keys use the
