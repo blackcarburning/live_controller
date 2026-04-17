@@ -3810,6 +3810,33 @@ class LiveController(QWidget):
 
         self.status_label.setText(f"Status: Set list exported to {file_path}")
 
+    @staticmethod
+    def _wrap_button_title(name: str) -> str:
+        """Wrap a button title so each line is at most 7 characters.
+
+        Words are combined onto the same line only when the combined text
+        (including the separating space) stays within 7 characters; otherwise
+        each word starts a new line.  Examples:
+
+        - ``IS A`` (4 chars with space) stays on one line.
+        - ``FALLING AWAY`` (12 chars with space) becomes ``FALLING\\nAWAY``.
+        - ``FROM ME`` (7 chars with space) stays on one line.
+        """
+        words = name.split()
+        if not words:
+            return name
+        lines = []
+        current = words[0]
+        for word in words[1:]:
+            candidate = current + ' ' + word
+            if len(candidate) <= 7:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+        return '\n'.join(lines)
+
     def export_streamdeck_profile(self):
         """Generates a Stream Deck .streamDeckProfile bundle from the current setlist.
 
@@ -3942,7 +3969,7 @@ class LiveController(QWidget):
                         "Settings": {"Coalesce": True, "Hotkeys": hotkeys_list},
                         "State": 0,
                         "States": [
-                            {"Image": "Images/GREEN.png", "Title": track_name},
+                            {"Image": "Images/GREEN.png", "Title": self._wrap_button_title(track_name)},
                             {"Image": "Images/RED.png"},
                         ],
                         "UUID": "com.elgato.streamdeck.system.hotkeyswitch",
