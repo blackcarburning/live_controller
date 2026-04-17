@@ -3856,7 +3856,7 @@ class LiveController(QWidget):
 
         # ── Profile structure constants ───────────────────────────────────────
         PROFILE_ROOT = "52FB4CB0-A358-4700-9F38-2B0D2B5BF661.sdProfile"
-        TARGET_PAGE  = "CD5DC3C1-B5B2-4D89-9F22-8D8ED7BB8F3C"
+        TARGET_PAGE  = "1A0CE7C8-07E7-4B8E-AB58-C2D49FAB0D49"
         DECK_COLS    = 8   # Stream Deck XL: 8 columns × 4 rows
 
         # Null key used as a placeholder in the Hotkeys array (no binding)
