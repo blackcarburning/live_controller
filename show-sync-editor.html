@@ -1048,10 +1048,13 @@ document.getElementById('mov-input').addEventListener('change', (e) => {
 
 function loadMovFile(file) {
   if (vidUrl) URL.revokeObjectURL(vidUrl);
-  vidUrl = URL.createObjectURL(file);
+  const objUrl = URL.createObjectURL(file);
+  // Confirm createObjectURL returned a blob: URL before touching the DOM.
+  let parsed;
+  try { parsed = new URL(objUrl); } catch (_) { URL.revokeObjectURL(objUrl); return; }
+  if (parsed.protocol !== 'blob:') { URL.revokeObjectURL(objUrl); return; }
+  vidUrl = objUrl;
   const vid = document.getElementById('video-player');
-  // createObjectURL always returns a blob: URL; guard for clarity.
-  if (!vidUrl || !vidUrl.startsWith('blob:')) return;
   vid.src = vidUrl;
   vid.load();
   vid.addEventListener('loadedmetadata', () => {

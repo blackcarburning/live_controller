@@ -101,6 +101,11 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _HTML = os.path.join(_HERE, "show-sync-editor.html")
 _INITIAL = sys.argv[1] if len(sys.argv) > 1 else None
 
+# The server only binds to 127.0.0.1 (loopback).  Video and save endpoints
+# accept user-supplied paths but restrict them to the user home directory to
+# limit exposure if a malicious local page ever tried a CSRF-style request.
+_HOME = os.path.realpath(os.path.expanduser("~"))
+
 _ALLOWED_VIDEO_EXT = {
     ".mov", ".mp4", ".mkv", ".avi", ".m4v", ".webm",
     ".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a",
@@ -108,17 +113,21 @@ _ALLOWED_VIDEO_EXT = {
 
 
 def _safe_video(raw: str) -> str | None:
-    """Return the resolved absolute path only if it refers to an allowed video/audio file.
+    """Return the resolved path only if it is an allowed media file under HOME.
 
-    Applies multiple checks to mitigate path-traversal and injection:
-      - Rejects null bytes and excessively long strings.
-      - Resolves symlinks via ``os.path.realpath``.
-      - Allows only a fixed set of media extensions.
-      - Verifies the path points to an existing regular file.
+    Security checks applied:
+      1. Reject null bytes and excessively long strings.
+      2. Resolve symlinks to the real on-disk path.
+      3. Require the file to be under the user's home directory.
+      4. Allow only a fixed set of media extensions.
+      5. Verify the path points to an existing regular file.
     """
     if not raw or "\x00" in raw or len(raw) > 4096:
         return None
     real = os.path.realpath(raw)
+    # Restrict to files within the user's home directory.
+    if not (real.startswith(_HOME + os.sep) or real == _HOME):
+        return None
     if os.path.splitext(real)[1].lower() not in _ALLOWED_VIDEO_EXT:
         return None
     if not os.path.isfile(real):
@@ -217,19 +226,33 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(data)
 
     def _save(self, body):
+        # CSRF guard: only accept saves that originate from our own editor page.
+        origin = self.headers.get("Origin", "")
+        referer = self.headers.get("Referer", "")
+        server_base = f"http://127.0.0.1:{PORT}"
+        if origin and not origin.startswith(server_base):
+            self.send_response(403)
+            self.end_headers()
+            return
+        if not origin and referer and not referer.startswith(server_base):
+            self.send_response(403)
+            self.end_headers()
+            return
+
         try:
             payload = json.loads(body)
             path = payload.get("path", "")
             data = payload.get("data")
             if not path or data is None:
                 raise ValueError("Missing path or data")
-            # Validate the save path before writing.
+            # Validate path: null bytes, length, .json extension, home directory.
             if "\x00" in path or len(path) > 4096:
                 raise ValueError("Invalid path")
             if not path.endswith(".json"):
                 raise ValueError("Path must end with .json")
-            # Resolve to absolute path (mitigates traversal sequences).
             real = os.path.realpath(path)
+            if not (real.startswith(_HOME + os.sep) or real == _HOME):
+                raise ValueError("Cannot save outside of home directory")
             with open(real, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             self._json({"ok": True, "path": real})
