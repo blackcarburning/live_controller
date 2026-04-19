@@ -5,6 +5,10 @@ show-sync.py — Standalone show effect editor for show-sync.
 Creates and edits show files (JSON) that define a timeline of lighting/display
 effects to be played back through the show-sync web client.
 
+Primary media source: `.mov` video files.  Other video/audio formats are also
+accepted, but `.mov` is the default filter in the browse dialog and the
+recommended workflow.
+
 Usage
 -----
     python show-sync.py                  # Start with a blank show
@@ -14,7 +18,7 @@ Show file format (JSON)
 -----------------------
     {
         "version": 1,
-        "song": "path/to/song.mp3",
+        "video": "path/to/show.mov",
         "duration": 180.0,
         "effects": [
             {
@@ -26,6 +30,10 @@ Show file format (JSON)
             }
         ]
     }
+
+Note: show files saved by older versions of this editor may use the key
+``"song"`` instead of ``"video"``.  Both are accepted on load; new files are
+always saved with ``"video"``.
 
 Running the show
 ----------------
@@ -53,16 +61,46 @@ Effect types
     fade_in    Fade from black to the chosen color over the duration.
     fade_out   Fade from the chosen color back to black over the duration.
     text       Display text centered on screen for the duration.
+
+Testing .mov support
+--------------------
+    1. Run the editor:
+           python show-sync.py
+
+    2. Click "Browse…" next to the Video field — the dialog opens with .mov
+       files listed first.
+
+    3. Select your .mov file.  The editor will attempt to read the video
+       duration automatically via ffprobe (if installed) and pre-fill the
+       Duration field.
+
+    4. Click "▶ Play" to open the video in your system's default player so you
+       can reference timestamps while placing effects.
+
+    5. Add effects using the Add/Edit/Delete buttons, setting Start (s) to the
+       timestamp in the video where the effect should fire.
+
+    6. Save the show file (File → Save or Ctrl+S).
+
+    7. POST the saved JSON to the play-show endpoint as shown above.  Client
+       devices at /join/<id> will receive each effect timed to the video.
 """
 
 import json
 import os
+import subprocess
 import sys
 import uuid
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, colorchooser
 
-EFFECT_TYPES = ["solid", "fade_in", "fade_out", "text"]
+_ALLOWED_VIDEO_EXTENSIONS = {
+    ".mov", ".mp4", ".mkv", ".avi", ".m4v", ".webm",
+    ".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a",
+}
+
+
+
 DEFAULT_COLOR = "#ff0000"
 
 
@@ -200,7 +238,7 @@ class ShowEditor(tk.Tk):
     # --- Data helpers ---
 
     def _blank_show(self):
-        return {"version": 1, "song": "", "duration": 0.0, "effects": []}
+        return {"version": 1, "video": "", "duration": 0.0, "effects": []}
 
     def _sorted_effects(self):
         return sorted(self._show["effects"], key=lambda e: e.get("start", 0))
@@ -228,22 +266,24 @@ class ShowEditor(tk.Tk):
     # --- UI ---
 
     def _build_ui(self):
-        # Song info
-        info_frm = ttk.LabelFrame(self, text="Song", padding=6)
+        # Video info
+        info_frm = ttk.LabelFrame(self, text="Video", padding=6)
         info_frm.pack(fill="x", padx=8, pady=(8, 0))
 
         ttk.Label(info_frm, text="File:").grid(row=0, column=0, sticky="w")
-        self._song_var = tk.StringVar()
-        ttk.Entry(info_frm, textvariable=self._song_var, width=50).grid(
+        self._video_var = tk.StringVar()
+        ttk.Entry(info_frm, textvariable=self._video_var, width=50).grid(
             row=0, column=1, padx=4)
-        ttk.Button(info_frm, text="Browse…", command=self._browse_song).grid(
+        ttk.Button(info_frm, text="Browse…", command=self._browse_video).grid(
             row=0, column=2)
+        ttk.Button(info_frm, text="▶ Play", command=self._play_video).grid(
+            row=0, column=3, padx=(4, 0))
 
         ttk.Label(info_frm, text="Duration (s):").grid(
-            row=0, column=3, padx=(12, 4), sticky="w")
+            row=0, column=4, padx=(12, 4), sticky="w")
         self._dur_var = tk.StringVar()
         ttk.Entry(info_frm, textvariable=self._dur_var, width=8).grid(
-            row=0, column=4)
+            row=0, column=5)
 
         # Effects list
         list_frm = ttk.LabelFrame(self, text="Effects", padding=6)
@@ -303,7 +343,9 @@ class ShowEditor(tk.Tk):
             )
 
     def _refresh_from_show(self):
-        self._song_var.set(self._show.get("song", ""))
+        # Support both new "video" key and legacy "song" key.
+        video_path = self._show.get("video") or self._show.get("song", "")
+        self._video_var.set(video_path)
         self._dur_var.set(str(self._show.get("duration", 0.0)))
         self._refresh_list()
 
@@ -380,7 +422,9 @@ class ShowEditor(tk.Tk):
 
     def _collect_show(self):
         """Sync UI fields back into self._show and return it."""
-        self._show["song"] = self._song_var.get().strip()
+        self._show["video"] = self._video_var.get().strip()
+        # Remove legacy "song" key if present so the output is consistent.
+        self._show.pop("song", None)
         try:
             self._show["duration"] = float(self._dur_var.get())
         except ValueError:
@@ -443,19 +487,66 @@ class ShowEditor(tk.Tk):
 
     # --- Misc ---
 
-    def _browse_song(self):
+    def _browse_video(self):
+        """Open a file dialog to select the primary video file (.mov preferred)."""
         path = filedialog.askopenfilename(
-            title="Select song file",
+            title="Select video file",
             filetypes=[
-                (
-                    "Audio/Video files",
-                    "*.mp3 *.wav *.flac *.aac *.ogg *.m4a *.mp4 *.mkv",
-                ),
+                ("QuickTime / MOV", "*.mov"),
+                ("All video files", "*.mov *.mp4 *.mkv *.avi *.m4v *.webm *.m4a"),
                 ("All files", "*.*"),
             ],
         )
         if path:
-            self._song_var.set(path)
+            self._video_var.set(path)
+            self._try_autofill_duration(path)
+
+    def _play_video(self):
+        """Open the selected video file with the system default player."""
+        path = self._video_var.get().strip()
+        if not path:
+            messagebox.showinfo("No video", "Select a video file first.")
+            return
+        if not os.path.isfile(path):
+            messagebox.showerror("File not found", f"Cannot open:\n{path}")
+            return
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in _ALLOWED_VIDEO_EXTENSIONS:
+            messagebox.showerror(
+                "Unsupported file",
+                f"File extension '{ext}' is not a recognised video/audio format.",
+            )
+            return
+        try:
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            elif sys.platform.startswith("win"):
+                os.startfile(path)  # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception as exc:
+            messagebox.showerror("Error", f"Could not open video:\n{exc}")
+
+    def _try_autofill_duration(self, path):
+        """Attempt to read video duration via ffprobe and pre-fill the field."""
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe", "-v", "quiet",
+                    "-print_format", "json",
+                    "-show_format", path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                duration = float(data["format"]["duration"])
+                self._dur_var.set(f"{duration:.3f}")
+        except Exception:
+            # ffprobe not available or failed — user fills in manually.
+            pass
 
 
 def main():
