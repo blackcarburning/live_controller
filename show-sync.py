@@ -99,7 +99,7 @@ _ALLOWED_VIDEO_EXTENSIONS = {
     ".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a",
 }
 
-
+EFFECT_TYPES = ["solid", "fade_in", "fade_out", "text"]
 
 DEFAULT_COLOR = "#ff0000"
 
