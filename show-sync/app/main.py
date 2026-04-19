@@ -150,6 +150,8 @@ async def play_show(
     The JSON body must match the format produced by show-sync.py::
 
         {
+          "video": "path/to/show.mov",
+          "duration": 180.0,
           "effects": [
             {"id": "...", "type": "solid", "start": 0.0,
              "duration": 2.0, "params": {"color": "#ff0000"}},
@@ -157,6 +159,7 @@ async def play_show(
           ]
         }
 
+    The ``"video"`` field is informational and is not used by the server.
     The optional ``offset`` query parameter controls how many seconds from now
     the show starts (default: 5).
     """
