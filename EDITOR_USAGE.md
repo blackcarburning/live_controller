@@ -243,6 +243,50 @@ curl -X POST http://localhost:8000/api/session/a1b2c3d4/stop
 | **Space** | Play / Pause |
 | **Delete** or **Backspace** | Delete selected clip |
 | **Ctrl+S** / **⌘S** | Save show |
+| **Ctrl+C** / **⌘C** | Copy selected clip (text or solid) |
+| **Ctrl+V** / **⌘V** | Paste copied clip at current playhead |
+| **m** | Add a marker at the current playhead position |
+
+---
+
+## Copy / Paste clips
+
+1. Click a **text** or **solid/colour** clip to select it.
+2. Press **Ctrl+C** (or **⌘C** on Mac) to copy it.
+   - The full clip is copied: type, duration, colour, text, size, fade in/out.
+3. Seek or play to the position where you want the duplicate.
+4. Press **Ctrl+V** (or **⌘V**) to paste.
+   - A new clip is placed with its start at the **current playhead position**.
+   - All other properties are identical to the original.
+   - The pasted clip is automatically selected so you can adjust it immediately.
+
+---
+
+## Timeline markers
+
+Press **`m`** at any time (the timeline does not need to be playing) to drop an amber
+marker at the current playback position.
+
+- Markers appear as **amber (yellow) vertical lines** on the timeline ruler and
+  on every track lane.
+- A small time label is drawn at the top of the ruler for each marker.
+- Markers are saved with the show file (`"markers"` key in the JSON).
+
+### Snapping clips to markers
+
+When you **drag** a clip or **resize** it by its handles, the clip's moving edge
+will **snap** to the nearest marker if it comes within ~8 px of it at the current
+zoom level.
+
+- Moving a clip: the **start edge** snaps to nearby markers.
+- Resizing from the left handle: the **start** snaps.
+- Resizing from the right handle: the **end** snaps.
+
+This makes it easy to align clip boundaries to musical or visual cue points that
+you marked while the show was playing.
+
+> **Tip:** mark cue points first (let the show play, press `m`), then drag clips
+> onto those positions — they will lock in cleanly.
 
 ---
 
