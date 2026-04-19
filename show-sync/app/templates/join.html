@@ -10,32 +10,37 @@
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
 
+    /* Always-visible connection / sync / RTT status bar */
     #status {
       position: fixed;
       top: 0; left: 0; right: 0;
-      z-index: 10;
+      z-index: 100;
       padding: 3px 8px;
       font-family: monospace;
       font-size: 11px;
-      color: rgba(255,255,255,0.5);
-      background: rgba(0,0,0,0.55);
+      color: rgba(255,255,255,0.45);
+      background: rgba(0,0,0,0.5);
       pointer-events: none;
     }
 
+    /* Full-screen colour / background layer */
     #display {
       position: fixed;
       inset: 0;
       background: #000;
+      z-index: 1;
     }
 
+    /* Text overlay sits above the colour layer */
     #text-overlay {
-      position: absolute;
+      position: fixed;
       inset: 0;
+      z-index: 2;
       display: none;
       align-items: center;
       justify-content: center;
       font-family: sans-serif;
-      font-size: 5vw;
+      font-size: 5vmin;
       font-weight: bold;
       text-align: center;
       padding: 1em;
@@ -45,9 +50,8 @@
 </head>
 <body data-session-id="{{ session_id }}">
   <div id="status">Connecting…</div>
-  <div id="display">
-    <div id="text-overlay"></div>
-  </div>
-  <script src="/static/client.js?v=11"></script>
+  <div id="display"></div>
+  <div id="text-overlay"></div>
+  <script src="/static/client.js?v=12"></script>
 </body>
 </html>
