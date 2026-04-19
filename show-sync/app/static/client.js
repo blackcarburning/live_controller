@@ -68,8 +68,8 @@ function recomputeClockOffset() {
   if (!syncSamples.length) return;
   const best    = [...syncSamples].sort((a, b) => a.rtt - b.rtt).slice(0, 5);
   clockOffset   = median(best.map(s => s.offset));
-  const bestRtt = best[0].rtt;
-  statusEl.textContent = `Connected \u2022 synced (${Math.round(bestRtt * 1000)} ms RTT)`;
+  const minRtt  = best[0].rtt;
+  statusEl.textContent = `Connected \u2022 synced (${Math.round(minRtt * 1000)} ms RTT)`;
 }
 
 function syncOnce() {

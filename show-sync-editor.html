@@ -864,18 +864,26 @@ document.addEventListener('mouseup', () => {
 
 // ── Properties bar ────────────────────────────────────────────────────────────
 
+function _hint(text) {
+  const sp = document.createElement('span');
+  sp.id = 'props-hint';
+  sp.textContent = text;
+  return sp;
+}
+
 function renderPropsBar() {
   const panel = document.getElementById('props-bar');
-  panel.innerHTML = '';
+  // Clear existing children safely
+  while (panel.firstChild) panel.removeChild(panel.firstChild);
 
   if (!selId) {
-    panel.innerHTML = '<span id="props-hint">Click a clip to select it — use the Add buttons above to create clips</span>';
+    panel.appendChild(_hint('Click a clip to select it — use the Add buttons above to create clips'));
     return;
   }
 
   const found = getClip(selId);
   if (!found) {
-    panel.innerHTML = '<span id="props-hint">No clip selected</span>';
+    panel.appendChild(_hint('No clip selected'));
     return;
   }
   const { cl } = found;
@@ -1042,6 +1050,8 @@ function loadMovFile(file) {
   if (vidUrl) URL.revokeObjectURL(vidUrl);
   vidUrl = URL.createObjectURL(file);
   const vid = document.getElementById('video-player');
+  // createObjectURL always returns a blob: URL; guard for clarity.
+  if (!vidUrl || !vidUrl.startsWith('blob:')) return;
   vid.src = vidUrl;
   vid.load();
   vid.addEventListener('loadedmetadata', () => {

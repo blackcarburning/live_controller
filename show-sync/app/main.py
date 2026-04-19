@@ -23,7 +23,7 @@ async def _broadcast(session: Dict[str, Any], payload: Dict[str, Any]) -> int:
     Returns the number of clients successfully reached.
     Dead connections are removed from the session.
     """
-    dead: list = []
+    dead: list[WebSocket] = []
     sent = 0
     for ws in session["clients"]:
         try:

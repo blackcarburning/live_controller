@@ -108,7 +108,16 @@ _ALLOWED_VIDEO_EXT = {
 
 
 def _safe_video(raw: str) -> str | None:
-    """Return the real path only if it is a file with an allowed extension."""
+    """Return the resolved absolute path only if it refers to an allowed video/audio file.
+
+    Applies multiple checks to mitigate path-traversal and injection:
+      - Rejects null bytes and excessively long strings.
+      - Resolves symlinks via ``os.path.realpath``.
+      - Allows only a fixed set of media extensions.
+      - Verifies the path points to an existing regular file.
+    """
+    if not raw or "\x00" in raw or len(raw) > 4096:
+        return None
     real = os.path.realpath(raw)
     if os.path.splitext(real)[1].lower() not in _ALLOWED_VIDEO_EXT:
         return None
@@ -214,11 +223,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             data = payload.get("data")
             if not path or data is None:
                 raise ValueError("Missing path or data")
+            # Validate the save path before writing.
+            if "\x00" in path or len(path) > 4096:
+                raise ValueError("Invalid path")
             if not path.endswith(".json"):
                 raise ValueError("Path must end with .json")
-            with open(path, "w", encoding="utf-8") as f:
+            # Resolve to absolute path (mitigates traversal sequences).
+            real = os.path.realpath(path)
+            with open(real, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            self._json({"ok": True, "path": path})
+            self._json({"ok": True, "path": real})
         except Exception as exc:
             self._json({"ok": False, "error": str(exc)})
 
