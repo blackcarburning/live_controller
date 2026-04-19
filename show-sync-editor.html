@@ -233,6 +233,20 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
 }
 .lane-ph { height: 100%; }
 
+/* ── Markers ─────────────────────────────────────────────────────────────────── */
+/* Amber vertical lines placed at marker positions in the ruler and track lanes. */
+.marker-line {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  background: #f0c040;
+  pointer-events: none;
+  z-index: 25;
+  transform: translateX(-50%);
+}
+.marker-line.ruler-marker { height: 100%; }
+.marker-line.lane-marker  { height: 100%; opacity: 0.5; }
+
 /* ── Track rows ─────────────────────────────────────────────────────────────── */
 .track-row { display: table-row; }
 
@@ -426,10 +440,11 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
 
 let show = blankShow();
 let pps  = 50;            // pixels per second (zoom level)
-let selId    = null;      // selected clip id
-let curFile  = null;      // current filename string
-let vidUrl   = null;      // object URL for loaded video
-let drag     = null;      // active drag descriptor
+let selId     = null;     // selected clip id
+let curFile   = null;     // current filename string
+let vidUrl    = null;     // object URL for loaded video
+let drag      = null;     // active drag descriptor
+let clipboard = null;     // deep-copied clip for Ctrl+C / Ctrl+V paste
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
@@ -441,6 +456,7 @@ function blankShow() {
       { id: 't1', name: 'Solids', layer: 1,  clips: [] },
       { id: 't2', name: 'Text',   layer: 10, clips: [] },
     ],
+    markers: [],   // { id, time } — created by pressing 'm' during playback
   };
 }
 
@@ -561,6 +577,23 @@ function renderRuler() {
     ctx.stroke();
   }
 
+  // Timeline markers (amber lines + time labels at top)
+  if (show.markers && show.markers.length) {
+    ctx.lineWidth = 1;
+    ctx.font = '8px monospace';
+    ctx.textBaseline = 'top';
+    for (const mk of show.markers) {
+      const x = Math.round(t2x(mk.time));
+      ctx.strokeStyle = '#f0c040';
+      ctx.beginPath();
+      ctx.moveTo(x + 0.5, 0);
+      ctx.lineTo(x + 0.5, H);
+      ctx.stroke();
+      ctx.fillStyle = '#f0c040';
+      ctx.fillText(fmtTime(mk.time), x + 2, 2);
+    }
+  }
+
   // Keep ruler-content cell width in sync
   document.getElementById('ruler-content').style.width = W + 'px';
 }
@@ -600,6 +633,16 @@ function renderTracks() {
     lph.className = 'ph lane-ph';
     lph.dataset.isLanePh = '1';
     lane.appendChild(lph);
+
+    // Per-lane marker lines (amber) — clips snap to these positions
+    if (show.markers) {
+      for (const mk of show.markers) {
+        const ml = document.createElement('div');
+        ml.className = 'marker-line lane-marker';
+        ml.style.left = t2x(mk.time) + 'px';
+        lane.appendChild(ml);
+      }
+    }
 
     // Clips
     for (const clip of track.clips) {
@@ -834,14 +877,18 @@ document.addEventListener('mousemove', (e) => {
   const maxT = showDur();
 
   if (drag.type === 'move') {
-    cl.start = clamp(drag.origStart + dt, 0, maxT - cl.duration);
+    const raw = clamp(drag.origStart + dt, 0, maxT - cl.duration);
+    cl.start = snapToMarker(raw);
   } else if (drag.type === 'left') {
-    const newStart = clamp(drag.origStart + dt, 0, drag.origStart + drag.origDur - 0.05);
-    const newDur   = drag.origDur - (newStart - drag.origStart);
+    const rawStart  = clamp(drag.origStart + dt, 0, drag.origStart + drag.origDur - 0.05);
+    const newStart  = snapToMarker(rawStart);
+    const newDur    = drag.origDur - (newStart - drag.origStart);
     cl.start    = newStart;
     cl.duration = Math.max(0.05, newDur);
   } else if (drag.type === 'right') {
-    cl.duration = clamp(drag.origDur + dt, 0.05, maxT - cl.start);
+    const rawEnd    = cl.start + clamp(drag.origDur + dt, 0.05, maxT - cl.start);
+    const snappedEnd = snapToMarker(rawEnd);
+    cl.duration = Math.max(0.05, snappedEnd - cl.start);
   }
 
   // Fast visual update — just move the DOM element
@@ -1024,6 +1071,73 @@ function deleteSelected() {
   renderPropsBar();
 }
 
+// ── Copy / Paste clips (Ctrl+C / Ctrl+V) ──────────────────────────────────────
+// Copies the currently selected text or solid/colour clip.
+// Paste places a duplicate at the current playhead position on the same track type.
+
+function copySelected() {
+  if (!selId) return;
+  const found = getClip(selId);
+  if (!found) return;
+  // All supported clip types can be copied: color, text, fade_in, fade_out
+  // (fade_in / fade_out are full clip types placed on the Solids track, not sub-properties)
+  const allowedTypes = ['color', 'text', 'fade_in', 'fade_out'];
+  if (!allowedTypes.includes(found.cl.type)) return;
+  clipboard = JSON.parse(JSON.stringify(found.cl));  // deep copy, preserves all params
+}
+
+function pasteClip() {
+  if (!clipboard) return;
+  const vid   = document.getElementById('video-player');
+  const start = isFinite(vid.currentTime) ? vid.currentTime : 0;
+
+  const newClip    = JSON.parse(JSON.stringify(clipboard));
+  newClip.id       = uid();
+  newClip.start    = start;  // paste at current playhead; duration/params preserved
+
+  // Route to the correct track (text → Text track, others → Solids track)
+  const sorted = [...show.tracks].sort((a, b) => a.layer - b.layer);
+  const target = newClip.type === 'text'
+    ? (sorted.find(t => t.layer >= 10) || sorted[sorted.length - 1])
+    : (sorted.find(t => t.layer <  10) || sorted[0]);
+
+  target.clips.push(newClip);
+  selId = newClip.id;
+  render();
+  renderPropsBar();
+}
+
+// ── Markers ───────────────────────────────────────────────────────────────────
+// Press 'm' while the timeline is playing to drop a marker at the current time.
+// Markers are shown as amber lines on the ruler and each track lane.
+// Clips snap to nearby marker positions when dragged or resized (see snapToMarker).
+
+function addMarker() {
+  const vid = document.getElementById('video-player');
+  const t   = isFinite(vid.currentTime) ? vid.currentTime : 0;
+  if (!show.markers) show.markers = [];
+  show.markers.push({ id: uid(), time: parseFloat(t.toFixed(3)) });
+  show.markers.sort((a, b) => a.time - b.time);
+  render();
+}
+
+// ── Snap-to-marker helper ─────────────────────────────────────────────────────
+// Returns `t` snapped to the nearest marker if within the snap threshold
+// (8 px at the current zoom level).  Used in the drag handler for both
+// moving clips and resizing their start/end handles.
+
+function snapToMarker(t) {
+  if (!show.markers || !show.markers.length) return t;
+  const threshold = 8 / pps;   // 8 px expressed in seconds at current zoom
+  // Find the single nearest marker; iterate all markers for correctness
+  let nearest = null, nearestDist = Infinity;
+  for (const mk of show.markers) {
+    const d = Math.abs(t - mk.time);
+    if (d < nearestDist) { nearest = mk; nearestDist = d; }
+  }
+  return (nearest && nearestDist <= threshold) ? nearest.time : t;
+}
+
 // ── Zoom ──────────────────────────────────────────────────────────────────────
 
 function zoom(dir) {
@@ -1097,6 +1211,8 @@ function loadShowData(data, filename) {
       if (!cl.id) cl.id = uid();
     }
   }
+  // Ensure markers array exists (older show files may not have it)
+  if (!Array.isArray(show.markers)) show.markers = [];
 
   curFile = filename;
   document.getElementById('filename-display').textContent = filename;
@@ -1127,6 +1243,7 @@ function migrateV1(data) {
       { id: 't1', name: 'Solids', layer: 1,  clips: solids },
       { id: 't2', name: 'Text',   layer: 10, clips: texts  },
     ],
+    markers: [],
   };
 }
 
@@ -1232,6 +1349,21 @@ document.addEventListener('keydown', (e) => {
   if ((e.key === 's' || e.key === 'S') && (e.ctrlKey || e.metaKey)) {
     e.preventDefault();
     saveShow();
+  }
+  // Copy selected clip (text or solid) — Ctrl+C / ⌘C
+  if ((e.key === 'c' || e.key === 'C') && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    copySelected();
+  }
+  // Paste copied clip at current playhead — Ctrl+V / ⌘V
+  if ((e.key === 'v' || e.key === 'V') && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    pasteClip();
+  }
+  // Add marker at current playback position — 'm'
+  if (e.key === 'm' || e.key === 'M') {
+    e.preventDefault();
+    addMarker();
   }
 });
 
