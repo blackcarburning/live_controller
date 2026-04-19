@@ -290,10 +290,21 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
     try:
         if last_start is not None:
-            # v2 timeline mode — only replay if the show hasn't ended yet.
-            # We allow up to (show duration + 30 s) grace period.
+            # v2 timeline mode — replay as long as the show may still be running.
+            # Fall back to a 3-hour window if duration is missing or zero so
+            # late-joining clients always catch up on shows without media metadata.
             show_data = last_start.get("show", {})
-            dur = show_data.get("media", {}).get("duration", 0)
+            dur = show_data.get("media", {}).get("duration") or 0
+            if dur <= 0:
+                # No media duration — compute from the latest clip end time.
+                dur = max(
+                    (
+                        cl.get("start", 0) + cl.get("duration", 0)
+                        for tr in show_data.get("tracks", [])
+                        for cl in tr.get("clips", [])
+                    ),
+                    default=10800,  # 3 h fallback
+                )
             start_t = last_start.get("server_show_start_time", 0)
             if time.time() < start_t + dur + 30:
                 if last_show is not None:

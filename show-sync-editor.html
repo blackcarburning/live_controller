@@ -1051,7 +1051,7 @@ function loadMovFile(file) {
   const objUrl = URL.createObjectURL(file);
   // Confirm createObjectURL returned a blob: URL before touching the DOM.
   let parsed;
-  try { parsed = new URL(objUrl); } catch (_) { URL.revokeObjectURL(objUrl); return; }
+  try { parsed = new URL(objUrl); } catch (err) { URL.revokeObjectURL(objUrl); return; }
   if (parsed.protocol !== 'blob:') { URL.revokeObjectURL(objUrl); return; }
   vidUrl = objUrl;
   const vid = document.getElementById('video-player');

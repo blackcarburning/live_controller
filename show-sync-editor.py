@@ -196,7 +196,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         ext = os.path.splitext(real)[1].lower()
-        mime = mimetypes.types_map.get(ext, "video/octet-stream")
+        mime = mimetypes.types_map.get(ext, "application/octet-stream")
         size = os.path.getsize(real)
         rng = self.headers.get("Range", "")
         if rng.startswith("bytes="):
