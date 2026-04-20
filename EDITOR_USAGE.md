@@ -253,9 +253,11 @@ curl -X POST "http://localhost:8000/api/session/a1b2c3d4/play-show-by-name?name=
 ```
 
 `live_controller` uses this mode automatically for all sync-enabled setlist
-items.  It computes `target_start = now + preload_time + 1.5 s`, sends the
-request with `start_at=target_start`, and schedules the local MIDI pre-roll so
-the video unpauses at the same absolute timestamp.
+items.  It computes `target_start = now + preload_time`, sends the request
+with `start_at=target_start`, and starts the local MIDI pre-roll immediately
+so the video unpauses at exactly `target_start`.  The pre-roll window
+(typically 2–8 s) is sufficient lead time for the HTTP request to arrive via
+Tailscale well before show time = 0.
 
 **Preload a show on the client via query parameter:**
 

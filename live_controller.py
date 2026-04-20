@@ -106,15 +106,6 @@ ARDUINO_PROBE_CMD = b'?\n'
 DEFAULT_SYNC_SHOW_HOST = "https://localhost-0.tailc4daa4.ts.net"
 DEFAULT_SYNC_SHOW_SESSION = "0e49315f"
 
-# Extra lead time added on top of preload_time for sync-enabled tracks.
-# The sync-show HTTP request is dispatched first, then the local pre-roll
-# waits until (target_start - preload_time) before beginning.  This 1.5 s
-# buffer gives the request time to traverse the Tailscale tunnel, reach the
-# server, and be broadcast to all connected phone/browser clients before
-# show time = 0 arrives.  A 1–2 s operator-perceived delay is acceptable per
-# the design requirement.
-SYNC_SHOW_LEAD_TIME_SEC = 1.5
-
 # --- Windows Multimedia Timer API ---
 # Used for high-precision timing on Windows to ensure accurate MIDI clock signals.
 # `timeBeginPeriod` requests a higher timer resolution from the OS.
@@ -2432,6 +2423,11 @@ class LiveController(QWidget):
         self.calib_loop_worker = None
         self.calib_loop_ipc_socket = None
 
+        # --- Active sync-show session state (for stop/cleanup) ---
+        # Set when trigger_sync_show fires; cleared on playback stop.
+        self._active_sync_show_host = None
+        self._active_sync_show_session = None
+
         # --- Scrub / loop state ---
         self._current_playback_pos = 0.0       # seconds, updated by position poller
         self._current_track_duration = 0.0     # seconds, updated by position poller
@@ -4339,12 +4335,15 @@ class LiveController(QWidget):
         self.send_led_command("6")  # LED 6 (green): track active indicator
 
         # Trigger sync-show if enabled for this track using absolute-time scheduling.
-        # A target wall-clock start time is computed so that both the local video
-        # and the remote sync-show begin at exactly the same Unix timestamp.
-        # The HTTP request goes out now, the worker waits for (target_start - preload_time)
-        # before beginning the MIDI pre-roll, and the video unpauses at target_start.
+        # target_start is the wall-clock moment when video position 0 begins.  The
+        # pre-roll takes preload_time seconds, so target_start = now + preload_time.
+        # The HTTP request is dispatched immediately; since preload_time is 2–8 s
+        # and Tailscale latency is well under 1 s, the request always arrives before
+        # show time = 0.  The worker's initial_delay will be ≤ 0 so the pre-roll
+        # starts right away (same as without absolute-time sync), and the video
+        # unpauses at target_start, matching the remote show's time-zero.
         if track_data.get('sync_show_enabled') and track_data.get('sync_show_file'):
-            target_start = time.time() + preload_time + SYNC_SHOW_LEAD_TIME_SEC
+            target_start = time.time() + preload_time
             self.trigger_sync_show(track_data['sync_show_file'], start_at=target_start)
             self.worker.absolute_start_time = target_start
 
@@ -4388,6 +4387,10 @@ class LiveController(QWidget):
         if not session:
             session = DEFAULT_SYNC_SHOW_SESSION
 
+        # Record the active session so stop_sync_show() can clean it up later.
+        self._active_sync_show_host = host
+        self._active_sync_show_session = session
+
         # Build query parameters.  Prefer absolute start_at; fall back to offset.
         if start_at is not None:
             params = urllib.parse.urlencode({'name': show_file, 'start_at': f'{start_at:.6f}'})
@@ -4413,6 +4416,38 @@ class LiveController(QWidget):
             except Exception as exc:
                 # Non-fatal: log but never crash the playback flow.
                 print(f"Sync-show API error ({url}): {exc}")
+
+        threading.Thread(target=_call, daemon=True).start()
+
+    def stop_sync_show(self):
+        """Sends a stop command to the active sync-show session (fire-and-forget).
+
+        Called when the operator presses ``q`` (or otherwise triggers
+        ``stop_all_activity``) so that connected phone/browser clients are told
+        to halt the animation loop.  Non-fatal: errors are logged but never
+        propagate to the caller.
+        """
+        host = self._active_sync_show_host
+        session = self._active_sync_show_session
+        self._active_sync_show_host = None
+        self._active_sync_show_session = None
+
+        if not host or not session:
+            return
+
+        url = f"{host}/api/session/{session}/stop"
+
+        def _call():
+            try:
+                req = urllib.request.Request(url, method='POST')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with urllib.request.urlopen(req, context=ctx, timeout=5) as resp:
+                    body = resp.read().decode('utf-8', errors='replace')
+                    print(f"Sync-show STOP response: {body}")
+            except Exception as exc:
+                print(f"Sync-show STOP error ({url}): {exc}")
 
         threading.Thread(target=_call, daemon=True).start()
 
@@ -4451,6 +4486,10 @@ class LiveController(QWidget):
         # Stop the calibration loop if it is active.
         if self.calib_loop_active:
             self.stop_calib_loop()
+
+        # Clean up any active sync-show session so remote clients stop their
+        # animation loop when the operator presses q (or any other stop path).
+        self.stop_sync_show()
 
         self.active_flash_timer.stop()
         self.active_label.hide()
