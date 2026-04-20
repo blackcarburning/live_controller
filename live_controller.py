@@ -106,6 +106,15 @@ ARDUINO_PROBE_CMD = b'?\n'
 DEFAULT_SYNC_SHOW_HOST = "https://localhost-0.tailc4daa4.ts.net"
 DEFAULT_SYNC_SHOW_SESSION = "0e49315f"
 
+# Extra lead time added on top of preload_time for sync-enabled tracks.
+# The sync-show HTTP request is dispatched first, then the local pre-roll
+# waits until (target_start - preload_time) before beginning.  This 1.5 s
+# buffer gives the request time to traverse the Tailscale tunnel, reach the
+# server, and be broadcast to all connected phone/browser clients before
+# show time = 0 arrives.  A 1–2 s operator-perceived delay is acceptable per
+# the design requirement.
+SYNC_SHOW_LEAD_TIME_SEC = 1.5
+
 # --- Windows Multimedia Timer API ---
 # Used for high-precision timing on Windows to ensure accurate MIDI clock signals.
 # `timeBeginPeriod` requests a higher timer resolution from the OS.
@@ -528,7 +537,8 @@ class MidiSyncWorker(QThread):
 
     def __init__(self, video_file, bpm, display_num, preload_time, midi_offset_ms, 
                  send_start_port1, send_start_port2, send_start_port3, timing_method,
-                 require_midi=True, max_duration_sec=0, zoom_config=None):
+                 require_midi=True, max_duration_sec=0, zoom_config=None,
+                 absolute_start_time=None):
         super().__init__()
         # Store all playback parameters.
         self.video_file = video_file
@@ -543,6 +553,12 @@ class MidiSyncWorker(QThread):
         self.require_midi = require_midi
         self.max_duration_sec = max_duration_sec  # If > 0, limits playback via mpv --length
         self.zoom_config = zoom_config or {}
+        # Absolute Unix timestamp (seconds) at which local video should unpause.
+        # When not None the worker sleeps until (absolute_start_time - preload_time)
+        # before beginning the MIDI pre-roll so that the video unpauses at exactly
+        # absolute_start_time, matching the remote sync-show start time.
+        # None (default) retains the existing immediate-start behaviour.
+        self.absolute_start_time = absolute_start_time
         self.mpv_process = None
         self._is_running = True
         self.midi_outputs = {}
@@ -632,6 +648,32 @@ class MidiSyncWorker(QThread):
                 mpv_cmd.insert(-1, f"--vf={vf_str}")
         
         try:
+            # --- Absolute-time sync wait (sync-show tracks only) ---
+            # When absolute_start_time is set the local video must unpause at that
+            # exact wall-clock instant.  The pre-roll takes self.preload_time seconds,
+            # so we need to begin the pre-roll at (absolute_start_time - preload_time).
+            # Sleep in short increments so the user can still cancel with Stop.
+            if self.absolute_start_time is not None:
+                pre_roll_wall_start = self.absolute_start_time - self.preload_time
+                initial_delay = pre_roll_wall_start - time.time()
+                if initial_delay <= 0:
+                    # Target is in the past or imminent; skip the wait and proceed.
+                    # This can happen if clock skew is large or processing was slow.
+                    print(
+                        f"Sync-show: absolute start is {-initial_delay:.3f}s in the past, "
+                        "skipping wait and starting pre-roll immediately."
+                    )
+                else:
+                    self.status_update.emit(
+                        f"Sync-show: waiting {initial_delay:.2f}s for absolute start…"
+                    )
+                    deadline = time.time() + initial_delay
+                    while time.time() < deadline and self._is_running:
+                        remaining = deadline - time.time()
+                        time.sleep(min(0.05, remaining))
+                    if not self._is_running:
+                        raise InterruptedError("Playback stopped by user during sync wait")
+
             # --- Pre-roll Phase ---
             # Send MIDI clock for a specified duration before starting video.
             self.status_update.emit(f"Pre-rolling MIDI clock for {self.preload_time}s at {self.bpm} BPM...")
@@ -4296,11 +4338,15 @@ class LiveController(QWidget):
         self.send_led_command("3")  # LED 3 (orange): song is playing
         self.send_led_command("6")  # LED 6 (green): track active indicator
 
-        # Trigger sync-show if enabled for this track. The call is made just before
-        # the worker starts so the API offset equals the preload_time, ensuring the
-        # sync-show fires at the same moment as the local video unpause.
+        # Trigger sync-show if enabled for this track using absolute-time scheduling.
+        # A target wall-clock start time is computed so that both the local video
+        # and the remote sync-show begin at exactly the same Unix timestamp.
+        # The HTTP request goes out now, the worker waits for (target_start - preload_time)
+        # before beginning the MIDI pre-roll, and the video unpauses at target_start.
         if track_data.get('sync_show_enabled') and track_data.get('sync_show_file'):
-            self.trigger_sync_show(track_data['sync_show_file'], preload_time)
+            target_start = time.time() + preload_time + SYNC_SHOW_LEAD_TIME_SEC
+            self.trigger_sync_show(track_data['sync_show_file'], start_at=target_start)
+            self.worker.absolute_start_time = target_start
 
         self.worker.start()
         # Auto-populate the loop BPM spinbox with the current track's BPM and
@@ -4311,13 +4357,21 @@ class LiveController(QWidget):
         self.loop_bpm_spinbox.blockSignals(False)
         self._on_loop_bar_changed()
 
-    def trigger_sync_show(self, show_file, offset_sec):
-        """Calls the show-sync API to play a sync-show file in time with the local track.
+    def trigger_sync_show(self, show_file, start_at=None, offset_sec=None):
+        """Calls the show-sync API to play a sync-show file against an absolute start time.
 
-        The ``offset_sec`` value should equal the preload_time used for the local
-        mpv pre-roll so that the remote show fires at the same instant as the video
-        unpauses on this machine.  The HTTP request is sent on a daemon thread so
-        it cannot block or crash the main playback loop.
+        When ``start_at`` is provided (a Unix timestamp in seconds) the server
+        receives that exact value as ``server_show_start_time``, and all connected
+        clients wait until that instant before starting their animation loop.
+        This eliminates network-latency jitter because both the local video and
+        the remote show share the same wall-clock reference point (both sides
+        must be NTP-synchronised).
+
+        ``offset_sec`` is the legacy relative-offset fallback used when
+        ``start_at`` is not supplied.  It is kept for backwards compatibility only.
+
+        The HTTP request is sent on a daemon thread so it cannot block or crash
+        the main playback loop.
         """
         # Basic validation: show_file must be a bare filename ending in .json,
         # with no directory separators or path-traversal sequences.
@@ -4333,8 +4387,13 @@ class LiveController(QWidget):
             host = DEFAULT_SYNC_SHOW_HOST
         if not session:
             session = DEFAULT_SYNC_SHOW_SESSION
-        # URL-encode only the query parameter values; the session ID is part of the path.
-        params = urllib.parse.urlencode({'name': show_file, 'offset': f'{offset_sec:.3f}'})
+
+        # Build query parameters.  Prefer absolute start_at; fall back to offset.
+        if start_at is not None:
+            params = urllib.parse.urlencode({'name': show_file, 'start_at': f'{start_at:.6f}'})
+        else:
+            effective_offset = offset_sec if offset_sec is not None else 5.0
+            params = urllib.parse.urlencode({'name': show_file, 'offset': f'{effective_offset:.3f}'})
         url = f"{host}/api/session/{session}/play-show-by-name?{params}"
 
         def _call():

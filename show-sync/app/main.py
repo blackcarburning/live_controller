@@ -340,6 +340,7 @@ async def play_show_by_name(
     session_id: str,
     name: str,
     offset: float = 5.0,
+    start_at: Optional[float] = None,
 ):
     """Load a show from the shows directory by filename and start timeline playback.
 
@@ -351,7 +352,26 @@ async def play_show_by_name(
     the show JSON from disk rather than the request body, making it easy to
     trigger a named show from an external controller (e.g. live_controller).
 
-    Example::
+    **Absolute-time scheduling** (preferred for tight sync):
+
+    Pass ``start_at`` as a Unix timestamp (seconds, float) representing the
+    exact wall-clock moment at which ``show time = 0`` should begin.  When
+    provided, ``offset`` is ignored and the supplied timestamp is used
+    directly as ``server_show_start_time``.  Both the server and all
+    connected clients (phones, browsers) will wait until that instant before
+    starting the animation loop.  This eliminates the network-latency error
+    that accumulates when using a relative offset.
+
+    Requires that the laptop running ``live_controller`` and the server share
+    an NTP-synchronised wall clock (typical within a few tens of
+    milliseconds on modern devices).
+
+    Example — absolute-time start::
+
+        # start_at = Unix timestamp 1.5 s in the future
+        curl -X POST "http://localhost:8000/api/session/a1b2c3d4/play-show-by-name?name=A_storm_is_coming.json&start_at=1713610532.5"
+
+    Example — legacy relative-offset start::
 
         curl -X POST "http://localhost:8000/api/session/a1b2c3d4/play-show-by-name?name=A_storm_is_coming.json&offset=5"
     """
@@ -382,7 +402,15 @@ async def play_show_by_name(
     if not tracks:
         return {"ok": False, "error": "no_tracks"}
 
-    server_start = time.time() + offset
+    # Absolute-time scheduling: use the caller-supplied timestamp directly so
+    # that both the local track and the remote show share the same start instant.
+    # Fall back to the legacy relative-offset behaviour when start_at is absent.
+    if start_at is not None:
+        server_start = start_at
+        scheduling_mode = "absolute"
+    else:
+        server_start = time.time() + offset
+        scheduling_mode = "relative"
 
     load_payload = {"type": "show_load", "show": show}
     start_payload = {
@@ -407,7 +435,8 @@ async def play_show_by_name(
 
     print(
         f"PLAY_SHOW_BY_NAME session={session_id} show={name} "
-        f"tracks={len(tracks)} clips={clip_count} offset={offset:.1f}s "
+        f"tracks={len(tracks)} clips={clip_count} "
+        f"scheduling={scheduling_mode} server_show_start_time={server_start:.3f} "
         f"sent_load={sent_load} sent_start={sent_start}"
     )
 
@@ -416,7 +445,7 @@ async def play_show_by_name(
         "show": name,
         "tracks": len(tracks),
         "clips": clip_count,
-        "offset": offset,
+        "scheduling": scheduling_mode,
         "server_show_start_time": server_start,
     }
 
