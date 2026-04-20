@@ -215,3 +215,116 @@ def test_relative_fallback_default_offset_zero():
             )
     finally:
         _cleanup_show_file(show_name)
+
+
+def test_global_trim_positive_delays_sync_show():
+    """The global sync timing trim is applied by the client before sending start_at.
+
+    The server contract: server_show_start_time == start_at exactly.
+    This test verifies that when the client applies a positive trim (sync-show
+    later), the shifted start_at value is honoured by the server unchanged.
+
+    Positive trim_ms means: sync_show_start = local_start + trim_sec
+    → sync-show starts later than local track.
+    """
+    show_name = "test_trim_positive.json"
+    _write_show_file(show_name)
+    try:
+        with TestClient(app) as client:
+            session_id = _create_session(client)
+            local_start = time.time() + 5.0  # simulated local target_start
+            trim_ms = 200                     # positive: sync-show 200 ms later
+            sync_show_start = local_start + trim_ms / 1000.0
+
+            resp = client.post(
+                f"/api/session/{session_id}/play-show-by-name",
+                params={
+                    "name": show_name,
+                    "start_at": f"{sync_show_start:.6f}",
+                    "offset": "0",
+                },
+            )
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["ok"] is True
+            assert body["scheduling"] == "absolute"
+            # Server must echo back exactly the trimmed start time, not local_start.
+            assert abs(body["server_show_start_time"] - sync_show_start) < 0.001, (
+                f"Expected server_show_start_time={sync_show_start:.3f} "
+                f"(local_start + {trim_ms}ms trim), "
+                f"got {body['server_show_start_time']:.3f}"
+            )
+    finally:
+        _cleanup_show_file(show_name)
+
+
+def test_global_trim_negative_advances_sync_show():
+    """Negative global trim advances the sync-show relative to the local track.
+
+    Negative trim_ms means: sync_show_start = local_start - |trim_sec|
+    → sync-show starts earlier than local track.
+    The server must still honour start_at exactly (it may be in the past).
+    """
+    show_name = "test_trim_negative.json"
+    _write_show_file(show_name)
+    try:
+        with TestClient(app) as client:
+            session_id = _create_session(client)
+            local_start = time.time() + 5.0  # simulated local target_start
+            trim_ms = -150                    # negative: sync-show 150 ms earlier
+            sync_show_start = local_start + trim_ms / 1000.0
+
+            resp = client.post(
+                f"/api/session/{session_id}/play-show-by-name",
+                params={
+                    "name": show_name,
+                    "start_at": f"{sync_show_start:.6f}",
+                    "offset": "0",
+                },
+            )
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["ok"] is True
+            assert body["scheduling"] == "absolute"
+            assert abs(body["server_show_start_time"] - sync_show_start) < 0.001, (
+                f"Expected server_show_start_time={sync_show_start:.3f} "
+                f"(local_start + {trim_ms}ms trim), "
+                f"got {body['server_show_start_time']:.3f}"
+            )
+    finally:
+        _cleanup_show_file(show_name)
+
+
+def test_global_trim_zero_unchanged():
+    """With trim_ms=0 (the default), sync_show_start == local_start exactly.
+
+    This is the baseline: no trim applied, server_show_start_time == start_at.
+    """
+    show_name = "test_trim_zero.json"
+    _write_show_file(show_name)
+    try:
+        with TestClient(app) as client:
+            session_id = _create_session(client)
+            local_start = time.time() + 5.0  # simulated local target_start
+            trim_ms = 0
+            sync_show_start = local_start + trim_ms / 1000.0  # == local_start
+
+            resp = client.post(
+                f"/api/session/{session_id}/play-show-by-name",
+                params={
+                    "name": show_name,
+                    "start_at": f"{sync_show_start:.6f}",
+                    "offset": "0",
+                },
+            )
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["ok"] is True
+            assert body["scheduling"] == "absolute"
+            assert abs(body["server_show_start_time"] - local_start) < 0.001, (
+                f"Expected server_show_start_time == local_start={local_start:.3f} "
+                f"when trim_ms=0, got {body['server_show_start_time']:.3f}"
+            )
+    finally:
+        _cleanup_show_file(show_name)
+

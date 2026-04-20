@@ -105,6 +105,9 @@ ARDUINO_PROBE_CMD = b'?\n'
 # Override both values via the Sync Show API config group in the settings panel.
 DEFAULT_SYNC_SHOW_HOST = "https://localhost-0.tailc4daa4.ts.net"
 DEFAULT_SYNC_SHOW_SESSION = "0e49315f"
+# Global timing trim applied to the sync-show scheduled start (milliseconds).
+# Positive = sync-show starts later; Negative = sync-show starts earlier.
+DEFAULT_SYNC_TIMING_TRIM_MS = 0
 
 # --- Windows Multimedia Timer API ---
 # Used for high-precision timing on Windows to ensure accurate MIDI clock signals.
@@ -3057,6 +3060,19 @@ class LiveController(QWidget):
         )
         self.sync_show_session_input.textChanged.connect(self.setting_changed)
         sync_show_layout.addWidget(self.sync_show_session_input, 1, 1)
+        sync_show_layout.addWidget(QLabel("Sync trim (ms):"), 2, 0)
+        self.sync_show_trim_spinbox = QSpinBox()
+        self.sync_show_trim_spinbox.setRange(-2000, 2000)
+        self.sync_show_trim_spinbox.setValue(DEFAULT_SYNC_TIMING_TRIM_MS)
+        self.sync_show_trim_spinbox.setSingleStep(1)
+        self.sync_show_trim_spinbox.setToolTip(
+            "Global timing adjustment for sync-show playback only.\n"
+            "Positive (+) = sync-show starts later relative to local track.\n"
+            "Negative (−) = sync-show starts earlier relative to local track.\n"
+            "Range: −2000 to +2000 ms. Has no effect on non-sync tracks."
+        )
+        self.sync_show_trim_spinbox.valueChanged.connect(self.setting_changed)
+        sync_show_layout.addWidget(self.sync_show_trim_spinbox, 2, 1)
         sync_show_group.setLayout(sync_show_layout)
         controls_vbox.addWidget(sync_show_group)
 
@@ -3199,6 +3215,7 @@ class LiveController(QWidget):
         self.zoom_scale_button.setEnabled(is_edit_mode)
         self.sync_show_host_input.setEnabled(is_edit_mode)
         self.sync_show_session_input.setEnabled(is_edit_mode)
+        self.sync_show_trim_spinbox.setEnabled(is_edit_mode)
         # apply_zoom_checkbox is always enabled — user can toggle scaling in any mode
 
         # Stop the calibration loop if switching to LIVE mode.
@@ -3271,7 +3288,11 @@ class LiveController(QWidget):
     
     def load_config(self):
         """Loads general application configuration from config.json."""
-        defaults = {"display": DEFAULT_VIDEO_SCREEN_NUMBER, "preload": DEFAULT_LOAD_DELAY_SECONDS}
+        defaults = {
+            "display": DEFAULT_VIDEO_SCREEN_NUMBER,
+            "preload": DEFAULT_LOAD_DELAY_SECONDS,
+            "sync_show_timing_trim_ms": DEFAULT_SYNC_TIMING_TRIM_MS,
+        }
         if not os.path.exists(CONFIG_FILE): return defaults
         try:
             with open(CONFIG_FILE, 'r') as f:
@@ -3288,6 +3309,7 @@ class LiveController(QWidget):
         self.config['apply_zoom'] = self.apply_zoom_checkbox.isChecked()
         self.config['sync_show_host'] = self.sync_show_host_input.text().strip()
         self.config['sync_show_session'] = self.sync_show_session_input.text().strip()
+        self.config['sync_show_timing_trim_ms'] = self.sync_show_trim_spinbox.value()
         with open(CONFIG_FILE, 'w') as f:
             json.dump(self.config, f, indent=4)
     
@@ -3298,6 +3320,8 @@ class LiveController(QWidget):
         self.apply_zoom_checkbox.setChecked(self.config.get('apply_zoom', True))
         self.sync_show_host_input.setText(self.config.get('sync_show_host', DEFAULT_SYNC_SHOW_HOST))
         self.sync_show_session_input.setText(self.config.get('sync_show_session', DEFAULT_SYNC_SHOW_SESSION))
+        trim_ms = int(self.config.get('sync_show_timing_trim_ms', DEFAULT_SYNC_TIMING_TRIM_MS))
+        self.sync_show_trim_spinbox.setValue(trim_ms)
         self._update_zoom_status_label()
         self.check_display_setting()
 
@@ -4373,7 +4397,13 @@ class LiveController(QWidget):
         # how long MIDI port setup or thread startup takes.
         if track_data.get('sync_show_enabled') and track_data.get('sync_show_file'):
             target_start = time.time() + preload_time
-            self.trigger_sync_show(track_data['sync_show_file'], start_at=target_start)
+            # Apply global sync timing trim: positive = sync-show later, negative = earlier.
+            # The local track always starts at target_start; only the remote sync-show
+            # scheduled start is shifted by the trim so that fine-tuning sync alignment
+            # never affects local playback timing.
+            trim_sec = self.config.get('sync_show_timing_trim_ms', DEFAULT_SYNC_TIMING_TRIM_MS) / 1000.0
+            sync_show_start = target_start + trim_sec
+            self.trigger_sync_show(track_data['sync_show_file'], start_at=sync_show_start)
             self.worker.absolute_start_time = target_start
 
         self.worker.start()
