@@ -1,6 +1,6 @@
 from typing import Optional, Dict, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, BackgroundTasks
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -8,6 +8,7 @@ import asyncio
 import json
 import pathlib
 import time
+import urllib.parse
 import uuid
 
 app = FastAPI()
@@ -19,6 +20,12 @@ templates = Jinja2Templates(directory="app/templates")
 SHOWS_DIR = pathlib.Path("app/static/shows")
 
 sessions: Dict[str, Dict[str, Any]] = {}
+
+# ── Active session state (stable /live endpoint) ──────────────────────────────
+# These are updated whenever a show is started so audience members can always
+# open /live without needing a session-specific URL.
+active_session_id: Optional[str] = None
+active_show_name: Optional[str] = None
 
 # ── Helper: broadcast a JSON payload to all live clients in a session ─────────
 
@@ -56,6 +63,46 @@ class Cue(BaseModel):
 @app.get("/")
 def root():
     return {"ok": True, "service": "show-sync"}
+
+
+@app.get("/live", response_class=HTMLResponse)
+def live_page(request: Request):
+    """Stable audience URL — redirects to the current active session join page.
+
+    Audience members can bookmark this URL.  Whenever the operator starts a
+    new show the active session/show state is updated automatically, so the
+    same ``/live`` link always lands on the current session without any manual
+    URL distribution.
+
+    If no session is currently active a simple holding page is returned
+    instead of an error.
+    """
+    if active_session_id and active_session_id in sessions:
+        url = f"/join/{active_session_id}"
+        if active_show_name:
+            url += "?show=" + urllib.parse.quote(active_show_name, safe="")
+        return RedirectResponse(url=url)
+    return templates.TemplateResponse("live.html", {"request": request})
+
+
+@app.get("/api/active-session")
+def get_active_session():
+    """Return the currently active session and show name.
+
+    Used by operator tooling to confirm which session is live and by the
+    ``/live`` redirect logic.
+
+    Example responses::
+
+        {"active": true, "session_id": "a1b2c3d4", "show": "A_storm_is_coming.json"}
+        {"active": false, "session_id": null, "show": null}
+    """
+    is_active = bool(active_session_id and active_session_id in sessions)
+    return {
+        "active": is_active,
+        "session_id": active_session_id if is_active else None,
+        "show": active_show_name if is_active else None,
+    }
 
 
 @app.post("/api/session")
@@ -347,6 +394,11 @@ async def play_show_by_name(
     session["last_show"]  = load_payload
     session["last_start"] = start_payload
     session["last_cue"]   = None
+
+    # Mark this session/show as the currently active one so /live redirects here.
+    global active_session_id, active_show_name
+    active_session_id = session_id
+    active_show_name  = name
 
     sent_load  = await _broadcast(session, load_payload)
     sent_start = await _broadcast(session, start_payload)
