@@ -652,6 +652,10 @@ class MidiSyncWorker(QThread):
             # does not push the video start past the agreed time.
             # Sleep in short increments so the user can still cancel with Stop.
             if self.absolute_start_time is not None:
+                print(
+                    f"Sync-show: local video absolute_start={self.absolute_start_time:.3f}s "
+                    f"(in {self.absolute_start_time - time.time():.3f}s from now)"
+                )
                 pre_roll_wall_start = self.absolute_start_time - self.preload_time
                 initial_delay = pre_roll_wall_start - time.time()
                 if initial_delay <= 0:
@@ -661,8 +665,8 @@ class MidiSyncWorker(QThread):
                     # so the local video still unpauses at the correct instant
                     # provided some lead time remains.
                     print(
-                        f"Sync-show: pre-roll start was {-initial_delay:.3f}s ago; "
-                        "skipping wait and starting abbreviated pre-roll."
+                        f"Sync-show: absolute start is {-initial_delay:.3f}s in the past; "
+                        "skipping wait and starting pre-roll immediately."
                     )
                 else:
                     self.status_update.emit(
@@ -732,6 +736,13 @@ class MidiSyncWorker(QThread):
                 raise InterruptedError("Playback stopped by user during pre-roll")
             if not self.mpv_process:
                 raise RuntimeError("mpv process was not launched in time.")
+
+            if self.absolute_start_time is not None:
+                print(
+                    f"Sync-show: local video starting now at {time.time():.3f}s "
+                    f"(scheduled {self.absolute_start_time:.3f}s, "
+                    f"delta={time.time() - self.absolute_start_time:+.3f}s)"
+                )
 
             # --- Atomic Start Event ---
             # This section ensures that MIDI start and video unpause are offset correctly.
@@ -4401,8 +4412,15 @@ class LiveController(QWidget):
             # The local track always starts at target_start; only the remote sync-show
             # scheduled start is shifted by the trim so that fine-tuning sync alignment
             # never affects local playback timing.
-            trim_sec = self.config.get('sync_show_timing_trim_ms', DEFAULT_SYNC_TIMING_TRIM_MS) / 1000.0
+            trim_ms = int(self.config.get('sync_show_timing_trim_ms', DEFAULT_SYNC_TIMING_TRIM_MS))
+            trim_sec = trim_ms / 1000.0
             sync_show_start = target_start + trim_sec
+            print(
+                f"Sync-show: baseline_target={target_start:.3f}s "
+                f"trim={trim_ms:+d}ms "
+                f"sync_show_start={sync_show_start:.3f}s "
+                f"local_start={target_start:.3f}s"
+            )
             self.trigger_sync_show(track_data['sync_show_file'], start_at=sync_show_start)
             self.worker.absolute_start_time = target_start
 
@@ -4469,6 +4487,8 @@ class LiveController(QWidget):
             effective_offset = offset_sec if offset_sec is not None else 0.0
             params = urllib.parse.urlencode({'name': show_file, 'offset': f'{effective_offset:.3f}'})
         url = f"{host}/api/session/{session}/play-show-by-name?{params}"
+        if start_at is not None:
+            print(f"Sync-show: requesting start_at={start_at:.3f}s via {host}")
 
         def _call():
             try:
