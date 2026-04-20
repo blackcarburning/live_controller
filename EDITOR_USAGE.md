@@ -233,11 +233,29 @@ curl http://localhost:8000/api/shows
 # → {"shows": ["A_storm_is_coming.json", "outro.json"]}
 ```
 
-**Trigger a named show:**
+**Trigger a named show (legacy relative offset):**
 
 ```bash
 curl -X POST "http://localhost:8000/api/session/a1b2c3d4/play-show-by-name?name=A_storm_is_coming.json&offset=5"
 ```
+
+**Trigger a named show with absolute-time scheduling (recommended):**
+
+Pass `start_at` as a Unix timestamp (seconds, float) for the exact wall-clock
+moment when show time = 0 begins.  Both the server and all clients wait until
+that instant before starting the animation loop, eliminating the network-latency
+error that accumulates with a relative offset.
+
+```bash
+# start_at = Unix timestamp 2 seconds in the future
+START=$(python -c "import time; print(f'{time.time()+2:.6f}')")
+curl -X POST "http://localhost:8000/api/session/a1b2c3d4/play-show-by-name?name=A_storm_is_coming.json&start_at=$START"
+```
+
+`live_controller` uses this mode automatically for all sync-enabled setlist
+items.  It computes `target_start = now + preload_time + 1.5 s`, sends the
+request with `start_at=target_start`, and schedules the local MIDI pre-roll so
+the video unpauses at the same absolute timestamp.
 
 **Preload a show on the client via query parameter:**
 
