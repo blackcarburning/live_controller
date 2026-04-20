@@ -538,7 +538,7 @@ class MidiSyncWorker(QThread):
     def __init__(self, video_file, bpm, display_num, preload_time, midi_offset_ms, 
                  send_start_port1, send_start_port2, send_start_port3, timing_method,
                  require_midi=True, max_duration_sec=0, zoom_config=None,
-                 absolute_start_time=0.0):
+                 absolute_start_time=None):
         super().__init__()
         # Store all playback parameters.
         self.video_file = video_file
@@ -554,10 +554,10 @@ class MidiSyncWorker(QThread):
         self.max_duration_sec = max_duration_sec  # If > 0, limits playback via mpv --length
         self.zoom_config = zoom_config or {}
         # Absolute Unix timestamp (seconds) at which local video should unpause.
-        # When > 0 the worker sleeps until (absolute_start_time - preload_time)
+        # When not None the worker sleeps until (absolute_start_time - preload_time)
         # before beginning the MIDI pre-roll so that the video unpauses at exactly
         # absolute_start_time, matching the remote sync-show start time.
-        # Set to 0.0 (default) to use the existing immediate-start behaviour.
+        # None (default) retains the existing immediate-start behaviour.
         self.absolute_start_time = absolute_start_time
         self.mpv_process = None
         self._is_running = True
@@ -653,16 +653,23 @@ class MidiSyncWorker(QThread):
             # exact wall-clock instant.  The pre-roll takes self.preload_time seconds,
             # so we need to begin the pre-roll at (absolute_start_time - preload_time).
             # Sleep in short increments so the user can still cancel with Stop.
-            if self.absolute_start_time > 0.0:
+            if self.absolute_start_time is not None:
                 pre_roll_wall_start = self.absolute_start_time - self.preload_time
                 initial_delay = pre_roll_wall_start - time.time()
-                if initial_delay > 0.01:
+                if initial_delay <= 0:
+                    # Target is in the past or imminent; skip the wait and proceed.
+                    # This can happen if clock skew is large or processing was slow.
+                    print(
+                        f"Sync-show: absolute start is {-initial_delay:.3f}s in the past, "
+                        "skipping wait and starting pre-roll immediately."
+                    )
+                else:
                     self.status_update.emit(
                         f"Sync-show: waiting {initial_delay:.2f}s for absolute start…"
                     )
-                    deadline = time.perf_counter() + initial_delay
-                    while time.perf_counter() < deadline and self._is_running:
-                        remaining = deadline - time.perf_counter()
+                    deadline = time.time() + initial_delay
+                    while time.time() < deadline and self._is_running:
+                        remaining = deadline - time.time()
                         time.sleep(min(0.05, remaining))
                     if not self._is_running:
                         raise InterruptedError("Playback stopped by user during sync wait")
