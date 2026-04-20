@@ -14,6 +14,7 @@
 import sys
 import os
 import re
+import ssl
 import subprocess
 import time
 import json
@@ -25,6 +26,8 @@ import tempfile
 import shutil
 import uuid
 import zipfile
+import urllib.request
+import urllib.parse
 from collections import deque
 
 # --- Third-Party Library Imports ---
@@ -96,6 +99,12 @@ SPP_BYTE = 0xF2      # MIDI System Common Message: Song Position Pointer
 ARDUINO_BAUD = 9600
 ARDUINO_TARGET_ID = "LED_TEST_PRO_MINI_01"
 ARDUINO_PROBE_CMD = b'?\n'
+
+# --- Sync-Show API Defaults ---
+# These are the instance-specific defaults used in the initial deployment.
+# Override both values via the Sync Show API config group in the settings panel.
+DEFAULT_SYNC_SHOW_HOST = "https://localhost-0.tailc4daa4.ts.net"
+DEFAULT_SYNC_SHOW_SESSION = "0e49315f"
 
 # --- Windows Multimedia Timer API ---
 # Used for high-precision timing on Windows to ensure accurate MIDI clock signals.
@@ -2552,12 +2561,13 @@ class LiveController(QWidget):
         # --- Main Content Area (Table and Controls) ---
         main_layout = QHBoxLayout()
         self.table = DraggableTableWidget()
-        self.table.setColumnCount(8)
-        self.table.setHorizontalHeaderLabels(["Hotkey", "Track Name", "Linked", "BPM", "Click", "Rich1", "Rich2", "Actions"])
+        self.table.setColumnCount(10)
+        self.table.setHorizontalHeaderLabels(["Hotkey", "Track Name", "Linked", "BPM", "Click", "Rich1", "Rich2", "Sync", "Show File", "Actions"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.setColumnWidth(0, 60); self.table.setColumnWidth(2, 90)
         self.table.setColumnWidth(3, 60); self.table.setColumnWidth(4, 60)
-        self.table.setColumnWidth(5, 60); self.table.setColumnWidth(6, 60); self.table.setColumnWidth(7, 80)
+        self.table.setColumnWidth(5, 60); self.table.setColumnWidth(6, 60)
+        self.table.setColumnWidth(7, 50); self.table.setColumnWidth(8, 110); self.table.setColumnWidth(9, 80)
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(False)
         self.table.rows_reordered.connect(self.reorder_tracks)
@@ -2957,6 +2967,31 @@ class LiveController(QWidget):
         scrub_loop_group.setLayout(scrub_loop_layout)
         controls_vbox.addWidget(scrub_loop_group)
 
+        # --- Sync Show Config Group ---
+        sync_show_group = QGroupBox("Sync Show API")
+        sync_show_layout = QGridLayout()
+        sync_show_layout.setContentsMargins(8, 16, 8, 8)
+        sync_show_layout.setSpacing(6)
+        sync_show_layout.addWidget(QLabel("Host URL:"), 0, 0)
+        self.sync_show_host_input = QLineEdit()
+        self.sync_show_host_input.setPlaceholderText(DEFAULT_SYNC_SHOW_HOST)
+        self.sync_show_host_input.setToolTip(
+            "Base URL of the show-sync server, e.g. https://localhost-0.tailc4daa4.ts.net\n"
+            "Do not include a trailing slash."
+        )
+        self.sync_show_host_input.textChanged.connect(self.setting_changed)
+        sync_show_layout.addWidget(self.sync_show_host_input, 0, 1)
+        sync_show_layout.addWidget(QLabel("Session ID:"), 1, 0)
+        self.sync_show_session_input = QLineEdit()
+        self.sync_show_session_input.setPlaceholderText(DEFAULT_SYNC_SHOW_SESSION)
+        self.sync_show_session_input.setToolTip(
+            "The session ID returned when you created your sync-show session, e.g. 0e49315f"
+        )
+        self.sync_show_session_input.textChanged.connect(self.setting_changed)
+        sync_show_layout.addWidget(self.sync_show_session_input, 1, 1)
+        sync_show_group.setLayout(sync_show_layout)
+        controls_vbox.addWidget(sync_show_group)
+
         # MIDI Port Testing spans full width at the bottom
         controls_vbox.addWidget(midi_test_group)
 
@@ -3039,7 +3074,7 @@ class LiveController(QWidget):
                 item.setFont(new_font)
             
             # Apply to QWidgets in cells
-            for col in [1, 3]: # Track Name, BPM
+            for col in [1, 3, 8]: # Track Name, BPM, Show File
                 widget = self.table.cellWidget(row, col)
                 if isinstance(widget, QLineEdit):
                     widget.setFont(new_font)
@@ -3094,6 +3129,8 @@ class LiveController(QWidget):
         self.calib_loop_duration_spinbox.setEnabled(is_edit_mode and not self.calib_loop_active)
         self.calib_loop_button.setEnabled(is_edit_mode and self.test_track_path is not None)
         self.zoom_scale_button.setEnabled(is_edit_mode)
+        self.sync_show_host_input.setEnabled(is_edit_mode)
+        self.sync_show_session_input.setEnabled(is_edit_mode)
         # apply_zoom_checkbox is always enabled — user can toggle scaling in any mode
 
         # Stop the calibration loop if switching to LIVE mode.
@@ -3105,8 +3142,8 @@ class LiveController(QWidget):
             if i < len(self.tracks):
                 item = self.tracks[i]
                 if item['type'] == 'track':
-                    # Columns with widgets: TrackName, Linked, BPM, Ports, Actions
-                    for col in [1, 2, 3, 4, 5, 6, 7]: 
+                    # Columns with widgets: TrackName, Linked, BPM, Ports, Sync, ShowFile, Actions
+                    for col in [1, 2, 3, 4, 5, 6, 7, 8, 9]: 
                         if widget := self.table.cellWidget(i, col):
                             widget.setEnabled(is_edit_mode)
         
@@ -3181,6 +3218,8 @@ class LiveController(QWidget):
         self.config['display'] = int(self.display_combo.currentText())
         self.config['preload'] = int(self.preload_combo.currentText())
         self.config['apply_zoom'] = self.apply_zoom_checkbox.isChecked()
+        self.config['sync_show_host'] = self.sync_show_host_input.text().strip()
+        self.config['sync_show_session'] = self.sync_show_session_input.text().strip()
         with open(CONFIG_FILE, 'w') as f:
             json.dump(self.config, f, indent=4)
     
@@ -3189,6 +3228,8 @@ class LiveController(QWidget):
         self.display_combo.setCurrentText(str(self.config.get("display", DEFAULT_VIDEO_SCREEN_NUMBER)))
         self.preload_combo.setCurrentText(str(self.config.get("preload", DEFAULT_LOAD_DELAY_SECONDS)))
         self.apply_zoom_checkbox.setChecked(self.config.get('apply_zoom', True))
+        self.sync_show_host_input.setText(self.config.get('sync_show_host', DEFAULT_SYNC_SHOW_HOST))
+        self.sync_show_session_input.setText(self.config.get('sync_show_session', DEFAULT_SYNC_SHOW_SESSION))
         self._update_zoom_status_label()
         self.check_display_setting()
 
@@ -3389,6 +3430,8 @@ class LiveController(QWidget):
                 'send_start_port1': True,
                 'send_start_port2': False,
                 'send_start_port3': False,
+                'sync_show_enabled': False,
+                'sync_show_file': '',
             })
             self.rebuild_hotkey_map()
         self.populate_table()
@@ -3503,7 +3546,7 @@ class LiveController(QWidget):
                 button_layout.addWidget(remove_button)
                 button_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 button_layout.setContentsMargins(0,0,0,0)
-                self.table.setCellWidget(i, 7, button_container)
+                self.table.setCellWidget(i, 9, button_container)
             else: 
                 # --- Create Track Row ---
                 table_font = QFont("Segoe UI", self.current_table_font_size)
@@ -3560,6 +3603,28 @@ class LiveController(QWidget):
                 self.table.setCellWidget(i, 5, create_port_checkbox(2))
                 self.table.setCellWidget(i, 6, create_port_checkbox(3))
 
+                def create_sync_show_checkbox(row_idx, track_item):
+                    sync_container = QWidget()
+                    sync_layout = QHBoxLayout(sync_container)
+                    sync_cb = QCheckBox()
+                    sync_cb.setStyleSheet("QCheckBox::indicator { width: 12px; height: 12px; }")
+                    sync_cb.setChecked(track_item.get('sync_show_enabled', False))
+                    sync_cb.setToolTip("Tick to trigger the sync-show API when this track starts playing.")
+                    sync_cb.toggled.connect(lambda checked, r=row_idx: self.update_sync_show_enabled(checked, r))
+                    sync_layout.addWidget(sync_cb)
+                    sync_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    sync_layout.setContentsMargins(0, 0, 0, 0)
+                    return sync_container
+
+                self.table.setCellWidget(i, 7, create_sync_show_checkbox(i, item))
+
+                sync_file_input = QLineEdit(item.get('sync_show_file', ''))
+                sync_file_input.setFont(table_font)
+                sync_file_input.setPlaceholderText("e.g. exile.json")
+                sync_file_input.setToolTip("Name of the .json sync-show file to play when this track starts.")
+                sync_file_input.textChanged.connect(lambda text, r=i: self.update_sync_show_file(text, r))
+                self.table.setCellWidget(i, 8, sync_file_input)
+
                 remove_button = QPushButton("X"); remove_button.clicked.connect(lambda checked, i=i: self.remove_item(i))
                 remove_button.setFixedSize(20, 20)
                 remove_button.setStyleSheet("background-color: #c0392b; color: white; font-weight: bold; border-radius: 4px; font-size: 12px;")
@@ -3569,7 +3634,7 @@ class LiveController(QWidget):
                 button_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 button_layout.setContentsMargins(0,0,0,0)
                 button_container.setToolTip(tooltip_text)
-                self.table.setCellWidget(i, 7, button_container)
+                self.table.setCellWidget(i, 9, button_container)
         
         self.apply_table_font_size()
         self.update_total_running_time()
@@ -3648,6 +3713,16 @@ class LiveController(QWidget):
         """Updates the linked setting for a track."""
         if 0 <= row_index < len(self.tracks) and self.tracks[row_index]['type'] == 'track':
             self.tracks[row_index]['linked'] = is_checked
+
+    def update_sync_show_enabled(self, is_checked, row_index):
+        """Updates the sync-show enabled flag for a track."""
+        if 0 <= row_index < len(self.tracks) and self.tracks[row_index]['type'] == 'track':
+            self.tracks[row_index]['sync_show_enabled'] = is_checked
+
+    def update_sync_show_file(self, text, row_index):
+        """Updates the sync-show .json filename for a track."""
+        if 0 <= row_index < len(self.tracks) and self.tracks[row_index]['type'] == 'track':
+            self.tracks[row_index]['sync_show_file'] = text.strip()
 
     def save_setlist(self):
         """Saves the current setlist to a named JSON file."""
@@ -3754,6 +3829,8 @@ class LiveController(QWidget):
                 if 'send_start_port2' not in item: item['send_start_port2'] = False
                 if 'send_start_port3' not in item: item['send_start_port3'] = False
                 if 'linked' not in item: item['linked'] = False
+                if 'sync_show_enabled' not in item: item['sync_show_enabled'] = False
+                if 'sync_show_file' not in item: item['sync_show_file'] = ''
                 # Reassign hotkeys that are not in the valid set (e.g. legacy 'i' assignments).
                 if item['hotkey'] not in valid_hotkeys:
                     if self.available_hotkeys:
@@ -4218,6 +4295,13 @@ class LiveController(QWidget):
         self.worker.ipc_socket_path.connect(self.set_ipc_socket)
         self.send_led_command("3")  # LED 3 (orange): song is playing
         self.send_led_command("6")  # LED 6 (green): track active indicator
+
+        # Trigger sync-show if enabled for this track. The call is made just before
+        # the worker starts so the API offset equals the preload_time, ensuring the
+        # sync-show fires at the same moment as the local video unpause.
+        if track_data.get('sync_show_enabled') and track_data.get('sync_show_file'):
+            self.trigger_sync_show(track_data['sync_show_file'], preload_time)
+
         self.worker.start()
         # Auto-populate the loop BPM spinbox with the current track's BPM and
         # recalculate bar→time labels.  Block signals on setValue to prevent a
@@ -4226,6 +4310,52 @@ class LiveController(QWidget):
         self.loop_bpm_spinbox.setValue(bpm)
         self.loop_bpm_spinbox.blockSignals(False)
         self._on_loop_bar_changed()
+
+    def trigger_sync_show(self, show_file, offset_sec):
+        """Calls the show-sync API to play a sync-show file in time with the local track.
+
+        The ``offset_sec`` value should equal the preload_time used for the local
+        mpv pre-roll so that the remote show fires at the same instant as the video
+        unpauses on this machine.  The HTTP request is sent on a daemon thread so
+        it cannot block or crash the main playback loop.
+        """
+        # Basic validation: show_file must be a bare filename ending in .json,
+        # with no directory separators or path-traversal sequences.
+        show_file = show_file.strip()
+        if (not show_file.lower().endswith('.json')
+                or '/' in show_file or '\\' in show_file or '..' in show_file):
+            print(f"Sync-show: invalid show filename '{show_file}', skipping.")
+            return
+
+        host = self.sync_show_host_input.text().strip().rstrip('/')
+        session = self.sync_show_session_input.text().strip()
+        if not host:
+            host = DEFAULT_SYNC_SHOW_HOST
+        if not session:
+            session = DEFAULT_SYNC_SHOW_SESSION
+        # URL-encode only the query parameter values; the session ID is part of the path.
+        params = urllib.parse.urlencode({'name': show_file, 'offset': f'{offset_sec:.3f}'})
+        url = f"{host}/api/session/{session}/play-show-by-name?{params}"
+
+        def _call():
+            try:
+                req = urllib.request.Request(url, method='POST')
+                # Tailscale issues its own TLS certificates for *.tailc4daa4.ts.net,
+                # but they are not signed by a CA trusted by the system store on all
+                # Windows installs.  Disabling verification is intentional here and
+                # acceptable because the connection is already protected by the
+                # Tailscale WireGuard tunnel.
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+                    body = resp.read().decode('utf-8', errors='replace')
+                    print(f"Sync-show API response: {body}")
+            except Exception as exc:
+                # Non-fatal: log but never crash the playback flow.
+                print(f"Sync-show API error ({url}): {exc}")
+
+        threading.Thread(target=_call, daemon=True).start()
 
     def set_ipc_socket(self, path):
         """Receives the IPC socket path from the worker thread."""
