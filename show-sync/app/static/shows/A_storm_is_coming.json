@@ -1,0 +1,56 @@
+{
+  "version": 2,
+  "name": "A storm is coming",
+  "tracks": [
+    {
+      "id": "track-1",
+      "name": "Background",
+      "layer": 0,
+      "clips": [
+        {
+          "id": "clip-1",
+          "type": "color",
+          "start": 0.0,
+          "duration": 4.0,
+          "fade_in": 1.0,
+          "fade_out": 1.0,
+          "params": { "color": "#1a1a2e" }
+        },
+        {
+          "id": "clip-2",
+          "type": "color",
+          "start": 5.0,
+          "duration": 3.0,
+          "fade_in": 0.5,
+          "fade_out": 0.5,
+          "params": { "color": "#e94560" }
+        },
+        {
+          "id": "clip-3",
+          "type": "color",
+          "start": 9.0,
+          "duration": 5.0,
+          "fade_in": 1.0,
+          "fade_out": 2.0,
+          "params": { "color": "#0f3460" }
+        }
+      ]
+    },
+    {
+      "id": "track-2",
+      "name": "Text",
+      "layer": 1,
+      "clips": [
+        {
+          "id": "clip-4",
+          "type": "text",
+          "start": 1.5,
+          "duration": 2.0,
+          "fade_in": 0.3,
+          "fade_out": 0.3,
+          "params": { "text": "A storm is coming", "color": "#ffffff", "size": 8 }
+        }
+      ]
+    }
+  ]
+}

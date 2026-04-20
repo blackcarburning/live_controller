@@ -220,6 +220,35 @@ The server broadcasts `show_load` + `show_start` to all connected clients.
 Each client runs its own rAF composite loop, evaluating clips at the
 synchronised show time.
 
+### 4c — Play a show by name (from the shows library)
+
+Place exported show JSON files in `show-sync/app/static/shows/`.  They are
+served statically and can be triggered by name without uploading the JSON body
+on each call — ideal for scripted control from `live_controller`.
+
+**List available shows:**
+
+```bash
+curl http://localhost:8000/api/shows
+# → {"shows": ["A_storm_is_coming.json", "outro.json"]}
+```
+
+**Trigger a named show:**
+
+```bash
+curl -X POST "http://localhost:8000/api/session/a1b2c3d4/play-show-by-name?name=A_storm_is_coming.json&offset=5"
+```
+
+**Preload a show on the client via query parameter:**
+
+Append `?show=<filename>` to the join URL.  The client fetches the show JSON
+from `/static/shows/` immediately on load so it is ready before the server
+sends `show_start`.
+
+```
+http://<server-ip>:8000/join/a1b2c3d4?show=A_storm_is_coming.json
+```
+
 ### 4b — Legacy cue playback (v1)
 
 ```bash

@@ -353,3 +353,38 @@ window.addEventListener('pageshow', () => {
 });
 
 connect();
+
+// ── Show preload from URL query parameter ─────────────────────────────────────
+//
+// If the join URL includes a ?show=filename.json parameter, the client will
+// fetch that file from /static/shows/ and preload it as the active show.
+// Playback still starts only when the server sends a show_start message, so
+// this just pre-warms tlShow so the show_start message can begin immediately.
+//
+// Example join URL:
+//   /join/a1b2c3d4?show=A_storm_is_coming.json
+
+(function () {
+  const params   = new URLSearchParams(window.location.search);
+  const showName = params.get('show');
+  if (!showName) return;
+
+  // Only allow bare .json filenames — no path separators.
+  if (!showName.endsWith('.json') || showName.indexOf('/') !== -1 || showName.indexOf('\\') !== -1) {
+    console.warn('[show-sync] invalid show name ignored');
+    return;
+  }
+
+  fetch('/static/shows/' + encodeURIComponent(showName))
+    .then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function (show) {
+      tlShow = show;
+      console.log('[show-sync] preloaded show:', showName);
+    })
+    .catch(function (err) {
+      console.warn('[show-sync] could not load show:', showName, err);
+    });
+}());

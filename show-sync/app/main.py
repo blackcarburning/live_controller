@@ -5,6 +5,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import asyncio
+import json
+import pathlib
 import time
 import uuid
 
@@ -12,6 +14,9 @@ app = FastAPI()
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
+
+# Directory where exported show JSON files are stored and served from.
+SHOWS_DIR = pathlib.Path("app/static/shows")
 
 sessions: Dict[str, Dict[str, Any]] = {}
 
@@ -264,6 +269,104 @@ async def stop_show(session_id: str):
 
     print(f"STOP_SHOW session={session_id} sent={sent}")
     return {"ok": True, "sent": sent}
+
+
+@app.get("/api/shows")
+def list_shows():
+    """List available show JSON files in the shows directory.
+
+    Returns a JSON object with a ``shows`` key containing the sorted list of
+    ``.json`` filenames that can be passed to ``play-show-by-name``.
+
+    Example response::
+
+        {"shows": ["A_storm_is_coming.json", "outro.json"]}
+    """
+    if not SHOWS_DIR.exists():
+        return {"shows": []}
+    shows = sorted(f.name for f in SHOWS_DIR.iterdir() if f.is_file() and f.suffix == ".json")
+    return {"shows": shows}
+
+
+@app.post("/api/session/{session_id}/play-show-by-name")
+async def play_show_by_name(
+    session_id: str,
+    name: str,
+    offset: float = 5.0,
+):
+    """Load a show from the shows directory by filename and start timeline playback.
+
+    The ``name`` query parameter must be the bare filename (e.g.
+    ``A_storm_is_coming.json``) of a JSON file present in
+    ``app/static/shows/``.  Path separators and ``..`` are rejected.
+
+    This endpoint is functionally identical to ``play-timeline`` but sources
+    the show JSON from disk rather than the request body, making it easy to
+    trigger a named show from an external controller (e.g. live_controller).
+
+    Example::
+
+        curl -X POST "http://localhost:8000/api/session/a1b2c3d4/play-show-by-name?name=A_storm_is_coming.json&offset=5"
+    """
+    session = sessions.get(session_id)
+    if not session:
+        return {"ok": False, "error": "session_not_found"}
+
+    # Look up the show by matching the requested name against the directory
+    # listing.  The path object used for I/O comes from os.scandir (trusted),
+    # not from the user-supplied string, which eliminates path-injection risk.
+    show_path = None
+    if SHOWS_DIR.exists():
+        for entry in SHOWS_DIR.iterdir():
+            if entry.is_file() and entry.suffix == ".json" and entry.name == name:
+                show_path = entry
+                break
+
+    if show_path is None:
+        return {"ok": False, "error": "show_not_found"}
+
+    try:
+        show = json.loads(show_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"PLAY_SHOW_BY_NAME load error: {exc}")
+        return {"ok": False, "error": "show_load_failed"}
+
+    tracks = show.get("tracks", [])
+    if not tracks:
+        return {"ok": False, "error": "no_tracks"}
+
+    server_start = time.time() + offset
+
+    load_payload = {"type": "show_load", "show": show}
+    start_payload = {
+        "type": "show_start",
+        "server_show_start_time": server_start,
+        "show": show,
+    }
+
+    session["last_show"]  = load_payload
+    session["last_start"] = start_payload
+    session["last_cue"]   = None
+
+    sent_load  = await _broadcast(session, load_payload)
+    sent_start = await _broadcast(session, start_payload)
+
+    clip_count = sum(len(t.get("clips", [])) for t in tracks)
+
+    print(
+        f"PLAY_SHOW_BY_NAME session={session_id} show={name} "
+        f"tracks={len(tracks)} clips={clip_count} offset={offset:.1f}s "
+        f"sent_load={sent_load} sent_start={sent_start}"
+    )
+
+    return {
+        "ok": True,
+        "show": name,
+        "tracks": len(tracks),
+        "clips": clip_count,
+        "offset": offset,
+        "server_show_start_time": server_start,
+    }
 
 
 @app.websocket("/ws/{session_id}")
