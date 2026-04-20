@@ -132,10 +132,12 @@ function runEffect(msg) {
       break;
 
     case 'text':
-      textEl.textContent    = params.text  || '';
-      textEl.style.color    = color;
-      textEl.style.fontSize = (params.size || 5) + 'vmin';
-      textEl.style.display  = 'flex';
+      if (params.text) {
+        textEl.textContent    = params.text;
+        textEl.style.color    = color;
+        textEl.style.fontSize = (params.size || 5) + 'vmin';
+        textEl.style.display  = 'flex';
+      }
       fadeTimer = setTimeout(clearEffect, durationMs);
       break;
 
@@ -201,7 +203,7 @@ function compositeTimeline(showTime) {
         bg   = params.color || '#ff0000';
         bgOp = op;
       } else if (type === 'text') {
-        txt      = params.text  || '';
+        txt      = params.text  || null;
         txtColor = params.color || '#ffffff';
         txtSz    = params.size  || 5;
         txtOp    = op;
