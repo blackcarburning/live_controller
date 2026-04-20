@@ -4504,6 +4504,44 @@ class LiveController(QWidget):
                 with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
                     body = resp.read().decode('utf-8', errors='replace')
                     print(f"Sync-show API response: {body}")
+                    # Validate that the server honoured the requested start_at.
+                    # If server_show_start_time differs significantly from start_at
+                    # the remote show will be out of sync with local playback.
+                    # A missing "scheduling" field indicates the server is running
+                    # old code that ignores start_at and uses time.time() instead —
+                    # the server must be restarted to pick up the latest code.
+                    if start_at is not None:
+                        try:
+                            data = json.loads(body)
+                            returned_start = data.get("server_show_start_time")
+                            scheduling = data.get("scheduling")
+                            if returned_start is not None:
+                                delta_ms = (returned_start - start_at) * 1000.0
+                                if abs(delta_ms) > 50:
+                                    if scheduling is None:
+                                        print(
+                                            f"Sync-show WARNING: server returned "
+                                            f"server_show_start_time={returned_start:.3f}s "
+                                            f"but start_at={start_at:.3f}s was requested "
+                                            f"(delta={delta_ms:+.0f}ms). "
+                                            "The server appears to be running old code that "
+                                            "ignores start_at — restart show-sync to fix sync."
+                                        )
+                                    else:
+                                        print(
+                                            f"Sync-show WARNING: server_show_start_time mismatch: "
+                                            f"requested start_at={start_at:.3f}s, "
+                                            f"got {returned_start:.3f}s "
+                                            f"(delta={delta_ms:+.0f}ms)."
+                                        )
+                                else:
+                                    print(
+                                        f"Sync-show: start_at honored "
+                                        f"(server_show_start_time={returned_start:.3f}s, "
+                                        f"delta={delta_ms:+.1f}ms)"
+                                    )
+                        except (json.JSONDecodeError, KeyError, TypeError):
+                            pass
             except Exception as exc:
                 # Non-fatal: log but never crash the playback flow.
                 print(f"Sync-show API error ({url}): {exc}")
