@@ -640,19 +640,26 @@ class MidiSyncWorker(QThread):
         
         try:
             # --- Absolute-time sync wait (sync-show tracks only) ---
-            # When absolute_start_time is set the local video must unpause at that
-            # exact wall-clock instant.  The pre-roll takes self.preload_time seconds,
-            # so we need to begin the pre-roll at (absolute_start_time - preload_time).
+            # When absolute_start_time is set the local video must unpause at
+            # that exact wall-clock instant.  Ideally the pre-roll should begin
+            # at (absolute_start_time - preload_time) so MIDI gear gets a full
+            # preload_time clock run-up; if this process reached this point early
+            # enough we wait until that moment.  The pre-roll end is always pinned
+            # to absolute_start_time further below, so any leftover startup latency
+            # does not push the video start past the agreed time.
             # Sleep in short increments so the user can still cancel with Stop.
             if self.absolute_start_time is not None:
                 pre_roll_wall_start = self.absolute_start_time - self.preload_time
                 initial_delay = pre_roll_wall_start - time.time()
                 if initial_delay <= 0:
-                    # Target is in the past or imminent; skip the wait and proceed.
-                    # This can happen if clock skew is large or processing was slow.
+                    # Pre-roll start is in the past (MIDI/thread startup took
+                    # longer than expected); begin the pre-roll immediately.
+                    # The pre-roll end is pinned to absolute_start_time below,
+                    # so the local video still unpauses at the correct instant
+                    # provided some lead time remains.
                     print(
-                        f"Sync-show: absolute start is {-initial_delay:.3f}s in the past, "
-                        "skipping wait and starting pre-roll immediately."
+                        f"Sync-show: pre-roll start was {-initial_delay:.3f}s ago; "
+                        "skipping wait and starting abbreviated pre-roll."
                     )
                 else:
                     self.status_update.emit(
@@ -670,10 +677,33 @@ class MidiSyncWorker(QThread):
             self.status_update.emit(f"Pre-rolling MIDI clock for {self.preload_time}s at {self.bpm} BPM...")
             tick_interval = 60.0 / self.bpm / 24.0
             start_time = time.perf_counter()
-            pre_roll_end_time = start_time + self.preload_time
-            # Calculate when to launch mpv so it's ready exactly when pre-roll ends.
-            mpv_launch_time = pre_roll_end_time - MPV_LAUNCH_HEAD_START_SECONDS
+            # For sync-enabled tracks, pin the pre-roll end to the agreed
+            # absolute_start_time so the video unpauses at that exact
+            # wall-clock instant regardless of how long MIDI port setup or
+            # thread startup took.  Without this pinning the full preload_time
+            # is added on top of any startup latency, pushing the local video
+            # behind the remote sync-show by that latency amount.
+            # Sample both clocks at the same instant so the wall-clock
+            # absolute_start_time is converted to perf_counter space accurately.
+            if self.absolute_start_time is not None:
+                remaining_until_start = self.absolute_start_time - time.time()
+                pre_roll_end_time = time.perf_counter() + max(0.0, remaining_until_start)
+            else:
+                pre_roll_end_time = start_time + self.preload_time
+            # Calculate when to launch mpv so it's ready when the pre-roll ends.
+            # Clamp to start_time so mpv always launches promptly when the
+            # remaining lead time is less than MPV_LAUNCH_HEAD_START_SECONDS
+            # (e.g. MIDI setup consumed most of the pre-roll budget).
+            mpv_launch_time = max(start_time, pre_roll_end_time - MPV_LAUNCH_HEAD_START_SECONDS)
             mpv_launched = False
+            # When there is little or no lead time left, launch mpv before
+            # entering the loop so it has the maximum available time to
+            # initialise before we attempt the unpause command.
+            if mpv_launch_time <= start_time:
+                self.status_update.emit(f"Starting mpv on screen {self.display_num}...")
+                self.mpv_process = subprocess.Popen(mpv_cmd)
+                self.ipc_socket_path.emit(full_socket_path)
+                mpv_launched = True
 
             while time.perf_counter() < pre_roll_end_time and self._is_running:
                 current_time = time.perf_counter()
@@ -4335,13 +4365,12 @@ class LiveController(QWidget):
         self.send_led_command("6")  # LED 6 (green): track active indicator
 
         # Trigger sync-show if enabled for this track using absolute-time scheduling.
-        # target_start is the wall-clock moment when video position 0 begins.  The
-        # pre-roll takes preload_time seconds, so target_start = now + preload_time.
-        # The HTTP request is dispatched immediately; since preload_time is 2–8 s
-        # and Tailscale latency is well under 1 s, the request always arrives before
-        # show time = 0.  The worker's initial_delay will be ≤ 0 so the pre-roll
-        # starts right away (same as without absolute-time sync), and the video
-        # unpauses at target_start, matching the remote show's time-zero.
+        # target_start is the wall-clock moment when video position 0 begins.
+        # The HTTP request is dispatched immediately on a daemon thread, so it
+        # reaches the server well before show time = 0.  The worker stores
+        # absolute_start_time and pins the end of the pre-roll to that instant
+        # (see _run_logic), so the video unpauses at target_start regardless of
+        # how long MIDI port setup or thread startup takes.
         if track_data.get('sync_show_enabled') and track_data.get('sync_show_file'):
             target_start = time.time() + preload_time
             self.trigger_sync_show(track_data['sync_show_file'], start_at=target_start)

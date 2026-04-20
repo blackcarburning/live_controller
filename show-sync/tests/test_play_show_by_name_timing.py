@@ -141,6 +141,48 @@ def test_absolute_time_offset_five_ignored():
         _cleanup_show_file(show_name)
 
 
+def test_absolute_time_late_request_still_uses_start_at():
+    """Server must honour start_at even when the request arrives after start_at.
+
+    This guards the server-side half of the pre-roll pinning fix: if the HTTP
+    request is sent late (e.g. because MIDI port setup was slow on the local
+    machine), the server must still schedule the show at the *original*
+    start_at value — not at 'now + offset'.  This ensures that when the
+    local worker pins the pre-roll end to absolute_start_time, the remote
+    show's time-zero matches.
+    """
+    show_name = "test_timing_late_request.json"
+    _write_show_file(show_name)
+    try:
+        with TestClient(app) as client:
+            session_id = _create_session(client)
+            # Simulate a start_at that is slightly in the past (as if the
+            # request arrived a few seconds after the intended play time).
+            target_start = time.time() - 2.0
+
+            resp = client.post(
+                f"/api/session/{session_id}/play-show-by-name",
+                params={
+                    "name": show_name,
+                    "start_at": f"{target_start:.6f}",
+                    "offset": "0",
+                },
+            )
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["ok"] is True
+            assert body["scheduling"] == "absolute"
+            # server_show_start_time must still equal the original start_at,
+            # not be bumped forward to 'now'.
+            assert abs(body["server_show_start_time"] - target_start) < 0.001, (
+                f"Expected server_show_start_time={target_start:.3f}, "
+                f"got {body['server_show_start_time']:.3f} — server must not "
+                "override a past start_at with 'now'"
+            )
+    finally:
+        _cleanup_show_file(show_name)
+
+
 def test_relative_fallback_default_offset_zero():
     """Without start_at, the default offset is now 0 (not 5).
 
