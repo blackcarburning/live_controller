@@ -4366,6 +4366,11 @@ class LiveController(QWidget):
         the remote show share the same wall-clock reference point (both sides
         must be NTP-synchronised).
 
+        In the absolute-time path ``offset`` is explicitly set to 0 in the URL so
+        that the legacy ``offset=5`` default can never be applied — even as a
+        fallback — and accidentally delay the sync-show by 5 seconds relative to
+        the local video track.
+
         ``offset_sec`` is the legacy relative-offset fallback used when
         ``start_at`` is not supplied.  It is kept for backwards compatibility only.
 
@@ -4392,10 +4397,17 @@ class LiveController(QWidget):
         self._active_sync_show_session = session
 
         # Build query parameters.  Prefer absolute start_at; fall back to offset.
+        # In the absolute-time path, offset=0 is sent explicitly so that the server
+        # never applies the legacy 5-second default even if start_at is somehow
+        # absent — that would delay the sync-show by 5 seconds relative to the video.
         if start_at is not None:
-            params = urllib.parse.urlencode({'name': show_file, 'start_at': f'{start_at:.6f}'})
+            params = urllib.parse.urlencode({
+                'name': show_file,
+                'start_at': f'{start_at:.6f}',
+                'offset': '0',
+            })
         else:
-            effective_offset = offset_sec if offset_sec is not None else 5.0
+            effective_offset = offset_sec if offset_sec is not None else 0.0
             params = urllib.parse.urlencode({'name': show_file, 'offset': f'{effective_offset:.3f}'})
         url = f"{host}/api/session/{session}/play-show-by-name?{params}"
 

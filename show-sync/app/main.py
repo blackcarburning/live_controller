@@ -339,7 +339,7 @@ def list_shows():
 async def play_show_by_name(
     session_id: str,
     name: str,
-    offset: float = 5.0,
+    offset: float = 0.0,
     start_at: Optional[float] = None,
 ):
     """Load a show from the shows directory by filename and start timeline playback.
@@ -366,7 +366,14 @@ async def play_show_by_name(
     an NTP-synchronised wall clock (typical within a few tens of
     milliseconds on modern devices).
 
-    Example — absolute-time start::
+    The ``offset`` parameter defaults to **0** for this endpoint.  The legacy
+    default of 5 seconds was designed for the relative-scheduling path and
+    must not be applied when ``start_at`` drives the timing — using a 5-second
+    offset on top of an absolute start time would delay the show by 5 seconds
+    relative to the locally-played video.  Pass an explicit non-zero ``offset``
+    only if you intentionally want a relative delay when ``start_at`` is absent.
+
+    Example — absolute-time start (recommended, used by live_controller)::
 
         # start_at = Unix timestamp 1.5 s in the future
         curl -X POST "http://localhost:8000/api/session/a1b2c3d4/play-show-by-name?name=A_storm_is_coming.json&start_at=1713610532.5"
