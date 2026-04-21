@@ -84,6 +84,9 @@ function clearEffect() {
   displayEl.style.transition = 'none';
   displayEl.style.background = '#000000';
   displayEl.style.opacity    = '1';
+  displayEl.style.transform  = '';
+  displayEl.style.filter     = '';
+  displayEl.style.clipPath   = '';
   textEl.style.display       = 'none';
   textEl.textContent         = '';
   textEl.style.opacity       = '1';
@@ -141,6 +144,91 @@ function runEffect(msg) {
       fadeTimer = setTimeout(clearEffect, durationMs);
       break;
 
+    case 'strobe': {
+      const rate     = params.rate || 10;
+      const interval = Math.round(500 / rate);  // ms per half-period (on or off)
+      let   state    = true;
+      displayEl.style.transition = 'none';
+      displayEl.style.background = color;
+      const strobeTimer = setInterval(() => {
+        state = !state;
+        displayEl.style.background = state ? color : '#000000';
+      }, interval);
+      fadeTimer = setTimeout(() => { clearInterval(strobeTimer); clearEffect(); }, durationMs);
+      break;
+    }
+
+    case 'pulse': {
+      const pulseRate = params.rate || 1;
+      let   pulseStart = null;
+      displayEl.style.transition = 'none';
+      displayEl.style.background = color;
+      function pulseTick(ts) {
+        if (pulseStart === null) pulseStart = ts;
+        const pos = (ts - pulseStart) / 1000;
+        displayEl.style.opacity = (0.5 + 0.5 * Math.sin(2 * Math.PI * pos * pulseRate)).toFixed(3);
+        if ((ts - pulseStart) < durationMs) requestAnimationFrame(pulseTick);
+        else clearEffect();
+      }
+      requestAnimationFrame(pulseTick);
+      break;
+    }
+
+    case 'glitch': {
+      const intensity  = params.intensity || 8;
+      let   glitchStart = null;
+      displayEl.style.transition = 'none';
+      displayEl.style.background = color;
+      function glitchTick(ts) {
+        if (glitchStart === null) glitchStart = ts;
+        const pos = (ts - glitchStart) / 1000;
+        const dx  = Math.sin(pos * 137.5) * intensity;
+        const dy  = Math.cos(pos * 89.3)  * intensity;
+        displayEl.style.transform = `translate(${dx.toFixed(1)}px,${dy.toFixed(1)}px)`;
+        if ((ts - glitchStart) < durationMs) requestAnimationFrame(glitchTick);
+        else clearEffect();
+      }
+      requestAnimationFrame(glitchTick);
+      break;
+    }
+
+    case 'blur': {
+      const maxBlur  = params.max_blur || 20;
+      let   blurStart = null;
+      displayEl.style.transition = 'none';
+      displayEl.style.background = color;
+      function blurTick(ts) {
+        if (blurStart === null) blurStart = ts;
+        const pos     = (ts - blurStart) / 1000;
+        const blurVal = maxBlur * Math.max(0, 1 - pos / (durationMs / 1000));
+        displayEl.style.filter = `blur(${blurVal.toFixed(1)}px)`;
+        if ((ts - blurStart) < durationMs) requestAnimationFrame(blurTick);
+        else clearEffect();
+      }
+      requestAnimationFrame(blurTick);
+      break;
+    }
+
+    case 'color_sweep': {
+      const direction  = params.direction || 'lr';
+      let   sweepStart = null;
+      displayEl.style.transition = 'none';
+      displayEl.style.background = color;
+      function sweepTick(ts) {
+        if (sweepStart === null) sweepStart = ts;
+        const progress = Math.min(1, (ts - sweepStart) / durationMs);
+        const inv = ((1 - progress) * 100).toFixed(1);
+        if      (direction === 'lr') displayEl.style.clipPath = `inset(0 ${inv}% 0 0)`;
+        else if (direction === 'rl') displayEl.style.clipPath = `inset(0 0 0 ${inv}%)`;
+        else if (direction === 'tb') displayEl.style.clipPath = `inset(0 0 ${inv}% 0)`;
+        else                          displayEl.style.clipPath = `inset(${inv}% 0 0 0)`;
+        if (progress < 1) requestAnimationFrame(sweepTick);
+        else clearEffect();
+      }
+      requestAnimationFrame(sweepTick);
+      break;
+    }
+
     default:
       // Unknown effect type — fall back to a solid colour flash.
       displayEl.style.transition = 'none';
@@ -181,6 +269,7 @@ function compositeTimeline(showTime) {
 
   let bg = null, bgOp = 0;
   let txt = null, txtColor = '#fff', txtOp = 0, txtSz = 5;
+  let effectTransform = '', effectFilter = '', effectClipPath = '';
 
   for (const track of sorted) {
     for (const clip of track.clips) {
@@ -207,6 +296,40 @@ function compositeTimeline(showTime) {
         txtColor = params.color || '#ffffff';
         txtSz    = params.size  || 5;
         txtOp    = op;
+      } else if (type === 'strobe') {
+        const rate = params.rate || 10;
+        if (Math.floor(pos * rate * 2) % 2 === 0) {
+          bg   = params.color || '#ffffff';
+          bgOp = op;
+        }
+      } else if (type === 'pulse') {
+        const rate = params.rate || 1;
+        const pOp  = 0.5 + 0.5 * Math.sin(2 * Math.PI * pos * rate);
+        bg   = params.color || '#ffffff';
+        bgOp = pOp * op;
+      } else if (type === 'glitch') {
+        const intensity = params.intensity || 8;
+        const dx = Math.sin(pos * 137.5) * intensity * op;
+        const dy = Math.cos(pos * 89.3)  * intensity * op;
+        bg   = params.color || '#ff0000';
+        bgOp = op;
+        effectTransform = `translate(${dx.toFixed(1)}px,${dy.toFixed(1)}px)`;
+      } else if (type === 'blur') {
+        const maxBlur = params.max_blur || 20;
+        const blurVal = maxBlur * Math.max(0, 1 - pos / dur);
+        bg   = params.color || '#ffffff';
+        bgOp = op;
+        effectFilter = `blur(${blurVal.toFixed(1)}px)`;
+      } else if (type === 'color_sweep') {
+        const progress  = _clamp(pos / dur, 0, 1);
+        const direction = params.direction || 'lr';
+        const inv = ((1 - progress) * 100).toFixed(1);
+        if      (direction === 'lr') effectClipPath = `inset(0 ${inv}% 0 0)`;
+        else if (direction === 'rl') effectClipPath = `inset(0 0 0 ${inv}%)`;
+        else if (direction === 'tb') effectClipPath = `inset(0 0 ${inv}% 0)`;
+        else                          effectClipPath = `inset(${inv}% 0 0 0)`;
+        bg   = params.color || '#ff0000';
+        bgOp = 1;
       }
     }
   }
@@ -220,6 +343,9 @@ function compositeTimeline(showTime) {
     displayEl.style.background = '#000';
     displayEl.style.opacity    = '1';
   }
+  displayEl.style.transform = effectTransform;
+  displayEl.style.filter    = effectFilter;
+  displayEl.style.clipPath  = effectClipPath;
 
   // Text layer (rendered on top via z-index in join.html)
   if (txt !== null && txtOp > 0) {
