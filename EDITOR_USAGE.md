@@ -62,6 +62,11 @@ playhead position:
 | **+ Text** | `text` | Displays centred text above the colour layer |
 | **+ Fade In** | `fade_in` | Fades from black into a colour over the duration |
 | **+ Fade Out** | `fade_out` | Fades from a colour back to black over the duration |
+| **+ Strobe** | `strobe` | Rapid on/off flashing at a configurable rate (Hz) |
+| **+ Pulse** | `pulse` | Sine-wave opacity pulsing at a configurable rate (Hz) |
+| **+ Glitch** | `glitch` | Position-jitter/shake effect with configurable intensity |
+| **+ Blur In** | `blur` | Starts heavily blurred and sharpens to full clarity over the clip |
+| **+ Sweep** | `color_sweep` | A colour that sweeps across the screen (four directions) |
 
 Solid / fade clips go on the **Solids** track (layer 1).
 Text clips go on the **Text** track (layer 10 — rendered on top).
@@ -86,16 +91,150 @@ When a clip is selected, the **properties bar** at the bottom shows:
 
 | Field | Notes |
 |-------|-------|
-| **Type** | Change the clip type (Solid colour / Text / Fade In / Fade Out) |
+| **Type** | Change the clip type (all nine types listed above) |
 | **Start (s)** | Exact start time in seconds |
 | **Duration (s)** | Length of the clip in seconds |
+| **Beats (N BPM) →** | One-click beat presets: ¼ / ½ / 1 / 2 / 4 beats at the show's current BPM — sets Duration instantly |
 | **Colour** | Background / text colour (colour picker) |
 | **Text** | *(text clips only)* The text string to display |
 | **Size (vmin)** | *(text clips only)* Font size in `vmin` units (1–30) |
+| **Rate (Hz)** | *(strobe / pulse only)* Flashes or cycles per second |
+| **Intensity (px)** | *(glitch only)* Maximum pixel offset for the jitter |
+| **Max Blur (px)** | *(blur only)* Starting blur radius in pixels (reduces to 0 over the clip) |
+| **Direction** | *(color_sweep only)* Sweep direction: → Left→Right, ← Right→Left, ↓ Top→Bottom, ↑ Bottom→Top |
 | **Fade In (s)** | Ramp-up time at the start of the clip (0 = instant) |
 | **Fade Out (s)** | Ramp-down time at the end of the clip (0 = instant) |
 
 ---
+
+## Five new live-show effects
+
+The following effect types were added for live-performance contexts.  They are
+available from the **FX** buttons in the timeline toolbar and from the **Type**
+dropdown in the properties bar.
+
+### 1 — Strobe (`strobe`)
+
+Rapid on/off flashing at a configurable frequency.
+
+| Param | Default | Notes |
+|-------|---------|-------|
+| `color` | `#ffffff` | Flash colour |
+| `rate` | `10` | Flashes per second (Hz) — each flash = one on + one off cycle |
+
+**Live rendering:** toggles the display between `color` and black at `rate` Hz
+with a 50 % duty cycle (equal on/off time).  Fade in/out is applied as an
+opacity envelope across the whole clip.
+
+### 2 — Pulse (`pulse`)
+
+Smooth sine-wave opacity cycling.
+
+| Param | Default | Notes |
+|-------|---------|-------|
+| `color` | `#ffffff` | Pulse colour |
+| `rate` | `1` | Full oscillation cycles per second (Hz) |
+
+**Live rendering:** opacity = `0.5 + 0.5 × sin(2π × pos × rate)` — ranges from
+0 to 1 over each cycle, creating a smooth breathing or heartbeat effect.
+
+### 3 — Glitch (`glitch`)
+
+Rapid position-jitter using deterministic pseudo-random offsets.
+
+| Param | Default | Notes |
+|-------|---------|-------|
+| `color` | `#ff4040` | Fill colour during jitter |
+| `intensity` | `8` | Maximum pixel displacement (x and y) |
+
+**Live rendering:** applies `transform: translate(dx, dy)` each frame where
+`dx = sin(pos × 137.5) × intensity` and `dy = cos(pos × 89.3) × intensity`.
+The displacement is multiplied by the fade-in/fade-out opacity envelope so the
+jitter can be ramped in or out naturally.
+
+### 4 — Blur In (`blur`)
+
+Screen starts heavily blurred and gradually sharpens to full clarity.
+
+| Param | Default | Notes |
+|-------|---------|-------|
+| `color` | `#ffffff` | Background colour shown through the blur |
+| `max_blur` | `20` | Starting blur radius in pixels; decreases linearly to 0 |
+
+**Live rendering:** applies `filter: blur(Npx)` where N decreases from
+`max_blur` to 0 over the clip duration.  Combine with a `fade_out` clip
+underneath for a sharp→blurry-exit effect.
+
+### 5 — Color Sweep (`color_sweep`)
+
+A solid colour that sweeps across the screen from one side.
+
+| Param | Default | Notes |
+|-------|---------|-------|
+| `color` | `#ff0000` | Sweep colour |
+| `direction` | `lr` | `lr` left→right, `rl` right→left, `tb` top→bottom, `bt` bottom→top |
+
+**Live rendering:** uses `clip-path: inset(…)` to reveal the colour block
+progressively from 0 % to 100 % over the clip duration.
+
+---
+
+## BPM-aware timing
+
+### Setting the show BPM
+
+The **BPM** field in the toolbar (default **120**) stores the tempo in the
+show file (`show.bpm`).  It is used exclusively for the beat-duration helper;
+it does not affect the audio or video playback rate.
+
+When you load a show file that contains a `bpm` key, the input is updated
+automatically.  When you start a new show, it resets to 120.
+
+### Beat-duration presets
+
+When a clip is selected, the properties bar shows a row of beat-duration
+buttons labelled **¼ ½ 1 2 4**.  Clicking one sets the clip's **Duration (s)**
+field to the equivalent number of seconds at the current BPM:
+
+```
+duration_seconds = round(beats × 60 / BPM × 1000) / 1000
+```
+
+| Button | Beats | At 120 BPM | At 128 BPM |
+|--------|-------|-----------|-----------|
+| **¼** | 0.25 | 0.125 s | 0.117 s |
+| **½** | 0.5  | 0.250 s | 0.234 s |
+| **1** | 1    | 0.500 s | 0.469 s |
+| **2** | 2    | 1.000 s | 0.938 s |
+| **4** | 4    | 2.000 s | 1.875 s |
+
+The tooltip on each button shows the exact seconds value for the current BPM.
+
+### Show file format (BPM field)
+
+The `bpm` key is stored at the top level of the show JSON and is backward
+compatible — older show files without it default to 120 in the editor.
+
+```json
+{
+  "version": 2,
+  "bpm": 128,
+  "media": { "type": "video", "src": "my-show.mov", "duration": 185.2 },
+  "tracks": [ ... ]
+}
+```
+
+### Example: four-beat strobe at 128 BPM
+
+1. Click **+ Strobe** at the desired playhead position.
+2. Select the new clip; it defaults to 2 s / 10 Hz / white.
+3. In the properties bar click **4** in the beats row → Duration becomes 1.875 s (4 beats at 128 BPM).
+4. Change Rate (Hz) to `8` for a slightly slower strobe.
+5. Save the show.
+
+---
+
+
 
 ## WYSIWYG preview
 
@@ -105,6 +244,8 @@ clips at the current playhead position:
 - Solid colour / fade clips form the background layer.
 - Text clips render on top with their configured colour and size.
 - Fade in/out opacity is applied in real time as you scrub or play.
+- Strobe, pulse, glitch, blur, and colour-sweep effects are also previewed live
+  as the playhead moves through them.
 
 ---
 

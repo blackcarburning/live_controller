@@ -366,6 +366,10 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   <button onclick="movInput()">Load .mov</button>
   <button onclick="showInput()">Load Show</button>
   <button class="primary" onclick="saveShow()">Save Show</button>
+  <div class="tb-sep"></div>
+  <label>BPM</label>
+  <input type="number" id="bpm-input" min="20" max="300" step="1" value="120" style="width:58px"
+         oninput="show.bpm = Math.max(20, Math.min(300, parseInt(this.value) || 120))">
   <div class="tb-spacer"></div>
   <span id="filename-display">unsaved</span>
 </div>
@@ -402,6 +406,13 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   <button onclick="addClip('text')"    title="Text overlay">+ Text</button>
   <button onclick="addClip('fade_in')" title="Fade from black to colour">+ Fade In</button>
   <button onclick="addClip('fade_out')"title="Fade from colour to black">+ Fade Out</button>
+  <div class="tb-sep" style="height:18px;align-self:center"></div>
+  <span class="add-label">FX:</span>
+  <button onclick="addClip('strobe')"      title="Strobe: rapid on/off flash">+ Strobe</button>
+  <button onclick="addClip('pulse')"       title="Pulse: sine-wave opacity">+ Pulse</button>
+  <button onclick="addClip('glitch')"      title="Glitch: position jitter">+ Glitch</button>
+  <button onclick="addClip('blur')"        title="Blur in: starts blurry, sharpens">+ Blur In</button>
+  <button onclick="addClip('color_sweep')" title="Color sweep across screen">+ Sweep</button>
   <div class="zoom-group">
     <span style="font-size:11px;color:var(--muted)">Zoom:</span>
     <button onclick="zoom(-1)">−</button>
@@ -452,6 +463,7 @@ let clipboard = null;     // deep-copied clip for Ctrl+C / Ctrl+V paste
 function blankShow() {
   return {
     version: 2,
+    bpm: 120,
     media:  { type: 'video', src: '', duration: 0 },
     tracks: [
       { id: 't1', name: 'Solids', layer: 1,  clips: [] },
@@ -469,6 +481,24 @@ function uid() { return (++_uidc).toString(36) + Math.random().toString(36).slic
 function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 function t2x(t)  { return t * pps; }
 function x2t(x)  { return x / pps; }
+
+// ── BPM helpers ───────────────────────────────────────────────────────────────
+
+/** Convert beats to seconds using the show's current BPM (default 120). */
+function beatsToSeconds(beats) {
+  const bpm = show.bpm || 120;
+  return Math.round(beats * 60 / bpm * 1000) / 1000;
+}
+
+/** Set selected clip's duration from a beat count and re-render. */
+function setBeatDur(beats) {
+  if (!selId) return;
+  const found = getClip(selId);
+  if (!found) return;
+  found.cl.duration = beatsToSeconds(beats);
+  render();
+  renderPropsBar();
+}
 
 function fmtTime(s) {
   if (!isFinite(s) || s < 0) s = 0;
@@ -488,21 +518,31 @@ function getClip(id) {
 
 function clipBg(clip) {
   switch (clip.type) {
-    case 'color':    return clip.params?.color || '#c03030';
-    case 'text':     return '#2a60c0';
-    case 'fade_in':  return '#c07030';
-    case 'fade_out': return '#7030c0';
-    default:         return '#505050';
+    case 'color':        return clip.params?.color || '#c03030';
+    case 'text':         return '#2a60c0';
+    case 'fade_in':      return '#c07030';
+    case 'fade_out':     return '#7030c0';
+    case 'strobe':       return clip.params?.color || '#e0b020';
+    case 'pulse':        return clip.params?.color || '#20a060';
+    case 'glitch':       return clip.params?.color || '#c020c0';
+    case 'blur':         return clip.params?.color || '#2080c0';
+    case 'color_sweep':  return clip.params?.color || '#c06020';
+    default:             return '#505050';
   }
 }
 
 function clipLabel(clip) {
   switch (clip.type) {
-    case 'color':    return clip.params?.color || 'solid';
-    case 'text':     return clip.params?.text ? `"${clip.params.text}"` : 'text';
-    case 'fade_in':  return 'fade in';
-    case 'fade_out': return 'fade out';
-    default:         return clip.type;
+    case 'color':        return clip.params?.color || 'solid';
+    case 'text':         return clip.params?.text ? `"${clip.params.text}"` : 'text';
+    case 'fade_in':      return 'fade in';
+    case 'fade_out':     return 'fade out';
+    case 'strobe':       return `strobe ${clip.params?.rate || 10}Hz`;
+    case 'pulse':        return `pulse ${clip.params?.rate || 1}Hz`;
+    case 'glitch':       return `glitch ${clip.params?.intensity || 8}px`;
+    case 'blur':         return `blur ${clip.params?.max_blur || 20}px`;
+    case 'color_sweep':  return `sweep ${clip.params?.direction || 'lr'}`;
+    default:             return clip.type;
   }
 }
 
@@ -722,6 +762,7 @@ function compositeAt(t) {
 
   let bg = null, bgOp = 0;
   let txt = null, txtColor = '#fff', txtOp = 0, txtSz = 5;
+  let effectTransform = '', effectFilter = '', effectClipPath = '';
 
   for (const track of sorted) {
     for (const clip of track.clips) {
@@ -737,20 +778,60 @@ function compositeAt(t) {
       if (fo > 0 && pos > dur - fo) op *= (dur - pos) / fo;
       op = clamp(op, 0, 1);
 
-      if (clip.type === 'color' || clip.type === 'fade_in' || clip.type === 'fade_out') {
-        bg   = clip.params?.color || '#ff0000';
+      const type   = clip.type;
+      const params = clip.params || {};
+
+      if (type === 'color' || type === 'fade_in' || type === 'fade_out') {
+        bg   = params.color || '#ff0000';
         bgOp = op;
-      } else if (clip.type === 'text') {
-        txt      = clip.params?.text  || null;
-        txtColor = clip.params?.color || '#ffffff';
-        txtSz    = clip.params?.size  || 5;
+      } else if (type === 'text') {
+        txt      = params.text  || null;
+        txtColor = params.color || '#ffffff';
+        txtSz    = params.size  || 5;
         txtOp    = op;
+      } else if (type === 'strobe') {
+        const rate = params.rate || 10;
+        if (Math.floor(pos * rate * 2) % 2 === 0) {
+          bg   = params.color || '#ffffff';
+          bgOp = op;
+        }
+      } else if (type === 'pulse') {
+        const rate = params.rate || 1;
+        const pOp  = 0.5 + 0.5 * Math.sin(2 * Math.PI * pos * rate);
+        bg   = params.color || '#ffffff';
+        bgOp = pOp * op;
+      } else if (type === 'glitch') {
+        const intensity = params.intensity || 8;
+        const dx = Math.sin(pos * 137.5) * intensity * op;
+        const dy = Math.cos(pos * 89.3)  * intensity * op;
+        bg   = params.color || '#ff0000';
+        bgOp = op;
+        effectTransform = `translate(${dx.toFixed(1)}px,${dy.toFixed(1)}px)`;
+      } else if (type === 'blur') {
+        const maxBlur = params.max_blur || 20;
+        const blurVal = maxBlur * Math.max(0, 1 - pos / dur);
+        bg   = params.color || '#ffffff';
+        bgOp = op;
+        effectFilter = `blur(${blurVal.toFixed(1)}px)`;
+      } else if (type === 'color_sweep') {
+        const progress  = clamp(pos / dur, 0, 1);
+        const direction = params.direction || 'lr';
+        const inv = ((1 - progress) * 100).toFixed(1);
+        if      (direction === 'lr') effectClipPath = `inset(0 ${inv}% 0 0)`;
+        else if (direction === 'rl') effectClipPath = `inset(0 0 0 ${inv}%)`;
+        else if (direction === 'tb') effectClipPath = `inset(0 0 ${inv}% 0)`;
+        else                          effectClipPath = `inset(${inv}% 0 0 0)`;
+        bg   = params.color || '#ff0000';
+        bgOp = 1;
       }
     }
   }
 
   solidEl.style.background = bg || '#000';
   solidEl.style.opacity    = (bg && bgOp > 0) ? bgOp : 0;
+  solidEl.style.transform  = effectTransform;
+  solidEl.style.filter     = effectFilter;
+  solidEl.style.clipPath   = effectClipPath;
 
   if (txt !== null && txtOp > 0) {
     textEl.textContent    = txt;
@@ -957,7 +1038,9 @@ function renderPropsBar() {
 
   // Type
   const sel = document.createElement('select');
-  [['color','Solid colour'],['text','Text'],['fade_in','Fade In'],['fade_out','Fade Out']].forEach(([v, lbl]) => {
+  [['color','Solid colour'],['text','Text'],['fade_in','Fade In'],['fade_out','Fade Out'],
+   ['strobe','Strobe'],['pulse','Pulse'],['glitch','Glitch'],['blur','Blur In'],['color_sweep','Color Sweep']
+  ].forEach(([v, lbl]) => {
     const opt = document.createElement('option');
     opt.value = v; opt.textContent = lbl;
     if (v === cl.type) opt.selected = true;
@@ -974,6 +1057,23 @@ function renderPropsBar() {
   // Start / Duration
   panel.appendChild(g('Start (s)',    numInp(cl.start.toFixed(3),    v => { cl.start    = Math.max(0, v); })));
   panel.appendChild(g('Duration (s)', numInp(cl.duration.toFixed(3), v => { cl.duration = Math.max(0.05, v); })));
+
+  // Beat-duration helper
+  const bpmNow = show.bpm || 120;
+  const beatGrp = document.createElement('div');
+  beatGrp.className = 'props-group';
+  const beatLbl = document.createElement('label');
+  beatLbl.textContent = `Beats (${bpmNow} BPM) →`;
+  beatGrp.appendChild(beatLbl);
+  [[0.25,'¼'],[0.5,'½'],[1,'1'],[2,'2'],[4,'4']].forEach(([b, lbl]) => {
+    const btn = document.createElement('button');
+    btn.textContent = lbl;
+    btn.title = `Set duration to ${b} beat${b !== 1 ? 's' : ''} (${beatsToSeconds(b)}s at ${bpmNow} BPM)`;
+    btn.style.cssText = 'padding:2px 6px;font-size:11px;';
+    btn.onclick = () => setBeatDur(b);
+    beatGrp.appendChild(btn);
+  });
+  panel.appendChild(beatGrp);
 
   // Colour
   if (!cl.params) cl.params = {};
@@ -1014,11 +1114,87 @@ function renderPropsBar() {
     panel.appendChild(g('Size (vmin)', sz));
   }
 
+  // Effect-specific params (new effect types)
+  if (cl.type === 'strobe') {
+    const rateInp = document.createElement('input');
+    rateInp.type = 'number'; rateInp.min = 0.5; rateInp.max = 60; rateInp.step = 0.5;
+    rateInp.value = cl.params.rate || 10;
+    rateInp.style.width = '64px';
+    rateInp.title = 'Flashes per second (Hz)';
+    rateInp.addEventListener('change', () => {
+      cl.params.rate = parseFloat(rateInp.value) || 10;
+      const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
+      if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      renderPreview();
+    });
+    panel.appendChild(g('Rate (Hz)', rateInp));
+  }
+
+  if (cl.type === 'pulse') {
+    const rateInp = document.createElement('input');
+    rateInp.type = 'number'; rateInp.min = 0.1; rateInp.max = 20; rateInp.step = 0.1;
+    rateInp.value = cl.params.rate || 1;
+    rateInp.style.width = '64px';
+    rateInp.title = 'Pulse cycles per second (Hz)';
+    rateInp.addEventListener('change', () => {
+      cl.params.rate = parseFloat(rateInp.value) || 1;
+      const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
+      if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      renderPreview();
+    });
+    panel.appendChild(g('Rate (Hz)', rateInp));
+  }
+
+  if (cl.type === 'glitch') {
+    const intInp = document.createElement('input');
+    intInp.type = 'number'; intInp.min = 1; intInp.max = 100; intInp.step = 1;
+    intInp.value = cl.params.intensity || 8;
+    intInp.style.width = '64px';
+    intInp.title = 'Maximum jitter offset in pixels';
+    intInp.addEventListener('change', () => {
+      cl.params.intensity = parseFloat(intInp.value) || 8;
+      const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
+      if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      renderPreview();
+    });
+    panel.appendChild(g('Intensity (px)', intInp));
+  }
+
+  if (cl.type === 'blur') {
+    const blurInp = document.createElement('input');
+    blurInp.type = 'number'; blurInp.min = 1; blurInp.max = 100; blurInp.step = 1;
+    blurInp.value = cl.params.max_blur || 20;
+    blurInp.style.width = '64px';
+    blurInp.title = 'Starting blur amount in pixels (reduces to 0 over clip duration)';
+    blurInp.addEventListener('change', () => {
+      cl.params.max_blur = parseFloat(blurInp.value) || 20;
+      const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
+      if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      renderPreview();
+    });
+    panel.appendChild(g('Max Blur (px)', blurInp));
+  }
+
+  if (cl.type === 'color_sweep') {
+    const dirSel = document.createElement('select');
+    [['lr','→ Left→Right'],['rl','← Right→Left'],['tb','↓ Top→Bottom'],['bt','↑ Bottom→Top']].forEach(([v, lbl]) => {
+      const opt = document.createElement('option');
+      opt.value = v; opt.textContent = lbl;
+      if (v === (cl.params.direction || 'lr')) opt.selected = true;
+      dirSel.appendChild(opt);
+    });
+    dirSel.addEventListener('change', () => {
+      cl.params.direction = dirSel.value;
+      const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
+      if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      renderPreview();
+    });
+    panel.appendChild(g('Direction', dirSel));
+  }
+
   // Fade in / out
   panel.appendChild(g('Fade In (s)',  numInp((cl.fade_in  || 0).toFixed(2), v => { cl.fade_in  = Math.max(0, v); renderPreview(); })));
   panel.appendChild(g('Fade Out (s)', numInp((cl.fade_out || 0).toFixed(2), v => { cl.fade_out = Math.max(0, v); renderPreview(); })));
-
-  // Delete
   const del = document.createElement('button');
   del.className   = 'danger';
   del.textContent = 'Delete';
@@ -1044,14 +1220,24 @@ function addClip(type) {
     ? (sorted.find(t => t.layer >= 10) || sorted[sorted.length - 1])
     : (sorted.find(t => t.layer <  10) || sorted[0]);
 
+  function defaultParams(t) {
+    switch (t) {
+      case 'text':        return { color: '#ffffff', text: 'Text', size: 5 };
+      case 'strobe':      return { color: '#ffffff', rate: 10 };
+      case 'pulse':       return { color: '#ffffff', rate: 1 };
+      case 'glitch':      return { color: '#ff4040', intensity: 8 };
+      case 'blur':        return { color: '#ffffff', max_blur: 20 };
+      case 'color_sweep': return { color: '#ff0000', direction: 'lr' };
+      default:            return { color: '#ff0000' };
+    }
+  }
+
   const clip = {
     id:       uid(),
     type,
     start,
     duration: 2.0,
-    params:   type === 'text'
-                ? { color: '#ffffff', text: 'Text', size: 5 }
-                : { color: '#ff0000' },
+    params:   defaultParams(type),
     fade_in:  0,
     fade_out: 0,
   };
@@ -1080,9 +1266,8 @@ function copySelected() {
   if (!selId) return;
   const found = getClip(selId);
   if (!found) return;
-  // All supported clip types can be copied: color, text, fade_in, fade_out
-  // (fade_in / fade_out are full clip types placed on the Solids track, not sub-properties)
-  const allowedTypes = ['color', 'text', 'fade_in', 'fade_out'];
+  // All supported clip types can be copied: color, text, fade_in, fade_out, and new FX types
+  const allowedTypes = ['color', 'text', 'fade_in', 'fade_out', 'strobe', 'pulse', 'glitch', 'blur', 'color_sweep'];
   if (!allowedTypes.includes(found.cl.type)) return;
   clipboard = JSON.parse(JSON.stringify(found.cl));  // deep copy, preserves all params
 }
@@ -1217,6 +1402,11 @@ function loadShowData(data, filename) {
 
   curFile = filename;
   document.getElementById('filename-display').textContent = filename;
+
+  // Sync BPM input with loaded show value (default 120 if absent)
+  const bpmInp = document.getElementById('bpm-input');
+  if (bpmInp) bpmInp.value = show.bpm || 120;
+
   selId = null;
   render();
   renderPropsBar();
@@ -1255,6 +1445,8 @@ function newShow() {
   curFile = null;
   selId   = null;
   document.getElementById('filename-display').textContent = 'unsaved';
+  const bpmInp = document.getElementById('bpm-input');
+  if (bpmInp) bpmInp.value = 120;
   render();
   renderPropsBar();
 }
