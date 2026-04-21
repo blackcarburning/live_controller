@@ -77,6 +77,38 @@ function syncOnce() {
   ws.send(JSON.stringify({ type: 'sync', t0: nowSeconds() }));
 }
 
+// ── Link URL safety helper ────────────────────────────────────────────────────
+
+/**
+ * Return a safe URL string if the scheme is http, https, mailto, or tel.
+ * Returns '' for any other scheme (including javascript:, data:, vbscript:).
+ *
+ * For http/https the href is re-serialized from a parsed URL object so the
+ * returned string is never the raw user input — it is always a canonical URL
+ * produced by the browser's URL parser.
+ */
+function _safeLinkUrl(raw) {
+  if (!raw) return '';
+  const trimmed = raw.trim();
+  // mailto: — allow only printable non-whitespace chars, no HTML special chars
+  if (/^mailto:/i.test(trimmed)) {
+    return /^mailto:[^\s<>"'`\\]+$/i.test(trimmed) ? trimmed : '';
+  }
+  // tel: — allow only digits, spaces, +, -, (, )
+  if (/^tel:/i.test(trimmed)) {
+    return /^tel:[+\d\s\-()]+$/i.test(trimmed) ? trimmed : '';
+  }
+  // http / https — parse with URL API and return the re-serialized href
+  try {
+    const u = new URL(trimmed);
+    if (u.protocol === 'http:' || u.protocol === 'https:') {
+      // Return the browser-canonical href, not the raw input.
+      return u.href;
+    }
+  } catch (_) {}
+  return '';
+}
+
 // ── Legacy effect rendering (cue mode) ───────────────────────────────────────
 
 function clearEffect() {
@@ -88,7 +120,7 @@ function clearEffect() {
   displayEl.style.filter     = '';
   displayEl.style.clipPath   = '';
   textEl.style.display       = 'none';
-  textEl.textContent         = '';
+  while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
   textEl.style.opacity       = '1';
 }
 
@@ -136,7 +168,17 @@ function runEffect(msg) {
 
     case 'text':
       if (params.text) {
-        textEl.textContent    = params.text;
+        while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
+        const linkUrl = _safeLinkUrl(params.link_url || '');
+        if (linkUrl) {
+          const a = document.createElement('a');
+          a.href = linkUrl;
+          a.textContent = params.text;
+          a.style.cssText = 'color:' + color + ';text-decoration:underline;';
+          textEl.appendChild(a);
+        } else {
+          textEl.textContent = params.text;
+        }
         textEl.style.color    = color;
         textEl.style.fontSize = (params.size || 5) + 'vmin';
         textEl.style.display  = 'flex';
@@ -268,7 +310,7 @@ function compositeTimeline(showTime) {
   const sorted = [...tlShow.tracks].sort((a, b) => a.layer - b.layer);
 
   let bg = null, bgOp = 0;
-  let txt = null, txtColor = '#fff', txtOp = 0, txtSz = 5;
+  let txt = null, txtColor = '#fff', txtOp = 0, txtSz = 5, txtLinkUrl = '';
   let effectTransform = '', effectFilter = '', effectClipPath = '';
 
   for (const track of sorted) {
@@ -292,10 +334,11 @@ function compositeTimeline(showTime) {
         bg   = params.color || '#ff0000';
         bgOp = op;
       } else if (type === 'text') {
-        txt      = params.text  || null;
-        txtColor = params.color || '#ffffff';
-        txtSz    = params.size  || 5;
-        txtOp    = op;
+        txt        = params.text     || null;
+        txtColor   = params.color    || '#ffffff';
+        txtSz      = params.size     || 5;
+        txtOp      = op;
+        txtLinkUrl = params.link_url || '';
       } else if (type === 'strobe') {
         const rate = params.rate || 10;
         if (Math.floor(pos * rate * 2) % 2 === 0) {
@@ -349,15 +392,25 @@ function compositeTimeline(showTime) {
 
   // Text layer (rendered on top via z-index in join.html)
   if (txt !== null && txtOp > 0) {
-    textEl.textContent    = txt;
+    while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
+    const safeUrl = _safeLinkUrl(txtLinkUrl);
+    if (safeUrl) {
+      const a = document.createElement('a');
+      a.href = safeUrl;
+      a.textContent = txt;
+      a.style.cssText = 'color:' + txtColor + ';text-decoration:underline;';
+      textEl.appendChild(a);
+    } else {
+      textEl.textContent = txt;
+    }
     textEl.style.color    = txtColor;
     textEl.style.fontSize = txtSz + 'vmin';
     textEl.style.opacity  = txtOp;
     textEl.style.display  = 'flex';
   } else {
+    while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
     textEl.style.display = 'none';
     textEl.style.opacity = '1';
-    textEl.textContent   = '';
   }
 }
 
