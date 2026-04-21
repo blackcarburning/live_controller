@@ -9,6 +9,7 @@ so that Python scripts (e.g. live_controller) that construct show JSON files
 can generate beat-aligned durations with identical precision.
 """
 import math
+import pytest
 
 
 def beats_to_seconds(beats: float, bpm: float) -> float:
@@ -134,17 +135,11 @@ def test_very_low_bpm():
 
 def test_invalid_zero_bpm_raises():
     """BPM of 0 is invalid and must raise ValueError."""
-    try:
+    with pytest.raises(ValueError):
         beats_to_seconds(1, 0)
-        assert False, "Expected ValueError"
-    except ValueError:
-        pass
 
 
 def test_invalid_negative_bpm_raises():
     """Negative BPM is invalid and must raise ValueError."""
-    try:
+    with pytest.raises(ValueError):
         beats_to_seconds(1, -120)
-        assert False, "Expected ValueError"
-    except ValueError:
-        pass
