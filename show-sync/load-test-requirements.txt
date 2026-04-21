@@ -1,0 +1,3 @@
+# Dependencies for show-sync/load_test.py
+# Install with:  pip install -r load-test-requirements.txt
+websockets>=12.0
