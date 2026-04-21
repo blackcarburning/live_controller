@@ -271,6 +271,95 @@ function runEffect(msg) {
       break;
     }
 
+    case 'bounce': {
+      const rate = params.rate      || 1;
+      const amp  = params.amplitude || 30;
+      let   bounceStart = null;
+      displayEl.style.transition = 'none';
+      displayEl.style.background = color;
+      function bounceTick(ts) {
+        if (bounceStart === null) bounceStart = ts;
+        const pos = (ts - bounceStart) / 1000;
+        const dy  = Math.sin(2 * Math.PI * pos * rate) * amp;
+        displayEl.style.transform = `translateY(${dy.toFixed(1)}px)`;
+        if ((ts - bounceStart) < durationMs) requestAnimationFrame(bounceTick);
+        else clearEffect();
+      }
+      requestAnimationFrame(bounceTick);
+      break;
+    }
+
+    case 'shake': {
+      const rate = params.rate      || 4;
+      const amp  = params.amplitude || 15;
+      let   shakeStart = null;
+      displayEl.style.transition = 'none';
+      displayEl.style.background = color;
+      function shakeTick(ts) {
+        if (shakeStart === null) shakeStart = ts;
+        const pos = (ts - shakeStart) / 1000;
+        const dx  = Math.sin(2 * Math.PI * pos * rate) * amp;
+        displayEl.style.transform = `translateX(${dx.toFixed(1)}px)`;
+        if ((ts - shakeStart) < durationMs) requestAnimationFrame(shakeTick);
+        else clearEffect();
+      }
+      requestAnimationFrame(shakeTick);
+      break;
+    }
+
+    case 'zoom_pulse': {
+      const rate   = params.rate   || 1;
+      const amount = params.amount || 0.2;
+      let   zpStart = null;
+      displayEl.style.transition = 'none';
+      displayEl.style.background = color;
+      function zpTick(ts) {
+        if (zpStart === null) zpStart = ts;
+        const pos   = (ts - zpStart) / 1000;
+        const scale = 1 + amount * Math.sin(2 * Math.PI * pos * rate);
+        displayEl.style.transform = `scale(${scale.toFixed(3)})`;
+        if ((ts - zpStart) < durationMs) requestAnimationFrame(zpTick);
+        else clearEffect();
+      }
+      requestAnimationFrame(zpTick);
+      break;
+    }
+
+    case 'hue_rotate': {
+      const rate = params.rate || 0.5;
+      let   hrStart = null;
+      displayEl.style.transition = 'none';
+      displayEl.style.background = color;
+      function hrTick(ts) {
+        if (hrStart === null) hrStart = ts;
+        const pos = (ts - hrStart) / 1000;
+        const deg = (pos * rate * 360) % 360;
+        displayEl.style.filter = `hue-rotate(${deg.toFixed(1)}deg)`;
+        if ((ts - hrStart) < durationMs) requestAnimationFrame(hrTick);
+        else clearEffect();
+      }
+      requestAnimationFrame(hrTick);
+      break;
+    }
+
+    case 'neon_glow': {
+      const size = params.size || 20;
+      const rate = params.rate || 2;
+      let   ngStart = null;
+      displayEl.style.transition = 'none';
+      displayEl.style.background = color;
+      function ngTick(ts) {
+        if (ngStart === null) ngStart = ts;
+        const pos  = (ts - ngStart) / 1000;
+        const glow = size * (0.5 + 0.5 * Math.sin(2 * Math.PI * pos * rate));
+        displayEl.style.filter = `drop-shadow(0 0 ${glow.toFixed(1)}px ${color})`;
+        if ((ts - ngStart) < durationMs) requestAnimationFrame(ngTick);
+        else clearEffect();
+      }
+      requestAnimationFrame(ngTick);
+      break;
+    }
+
     default:
       // Unknown effect type — fall back to a solid colour flash.
       displayEl.style.transition = 'none';
@@ -373,6 +462,40 @@ function compositeTimeline(showTime) {
         else                          effectClipPath = `inset(${inv}% 0 0 0)`;
         bg   = params.color || '#ff0000';
         bgOp = 1;
+      } else if (type === 'bounce') {
+        const rate = params.rate      || 1;
+        const amp  = params.amplitude || 30;
+        const dy   = Math.sin(2 * Math.PI * pos * rate) * amp * op;
+        bg   = params.color || '#ff4080';
+        bgOp = op;
+        effectTransform = `translateY(${dy.toFixed(1)}px)`;
+      } else if (type === 'shake') {
+        const rate = params.rate      || 4;
+        const amp  = params.amplitude || 15;
+        const dx   = Math.sin(2 * Math.PI * pos * rate) * amp * op;
+        bg   = params.color || '#8040c0';
+        bgOp = op;
+        effectTransform = `translateX(${dx.toFixed(1)}px)`;
+      } else if (type === 'zoom_pulse') {
+        const rate   = params.rate   || 1;
+        const amount = params.amount || 0.2;
+        const scale  = 1 + amount * Math.sin(2 * Math.PI * pos * rate);
+        bg   = params.color || '#40c080';
+        bgOp = op;
+        effectTransform = `scale(${scale.toFixed(3)})`;
+      } else if (type === 'hue_rotate') {
+        const rate = params.rate || 0.5;
+        const deg  = (pos * rate * 360) % 360;
+        bg   = params.color || '#ff6000';
+        bgOp = op;
+        effectFilter = `hue-rotate(${deg.toFixed(1)}deg)`;
+      } else if (type === 'neon_glow') {
+        const size = params.size || 20;
+        const rate = params.rate || 2;
+        const glow = size * (0.5 + 0.5 * Math.sin(2 * Math.PI * pos * rate));
+        bg   = params.color || '#00d0ff';
+        bgOp = op;
+        effectFilter = `drop-shadow(0 0 ${glow.toFixed(1)}px ${params.color || '#00d0ff'})`;
       }
     }
   }

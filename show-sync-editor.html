@@ -291,6 +291,30 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .marker-line.ruler-marker { height: 100%; }
 .marker-line.lane-marker  { height: 100%; opacity: 0.5; }
 
+/* Marker delete button — small × shown in the ruler on hover */
+.marker-del {
+  position: absolute;
+  top: 1px;
+  width: 14px;
+  height: 14px;
+  line-height: 14px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #f0c040;
+  background: rgba(0,0,0,0.7);
+  border-radius: 3px;
+  cursor: pointer;
+  transform: translateX(-50%);
+  z-index: 36;
+  pointer-events: all;
+  opacity: 0;
+  transition: opacity 0.1s;
+  user-select: none;
+}
+#ruler-content:hover .marker-del { opacity: 1; }
+.marker-del:hover { background: rgba(160,40,0,0.9); color: #fff; }
+
 /* ── Track rows ─────────────────────────────────────────────────────────────── */
 .track-row { display: table-row; }
 
@@ -465,6 +489,11 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   <button onclick="addClip('glitch')"      title="Glitch: position jitter">+ Glitch</button>
   <button onclick="addClip('blur')"        title="Blur in: starts blurry, sharpens">+ Blur In</button>
   <button onclick="addClip('color_sweep')" title="Color sweep across screen">+ Sweep</button>
+  <button onclick="addClip('bounce')"     title="Bounce: vertical sine-wave bounce">+ Bounce</button>
+  <button onclick="addClip('shake')"      title="Shake: rapid horizontal shake">+ Shake</button>
+  <button onclick="addClip('zoom_pulse')" title="Zoom Pulse: scale in/out">+ Zoom</button>
+  <button onclick="addClip('hue_rotate')" title="Hue Rotate: continuous colour-hue cycling">+ HueRot</button>
+  <button onclick="addClip('neon_glow')"  title="Neon Glow: pulsing drop-shadow glow">+ Glow</button>
   <div class="zoom-group">
     <span style="font-size:11px;color:var(--muted)">Zoom:</span>
     <button onclick="zoom(-1)">−</button>
@@ -505,9 +534,11 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
 let show = blankShow();
 let pps  = 50;            // pixels per second (zoom level)
 let selId     = null;     // selected clip id
+let selMarkerId = null;   // selected marker id (for keyboard deletion)
 let curFile   = null;     // current filename string
 let vidUrl    = null;     // object URL for loaded video
 let drag      = null;     // active drag descriptor
+let phDrag    = false;    // true while scrubbing the playhead via ruler drag
 let clipboard = null;     // deep-copied clip for Ctrl+C / Ctrl+V paste
 
 // ── Device presets ────────────────────────────────────────────────────────────
@@ -598,6 +629,11 @@ function clipBg(clip) {
     case 'glitch':       return clip.params?.color || '#c020c0';
     case 'blur':         return clip.params?.color || '#2080c0';
     case 'color_sweep':  return clip.params?.color || '#c06020';
+    case 'bounce':       return clip.params?.color || '#ff4080';
+    case 'shake':        return clip.params?.color || '#8040c0';
+    case 'zoom_pulse':   return clip.params?.color || '#40c080';
+    case 'hue_rotate':   return clip.params?.color || '#ff6000';
+    case 'neon_glow':    return clip.params?.color || '#00d0ff';
     default:             return '#505050';
   }
 }
@@ -613,6 +649,11 @@ function clipLabel(clip) {
     case 'glitch':       return `glitch ${clip.params?.intensity || 8}px`;
     case 'blur':         return `blur ${clip.params?.max_blur || 20}px`;
     case 'color_sweep':  return `sweep ${clip.params?.direction || 'lr'}`;
+    case 'bounce':       return `bounce ${clip.params?.rate || 1}Hz`;
+    case 'shake':        return `shake ${clip.params?.rate || 4}Hz`;
+    case 'zoom_pulse':   return `zoom ${clip.params?.rate || 1}Hz`;
+    case 'hue_rotate':   return `hue-rot ${clip.params?.rate || 0.5}Hz`;
+    case 'neon_glow':    return `glow ${clip.params?.size || 20}px`;
     default:             return clip.type;
   }
 }
@@ -717,6 +758,7 @@ function tlWidth() {
 
 function render() {
   renderRuler();
+  renderMarkerHandles();
   renderTracks();
   renderPreview();
   setPlayheadPos();
@@ -782,13 +824,16 @@ function renderRuler() {
     ctx.textBaseline = 'top';
     for (const mk of show.markers) {
       const x = Math.round(t2x(mk.time));
-      ctx.strokeStyle = '#f0c040';
+      const isSelected = mk.id === selMarkerId;
+      ctx.strokeStyle = isSelected ? '#ff9900' : '#f0c040';
+      ctx.lineWidth   = isSelected ? 2 : 1;
       ctx.beginPath();
       ctx.moveTo(x + 0.5, 0);
       ctx.lineTo(x + 0.5, H);
       ctx.stroke();
-      ctx.fillStyle = '#f0c040';
+      ctx.fillStyle = isSelected ? '#ff9900' : '#f0c040';
       ctx.fillText(fmtTime(mk.time), x + 2, 2);
+      ctx.lineWidth = 1;
     }
   }
 
@@ -981,6 +1026,40 @@ function compositeAt(t) {
         else                          effectClipPath = `inset(${inv}% 0 0 0)`;
         bg   = params.color || '#ff0000';
         bgOp = 1;
+      } else if (type === 'bounce') {
+        const rate = params.rate      || 1;
+        const amp  = params.amplitude || 30;
+        const dy   = Math.sin(2 * Math.PI * pos * rate) * amp * op;
+        bg   = params.color || '#ff4080';
+        bgOp = op;
+        effectTransform = `translateY(${dy.toFixed(1)}px)`;
+      } else if (type === 'shake') {
+        const rate = params.rate      || 4;
+        const amp  = params.amplitude || 15;
+        const dx   = Math.sin(2 * Math.PI * pos * rate) * amp * op;
+        bg   = params.color || '#8040c0';
+        bgOp = op;
+        effectTransform = `translateX(${dx.toFixed(1)}px)`;
+      } else if (type === 'zoom_pulse') {
+        const rate   = params.rate   || 1;
+        const amount = params.amount || 0.2;
+        const scale  = 1 + amount * Math.sin(2 * Math.PI * pos * rate);
+        bg   = params.color || '#40c080';
+        bgOp = op;
+        effectTransform = `scale(${scale.toFixed(3)})`;
+      } else if (type === 'hue_rotate') {
+        const rate = params.rate || 0.5;
+        const deg  = (pos * rate * 360) % 360;
+        bg   = params.color || '#ff6000';
+        bgOp = op;
+        effectFilter = `hue-rotate(${deg.toFixed(1)}deg)`;
+      } else if (type === 'neon_glow') {
+        const size = params.size || 20;
+        const rate = params.rate || 2;
+        const glow = size * (0.5 + 0.5 * Math.sin(2 * Math.PI * pos * rate));
+        bg   = params.color || '#00d0ff';
+        bgOp = op;
+        effectFilter = `drop-shadow(0 0 ${glow.toFixed(1)}px ${params.color || '#00d0ff'})`;
       }
     }
   }
@@ -1053,13 +1132,38 @@ function togglePlay() {
   }
 }
 
-// ── Ruler click → seek ────────────────────────────────────────────────────────
+// ── Ruler click / drag → seek ──────────────────────────────────────────────────
 
-document.getElementById('ruler-content').addEventListener('mousedown', (e) => {
+// Convert a viewport clientX into a timeline pixel position, accounting for scroll.
+function rulerX(clientX) {
   const canvas = document.getElementById('ruler-canvas');
   const rect   = canvas.getBoundingClientRect();
-  const x      = e.clientX - rect.left + document.getElementById('tl-outer').scrollLeft;
-  seekTo(x2t(x));
+  return clientX - rect.left + document.getElementById('tl-outer').scrollLeft;
+}
+
+document.getElementById('ruler-content').addEventListener('mousedown', (e) => {
+  const tlX = rulerX(e.clientX);
+  const t   = x2t(tlX);
+
+  // Click near an existing marker → select it (and don't seek)
+  if (show.markers && show.markers.length) {
+    const threshold = 6 / pps;  // 6 px in seconds at current zoom
+    let nearest = null, nearestDist = Infinity;
+    for (const mk of show.markers) {
+      const d = Math.abs(t - mk.time);
+      if (d < nearestDist) { nearest = mk; nearestDist = d; }
+    }
+    if (nearest && nearestDist <= threshold) {
+      selMarkerId = nearest.id;
+      renderRuler();   // redraw to highlight selected marker
+      return;
+    }
+  }
+
+  // No marker nearby → deselect marker and start playhead scrub
+  selMarkerId = null;
+  phDrag = true;
+  seekTo(t);
 });
 
 function seekTo(t) {
@@ -1120,6 +1224,11 @@ function startDrag(e, type, clipId) {
 }
 
 document.addEventListener('mousemove', (e) => {
+  // Timeline playhead scrub drag
+  if (phDrag) {
+    seekTo(x2t(rulerX(e.clientX)));
+  }
+
   if (!drag) return;
 
   const found = getClip(drag.clipId);
@@ -1157,6 +1266,7 @@ document.addEventListener('mousemove', (e) => {
 });
 
 document.addEventListener('mouseup', () => {
+  phDrag = false;
   if (drag) {
     drag = null;
     render();
@@ -1211,7 +1321,8 @@ function renderPropsBar() {
   // Type
   const sel = document.createElement('select');
   [['color','Solid colour'],['text','Text'],['fade_in','Fade In'],['fade_out','Fade Out'],
-   ['strobe','Strobe'],['pulse','Pulse'],['glitch','Glitch'],['blur','Blur In'],['color_sweep','Color Sweep']
+   ['strobe','Strobe'],['pulse','Pulse'],['glitch','Glitch'],['blur','Blur In'],['color_sweep','Color Sweep'],
+   ['bounce','Bounce'],['shake','Shake'],['zoom_pulse','Zoom Pulse'],['hue_rotate','Hue Rotate'],['neon_glow','Neon Glow']
   ].forEach(([v, lbl]) => {
     const opt = document.createElement('option');
     opt.value = v; opt.textContent = lbl;
@@ -1383,6 +1494,87 @@ function renderPropsBar() {
     panel.appendChild(g('Direction', dirSel));
   }
 
+  if (cl.type === 'bounce' || cl.type === 'shake' || cl.type === 'hue_rotate') {
+    const defaults = { bounce: 1, shake: 4, hue_rotate: 0.5 };
+    const rateInp = document.createElement('input');
+    rateInp.type  = 'number';
+    rateInp.min   = 0.1; rateInp.max = 20; rateInp.step = 0.1;
+    rateInp.value = cl.params.rate || defaults[cl.type] || 1;
+    rateInp.style.width = '64px';
+    rateInp.title = 'Cycles per second (Hz)';
+    rateInp.addEventListener('change', () => {
+      cl.params.rate = parseFloat(rateInp.value) || 1;
+      const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
+      if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      renderPreview();
+    });
+    panel.appendChild(g('Rate (Hz)', rateInp));
+  }
+
+  if (cl.type === 'bounce' || cl.type === 'shake') {
+    const ampInp = document.createElement('input');
+    ampInp.type  = 'number'; ampInp.min = 1; ampInp.max = 200; ampInp.step = 1;
+    ampInp.value = cl.params.amplitude || (cl.type === 'bounce' ? 30 : 15);
+    ampInp.style.width = '64px';
+    ampInp.title = 'Peak displacement in pixels';
+    ampInp.addEventListener('change', () => {
+      cl.params.amplitude = parseFloat(ampInp.value) || 20;
+      renderPreview();
+    });
+    panel.appendChild(g('Amplitude (px)', ampInp));
+  }
+
+  if (cl.type === 'zoom_pulse') {
+    const amtInp = document.createElement('input');
+    amtInp.type  = 'number'; amtInp.min = 0.01; amtInp.max = 1; amtInp.step = 0.01;
+    amtInp.value = cl.params.amount || 0.2;
+    amtInp.style.width = '64px';
+    amtInp.title = 'Scale range (0.2 = ±20% size change per cycle)';
+    amtInp.addEventListener('change', () => {
+      cl.params.amount = parseFloat(amtInp.value) || 0.2;
+      renderPreview();
+    });
+    panel.appendChild(g('Amount', amtInp));
+
+    const zpRateInp = document.createElement('input');
+    zpRateInp.type = 'number'; zpRateInp.min = 0.1; zpRateInp.max = 20; zpRateInp.step = 0.1;
+    zpRateInp.value = cl.params.rate || 1;
+    zpRateInp.style.width = '64px';
+    zpRateInp.title = 'Scale cycles per second (Hz)';
+    zpRateInp.addEventListener('change', () => {
+      cl.params.rate = parseFloat(zpRateInp.value) || 1;
+      const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
+      if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      renderPreview();
+    });
+    panel.appendChild(g('Rate (Hz)', zpRateInp));
+  }
+
+  if (cl.type === 'neon_glow') {
+    const sizeInp = document.createElement('input');
+    sizeInp.type  = 'number'; sizeInp.min = 1; sizeInp.max = 100; sizeInp.step = 1;
+    sizeInp.value = cl.params.size || 20;
+    sizeInp.style.width = '64px';
+    sizeInp.title = 'Peak glow radius in pixels';
+    sizeInp.addEventListener('change', () => {
+      cl.params.size = parseFloat(sizeInp.value) || 20;
+      const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
+      if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      renderPreview();
+    });
+    const rateInp2 = document.createElement('input');
+    rateInp2.type  = 'number'; rateInp2.min = 0.1; rateInp2.max = 20; rateInp2.step = 0.1;
+    rateInp2.value = cl.params.rate || 2;
+    rateInp2.style.width = '64px';
+    rateInp2.title = 'Glow pulse cycles per second (Hz)';
+    rateInp2.addEventListener('change', () => {
+      cl.params.rate = parseFloat(rateInp2.value) || 2;
+      renderPreview();
+    });
+    panel.appendChild(g('Glow Size (px)', sizeInp));
+    panel.appendChild(g('Rate (Hz)', rateInp2));
+  }
+
   // Fade in / out
   panel.appendChild(g('Fade In (s)',  numInp((cl.fade_in  || 0).toFixed(2), v => { cl.fade_in  = Math.max(0, v); renderPreview(); })));
   panel.appendChild(g('Fade Out (s)', numInp((cl.fade_out || 0).toFixed(2), v => { cl.fade_out = Math.max(0, v); renderPreview(); })));
@@ -1419,6 +1611,11 @@ function addClip(type) {
       case 'glitch':      return { color: '#ff4040', intensity: 8 };
       case 'blur':        return { color: '#ffffff', max_blur: 20 };
       case 'color_sweep': return { color: '#ff0000', direction: 'lr' };
+      case 'bounce':      return { color: '#ff4080', rate: 1,   amplitude: 30 };
+      case 'shake':       return { color: '#8040c0', rate: 4,   amplitude: 15 };
+      case 'zoom_pulse':  return { color: '#40c080', rate: 1,   amount: 0.2 };
+      case 'hue_rotate':  return { color: '#ff6000', rate: 0.5 };
+      case 'neon_glow':   return { color: '#00d0ff', size: 20,  rate: 2 };
       default:            return { color: '#ff0000' };
     }
   }
@@ -1458,7 +1655,8 @@ function copySelected() {
   const found = getClip(selId);
   if (!found) return;
   // All supported clip types can be copied: color, text, fade_in, fade_out, and new FX types
-  const allowedTypes = ['color', 'text', 'fade_in', 'fade_out', 'strobe', 'pulse', 'glitch', 'blur', 'color_sweep'];
+  const allowedTypes = ['color', 'text', 'fade_in', 'fade_out', 'strobe', 'pulse', 'glitch', 'blur', 'color_sweep',
+                        'bounce', 'shake', 'zoom_pulse', 'hue_rotate', 'neon_glow'];
   if (!allowedTypes.includes(found.cl.type)) return;
   clipboard = JSON.parse(JSON.stringify(found.cl));  // deep copy, preserves all params
 }
@@ -1495,6 +1693,31 @@ function addMarker() {
   if (!show.markers) show.markers = [];
   show.markers.push({ id: uid(), time: parseFloat(t.toFixed(3)) });
   show.markers.sort((a, b) => a.time - b.time);
+  render();
+}
+
+// Render interactive × delete handles for each marker in the ruler
+function renderMarkerHandles() {
+  const content = document.getElementById('ruler-content');
+  content.querySelectorAll('.marker-del').forEach(el => el.remove());
+  if (!show.markers || !show.markers.length) return;
+  for (const mk of show.markers) {
+    const btn = document.createElement('div');
+    btn.className      = 'marker-del';
+    btn.style.left     = t2x(mk.time) + 'px';
+    btn.textContent    = '×';
+    btn.title          = 'Delete marker at ' + fmtTime(mk.time);
+    // Prevent mousedown from reaching ruler-content (would seek)
+    btn.addEventListener('mousedown', e => { e.stopPropagation(); e.preventDefault(); });
+    btn.addEventListener('click',     e => { e.stopPropagation(); deleteMarker(mk.id); });
+    content.appendChild(btn);
+  }
+}
+
+function deleteMarker(id) {
+  if (!show.markers) return;
+  show.markers = show.markers.filter(m => m.id !== id);
+  if (selMarkerId === id) selMarkerId = null;
   render();
 }
 
@@ -1728,6 +1951,10 @@ document.addEventListener('keydown', (e) => {
   if ((e.code === 'Delete' || e.code === 'Backspace') && selId) {
     e.preventDefault();
     deleteSelected();
+  }
+  if ((e.code === 'Delete' || e.code === 'Backspace') && !selId && selMarkerId) {
+    e.preventDefault();
+    deleteMarker(selMarkerId);
   }
   if ((e.key === 's' || e.key === 'S') && (e.ctrlKey || e.metaKey)) {
     e.preventDefault();
