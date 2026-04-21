@@ -173,9 +173,9 @@ QTableWidget {
 QHeaderView::section {
     background-color: #333;
     color: #d4d4d4;
-    padding: 5px;
+    padding: 3px;
     border: 1px solid #444;
-    font-size: 14pt;
+    font-size: 9pt;
 }
 QTableWidget::item {
     padding-left: 5px;
@@ -2646,10 +2646,11 @@ class LiveController(QWidget):
         self.table.setColumnCount(10)
         self.table.setHorizontalHeaderLabels(["Hotkey", "Track Name", "Linked", "BPM", "Click", "Rich1", "Rich2", "Sync", "Show File", "Actions"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(0, 60); self.table.setColumnWidth(2, 90)
-        self.table.setColumnWidth(3, 60); self.table.setColumnWidth(4, 60)
-        self.table.setColumnWidth(5, 60); self.table.setColumnWidth(6, 60)
-        self.table.setColumnWidth(7, 50); self.table.setColumnWidth(8, 110); self.table.setColumnWidth(9, 80)
+        self.table.horizontalHeader().setMinimumSectionSize(10)
+        self.table.setColumnWidth(0, 50); self.table.setColumnWidth(2, 55)
+        self.table.setColumnWidth(3, 45); self.table.setColumnWidth(4, 45)
+        self.table.setColumnWidth(5, 45); self.table.setColumnWidth(6, 45)
+        self.table.setColumnWidth(7, 40); self.table.setColumnWidth(8, 80); self.table.setColumnWidth(9, 65)
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(False)
         self.table.rows_reordered.connect(self.reorder_tracks)
