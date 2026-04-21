@@ -98,6 +98,7 @@ When a clip is selected, the **properties bar** at the bottom shows:
 | **Colour** | Background / text colour (colour picker) |
 | **Text** | *(text clips only)* The text string to display |
 | **Size (vmin)** | *(text clips only)* Font size in `vmin` units (1–30) |
+| **Link URL** | *(text clips only)* Optional clickable URL — rendered as `<a href="...">` on client devices; allowed schemes: `http`, `https`, `mailto`, `tel` |
 | **Rate (Hz)** | *(strobe / pulse only)* Flashes or cycles per second |
 | **Intensity (px)** | *(glitch only)* Maximum pixel offset for the jitter |
 | **Max Blur (px)** | *(blur only)* Starting blur radius in pixels (reduces to 0 over the clip) |
@@ -234,18 +235,137 @@ compatible — older show files without it default to 120 in the editor.
 
 ---
 
+## Device viewport preview
 
+### Overview
 
-## WYSIWYG preview
+The **Preview** panel (left of the media area) renders an accurate scale-to-fit
+representation of how the show will appear on a real phone screen.  The inner
+canvas is sized to the **logical pixel dimensions** of the selected device and
+then scaled down to fit the available panel space while preserving the aspect
+ratio.
 
-The **WYSIWYG Preview** pane (left panel) shows a live composite of the active
-clips at the current playhead position:
+This means that font sizes, padding, and element proportions in the preview
+match the client device exactly — content that fits on one line on an iPhone 14
+will also fit on one line in the preview.
 
-- Solid colour / fade clips form the background layer.
-- Text clips render on top with their configured colour and size.
-- Fade in/out opacity is applied in real time as you scrub or play.
-- Strobe, pulse, glitch, blur, and colour-sweep effects are also previewed live
-  as the playhead moves through them.
+### Selecting a device preset
+
+Click the **preset dropdown** in the preview panel header to choose a device:
+
+| Preset | Logical size (portrait) |
+|--------|------------------------|
+| iPhone SE | 375 × 667 |
+| **iPhone 14** *(default)* | 390 × 844 |
+| iPhone 14 Plus | 428 × 926 |
+| iPhone 14 Pro Max | 430 × 932 |
+| iPhone 15 Pro | 393 × 852 |
+| iPhone 16 Pro Max | 440 × 956 |
+| Android S | 360 × 800 |
+| Android M — Pixel 7 | 412 × 915 |
+| Android L — S22 Ultra | 384 × 854 |
+
+The active dimensions (width × height) are shown to the right of the dropdown.
+
+### Orientation toggle
+
+Click the **↻** button to switch between portrait and landscape.  The device
+dimensions are swapped (width ↔ height) and the preview is redrawn immediately.
+Click again to return to portrait.
+
+### WYSIWYG font-size behaviour
+
+Text clip **Size (vmin)** values are translated to device-pixel sizes in the
+preview:
+
+```
+preview_font_px = (size_vmin / 100) × min(device_width, device_height)
+```
+
+For example, `Size = 5` on an iPhone 14 portrait (390 × 844) renders as:
+
+```
+5 / 100 × 390 = 19.5 px
+```
+
+On the real client device the browser interprets `5vmin` identically (since
+`1vmin = 1 % of the viewport's shorter dimension`), so the preview is a true
+pixel-for-pixel representation.
+
+> **Note:** minor rendering differences (subpixel font hinting, OS default
+> font metrics) may cause slight visual variations between the preview and a
+> physical device, but proportions and line-breaking behaviour will be accurate.
+
+---
+
+## Link support in text clips
+
+Text clips can optionally include a **Link URL** so that the text appears as a
+clickable hyperlink on the client device.
+
+### Adding a link
+
+1. Select a **text** clip on the timeline.
+2. In the properties bar, fill in the **Link URL** field with a full URL:
+   - `https://example.com`
+   - `mailto:user@example.com`
+   - `tel:+441234567890`
+3. Press **Tab** or **Enter** — the URL is validated immediately.
+   - Invalid or unsafe URLs (including `javascript:`) are silently rejected and
+     the field is cleared.
+
+### Removing a link
+
+Clear the **Link URL** field and press **Tab** or **Enter**.  The `link_url`
+key is removed from the clip's `params` object.
+
+### Allowed URL schemes
+
+| Scheme | Example | Notes |
+|--------|---------|-------|
+| `https:` | `https://example.com/page` | Standard secure web link |
+| `http:` | `http://192.168.1.10:8000/` | Plain web link (LAN / internal) |
+| `mailto:` | `mailto:band@venue.com` | Opens email client |
+| `tel:` | `tel:+441234567890` | Opens phone dialler |
+
+All other schemes (including `javascript:`, `data:`, `vbscript:`) are rejected.
+
+### Show file format (link_url field)
+
+The link URL is stored inside the clip's `params` object:
+
+```json
+{
+  "id": "def67890",
+  "type": "text",
+  "start": 13.0,
+  "duration": 2.0,
+  "params": {
+    "text": "Visit our site",
+    "color": "#ffffff",
+    "size": 5,
+    "link_url": "https://example.com"
+  },
+  "fade_in": 0.1,
+  "fade_out": 0.2
+}
+```
+
+Clips without a `link_url` key render as plain text (backward compatible).
+
+### Client-side rendering
+
+On the live show-sync client (`join.html` / `client.js`), text clips with a
+`link_url` are rendered as:
+
+```html
+<a href="https://example.com" style="color:#ffffff;text-decoration:underline;">
+  Visit our site
+</a>
+```
+
+The anchor is styled with `color: inherit` so it picks up the clip's text colour,
+and `text-decoration: underline` to indicate it is clickable.
 
 ---
 

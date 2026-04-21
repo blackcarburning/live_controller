@@ -99,19 +99,62 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   gap: 8px;
   padding: 8px;
   flex-shrink: 0;
-  height: 210px;
+  height: 300px;
 }
 
 /* WYSIWYG preview */
-#preview-wrap { display: flex; flex-direction: column; gap: 4px; flex: 0 0 230px; }
+#preview-wrap { display: flex; flex-direction: column; gap: 4px; flex: 0 0 175px; }
 .panel-label  { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
-#preview {
+
+/* Device controls row (preset selector + orientation + dims label) */
+#device-controls {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+#device-preset-sel {
   flex: 1;
-  background: #000;
+  min-width: 0;
+  font-size: 10px;
+  padding: 2px 3px;
+}
+#device-dims {
+  font-size: 9px;
+  color: var(--muted);
+  white-space: nowrap;
+  min-width: 48px;
+  text-align: right;
+}
+#orient-btn { padding: 1px 5px; font-size: 12px; flex-shrink: 0; }
+
+/* Outer container — fixed panel size, clips the scaled inner viewport */
+#preview-outer {
+  flex: 1;
+  min-height: 0;
+  background: #111;
   border: 1px solid var(--border);
   border-radius: 4px;
   overflow: hidden;
   position: relative;
+}
+
+/* Device-sized inner div; CSS transform scales it to fit #preview-outer */
+#preview-scaler {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform-origin: center center;
+  /* width, height and transform are set by JS updatePreviewSize() */
+}
+
+/* The actual render canvas at full device pixel dimensions */
+#preview {
+  width: 100%;
+  height: 100%;
+  background: #000;
+  position: relative;
+  overflow: hidden;
 }
 #preview-solid {
   position: absolute; inset: 0;
@@ -379,10 +422,19 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
 
   <!-- WYSIWYG Preview -->
   <div id="preview-wrap">
-    <div class="panel-label">WYSIWYG Preview</div>
-    <div id="preview">
-      <div id="preview-solid"></div>
-      <div id="preview-text"></div>
+    <div class="panel-label">Preview</div>
+    <div id="device-controls">
+      <select id="device-preset-sel" onchange="setDevicePreset(this.value)"></select>
+      <button id="orient-btn" onclick="toggleOrientation()" title="Toggle portrait / landscape">↻</button>
+      <span id="device-dims">390×844</span>
+    </div>
+    <div id="preview-outer">
+      <div id="preview-scaler">
+        <div id="preview">
+          <div id="preview-solid"></div>
+          <div id="preview-text"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -457,6 +509,25 @@ let curFile   = null;     // current filename string
 let vidUrl    = null;     // object URL for loaded video
 let drag      = null;     // active drag descriptor
 let clipboard = null;     // deep-copied clip for Ctrl+C / Ctrl+V paste
+
+// ── Device presets ────────────────────────────────────────────────────────────
+// Each entry: { id, name, w (portrait width px), h (portrait height px) }
+// Dimensions are CSS/logical pixels as reported by the device browser.
+
+const DEVICE_PRESETS = [
+  { id: 'iphone-se',      name: 'iPhone SE  375\u00d7667',             w: 375, h: 667 },
+  { id: 'iphone-14',      name: 'iPhone 14  390\u00d7844',             w: 390, h: 844 },
+  { id: 'iphone-14-plus', name: 'iPhone 14 Plus  428\u00d7926',        w: 428, h: 926 },
+  { id: 'iphone-14-pm',   name: 'iPhone 14 Pro Max  430\u00d7932',     w: 430, h: 932 },
+  { id: 'iphone-15-pro',  name: 'iPhone 15 Pro  393\u00d7852',         w: 393, h: 852 },
+  { id: 'iphone-16-pm',   name: 'iPhone 16 Pro Max  440\u00d7956',     w: 440, h: 956 },
+  { id: 'android-sm',     name: 'Android S  360\u00d7800',             w: 360, h: 800 },
+  { id: 'android-px7',    name: 'Android M \u2013 Pixel 7  412\u00d7915', w: 412, h: 915 },
+  { id: 'android-s22u',   name: 'Android L \u2013 S22 Ultra  384\u00d7854', w: 384, h: 854 },
+];
+
+let activePreset    = DEVICE_PRESETS[1];  // default: iPhone 14
+let deviceLandscape = false;
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
@@ -550,6 +621,92 @@ function showDur() {
   const vid = document.getElementById('video-player');
   const vd  = isFinite(vid.duration) ? vid.duration : 0;
   return Math.max(vd, show.media?.duration || 0, 60);
+}
+
+// ── Device preview ────────────────────────────────────────────────────────────
+
+/** Populate the preset <select> element. */
+function initDeviceSelect() {
+  const sel = document.getElementById('device-preset-sel');
+  DEVICE_PRESETS.forEach((p, i) => {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = p.name;
+    if (i === 1) opt.selected = true;  // iPhone 14 default
+    sel.appendChild(opt);
+  });
+}
+
+/** Called by the <select> onchange handler. */
+function setDevicePreset(idx) {
+  activePreset = DEVICE_PRESETS[parseInt(idx, 10)] || DEVICE_PRESETS[1];
+  updatePreviewSize();
+  renderPreview();
+}
+
+/** Toggle portrait ↔ landscape and refresh the preview. */
+function toggleOrientation() {
+  deviceLandscape = !deviceLandscape;
+  updatePreviewSize();
+  renderPreview();
+}
+
+/** Return the active logical {w, h} in pixels, respecting orientation. */
+function currentDeviceDims() {
+  const p = activePreset || DEVICE_PRESETS[1];
+  return deviceLandscape ? { w: p.h, h: p.w } : { w: p.w, h: p.h };
+}
+
+/**
+ * Scale the device-sized inner div to fit inside the outer panel.
+ * The device div stays at its true logical pixel size; CSS transform
+ * shrinks it so the aspect ratio and relative proportions are preserved.
+ */
+function updatePreviewSize() {
+  const { w: dw, h: dh } = currentDeviceDims();
+  const outer  = document.getElementById('preview-outer');
+  const outerW = outer.clientWidth  || 163;
+  const outerH = outer.clientHeight || 220;
+  const scale  = Math.min(outerW / dw, outerH / dh, 1);
+
+  const scaler = document.getElementById('preview-scaler');
+  scaler.style.width     = dw + 'px';
+  scaler.style.height    = dh + 'px';
+  scaler.style.transform = 'translateX(-50%) translateY(-50%) scale(' + scale + ')';
+
+  document.getElementById('device-dims').textContent = dw + '\u00d7' + dh;
+}
+
+// ── Link URL validation ───────────────────────────────────────────────────────
+
+/**
+ * Return a safe URL string if the scheme is http, https, mailto, or tel.
+ * Returns '' for any other scheme (including javascript:, data:, vbscript:).
+ *
+ * For http/https the href is re-serialized from a parsed URL object so the
+ * returned string is never the raw user input — it is always a canonical URL
+ * produced by the browser's URL parser.
+ */
+function validateLinkUrl(raw) {
+  if (!raw) return '';
+  const trimmed = raw.trim();
+  // mailto: — allow only printable non-whitespace chars, no HTML special chars
+  if (/^mailto:/i.test(trimmed)) {
+    return /^mailto:[^\s<>"'`\\]+$/i.test(trimmed) ? trimmed : '';
+  }
+  // tel: — allow only digits, spaces, +, -, (, )
+  if (/^tel:/i.test(trimmed)) {
+    return /^tel:[+\d\s\-()]+$/i.test(trimmed) ? trimmed : '';
+  }
+  // http / https — parse with URL API and return the re-serialized href
+  try {
+    const u = new URL(trimmed);
+    if (u.protocol === 'http:' || u.protocol === 'https:') {
+      // Return the browser-canonical href, not the raw input.
+      return u.href;
+    }
+  } catch (_) {}
+  return '';
 }
 
 function tlWidth() {
@@ -761,7 +918,7 @@ function compositeAt(t) {
   const sorted = [...show.tracks].sort((a, b) => a.layer - b.layer);
 
   let bg = null, bgOp = 0;
-  let txt = null, txtColor = '#fff', txtOp = 0, txtSz = 5;
+  let txt = null, txtColor = '#fff', txtOp = 0, txtSz = 5, txtLinkUrl = '';
   let effectTransform = '', effectFilter = '', effectClipPath = '';
 
   for (const track of sorted) {
@@ -785,10 +942,11 @@ function compositeAt(t) {
         bg   = params.color || '#ff0000';
         bgOp = op;
       } else if (type === 'text') {
-        txt      = params.text  || null;
-        txtColor = params.color || '#ffffff';
-        txtSz    = params.size  || 5;
-        txtOp    = op;
+        txt        = params.text     || null;
+        txtColor   = params.color    || '#ffffff';
+        txtSz      = params.size     || 5;
+        txtOp      = op;
+        txtLinkUrl = params.link_url || '';
       } else if (type === 'strobe') {
         const rate = params.rate || 10;
         if (Math.floor(pos * rate * 2) % 2 === 0) {
@@ -834,11 +992,25 @@ function compositeAt(t) {
   solidEl.style.clipPath   = effectClipPath;
 
   if (txt !== null && txtOp > 0) {
-    textEl.textContent    = txt;
+    const { w: dw, h: dh } = currentDeviceDims();
+    // Font size as a true device-pixel value so preview matches the device.
+    // txtSz is in vmin units (1 vmin = 1 % of min(viewport-w, viewport-h)).
+    const pxFont = (txtSz / 100) * Math.min(dw, dh);
+    while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
+    if (txtLinkUrl) {
+      const a = document.createElement('a');
+      a.href = txtLinkUrl;
+      a.textContent = txt;
+      a.style.cssText = 'color:' + txtColor + ';text-decoration:underline;pointer-events:none;';
+      textEl.appendChild(a);
+    } else {
+      textEl.textContent = txt;
+    }
     textEl.style.color    = txtColor;
-    textEl.style.fontSize = txtSz + 'vmin';
+    textEl.style.fontSize = pxFont + 'px';
     textEl.style.opacity  = txtOp;
   } else {
+    while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
     textEl.style.opacity = 0;
   }
 }
@@ -1112,6 +1284,25 @@ function renderPropsBar() {
     sz.style.width = '64px';
     sz.addEventListener('change', () => { cl.params.size = parseFloat(sz.value) || 5; renderPreview(); });
     panel.appendChild(g('Size (vmin)', sz));
+
+    // Link URL (optional — makes the text a clickable link on client devices)
+    const urlInp = document.createElement('input');
+    urlInp.type        = 'text';
+    urlInp.value       = cl.params.link_url || '';
+    urlInp.placeholder = 'https://...';
+    urlInp.style.cssText = 'width:180px;user-select:text;';
+    urlInp.title       = 'Optional link. Allowed: http, https, mailto, tel';
+    urlInp.addEventListener('change', () => {
+      const valid = validateLinkUrl(urlInp.value);
+      if (valid) {
+        cl.params.link_url = valid;
+      } else {
+        delete cl.params.link_url;
+      }
+      urlInp.value = valid;
+      renderPreview();
+    });
+    panel.appendChild(g('Link URL', urlInp));
   }
 
   // Effect-specific params (new effect types)
@@ -1490,7 +1681,6 @@ function browserDownload(json, name) {
 }
 
 // ── Video events ──────────────────────────────────────────────────────────────
-
 const vid = document.getElementById('video-player');
 
 vid.addEventListener('timeupdate', () => {
@@ -1573,8 +1763,13 @@ fetch('/api/initial')
 
 // ── Initial render ────────────────────────────────────────────────────────────
 
+initDeviceSelect();
 render();
 renderPropsBar();
+updatePreviewSize();
+
+// Keep preview correctly scaled when the browser window is resized
+window.addEventListener('resize', updatePreviewSize);
 </script>
 </body>
 </html>
