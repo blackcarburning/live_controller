@@ -245,6 +245,10 @@ canvas is sized to the **logical pixel dimensions** of the selected device and
 then scaled down to fit the available panel space while preserving the aspect
 ratio.
 
+The preview panel is **280 px wide** and the media area is **480 px tall** by
+default, giving a large, easy-to-read view of the phone screen on most desktop
+displays.
+
 This means that font sizes, padding, and element proportions in the preview
 match the client device exactly — content that fits on one line on an iPhone 14
 will also fit on one line in the preview.

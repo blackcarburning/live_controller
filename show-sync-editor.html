@@ -99,11 +99,11 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   gap: 8px;
   padding: 8px;
   flex-shrink: 0;
-  height: 300px;
+  height: 480px;
 }
 
 /* WYSIWYG preview */
-#preview-wrap { display: flex; flex-direction: column; gap: 4px; flex: 0 0 175px; }
+#preview-wrap { display: flex; flex-direction: column; gap: 4px; flex: 0 0 280px; }
 .panel-label  { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
 
 /* Device controls row (preset selector + orientation + dims label) */
@@ -665,8 +665,8 @@ function currentDeviceDims() {
 function updatePreviewSize() {
   const { w: dw, h: dh } = currentDeviceDims();
   const outer  = document.getElementById('preview-outer');
-  const outerW = outer.clientWidth  || 163;
-  const outerH = outer.clientHeight || 220;
+  const outerW = outer.clientWidth  || 268;
+  const outerH = outer.clientHeight || 420;
   const scale  = Math.min(outerW / dw, outerH / dh, 1);
 
   const scaler = document.getElementById('preview-scaler');

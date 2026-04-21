@@ -154,7 +154,9 @@ def compute_preview_scale(device_w: int, device_h: int, outer_w: int, outer_h: i
 
 
 def test_scale_fits_within_outer():
-    outer_w, outer_h = 163, 220
+    # Default outer panel size after the larger-preview update (280 px wide pane,
+    # 480 px media-area height).  Approximate inner dimensions after padding/border.
+    outer_w, outer_h = 268, 420
     for p in DEVICE_PRESETS:
         dw, dh = current_device_dims(p, landscape=False)
         scale = compute_preview_scale(dw, dh, outer_w, outer_h)
@@ -164,7 +166,7 @@ def test_scale_fits_within_outer():
 
 def test_scale_never_exceeds_one():
     """Preview is never magnified (scale ≤ 1.0)."""
-    outer_w, outer_h = 163, 220
+    outer_w, outer_h = 268, 420
     for p in DEVICE_PRESETS:
         dw, dh = current_device_dims(p, landscape=False)
         scale = compute_preview_scale(dw, dh, outer_w, outer_h)
