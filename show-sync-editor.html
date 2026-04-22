@@ -2041,7 +2041,9 @@ function loadShowData(data, filename) {
   render();
   renderPropsBar();
   preloadShowImages();
-}(data) {
+}
+
+function migrateV1(data) {
   const solids = [], texts = [];
   for (const eff of (data.effects || [])) {
     const clip = {
