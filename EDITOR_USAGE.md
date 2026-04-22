@@ -48,6 +48,7 @@ range-request support for seeking).
 | **Spacebar** | Toggle play/pause (when no text field is focused) |
 | Scrub bar | Drag to seek; timeline playhead follows |
 | Click on the timeline ruler | Seek to that position |
+| **Drag on the timeline ruler** | Continuously scrub the playhead — hold mouse button and drag left or right to scrub; the video and preview update in real time |
 
 ---
 
@@ -67,6 +68,11 @@ playhead position:
 | **+ Glitch** | `glitch` | Position-jitter/shake effect with configurable intensity |
 | **+ Blur In** | `blur` | Starts heavily blurred and sharpens to full clarity over the clip |
 | **+ Sweep** | `color_sweep` | A colour that sweeps across the screen (four directions) |
+| **+ Bounce** | `bounce` | Vertical sine-wave bounce at a configurable rate and amplitude |
+| **+ Shake** | `shake` | Horizontal rapid shake at a configurable rate and amplitude |
+| **+ Zoom** | `zoom_pulse` | Scale in/out pulsing at a configurable rate and amount |
+| **+ HueRot** | `hue_rotate` | Continuously rotates the display hue at a configurable rate |
+| **+ Glow** | `neon_glow` | Pulsing neon drop-shadow glow at a configurable size and rate |
 
 Solid / fade clips go on the **Solids** track (layer 1).
 Text clips go on the **Text** track (layer 10 — rendered on top).
@@ -91,7 +97,7 @@ When a clip is selected, the **properties bar** at the bottom shows:
 
 | Field | Notes |
 |-------|-------|
-| **Type** | Change the clip type (all nine types listed above) |
+| **Type** | Change the clip type (all fourteen types listed above) |
 | **Start (s)** | Exact start time in seconds |
 | **Duration (s)** | Length of the clip in seconds |
 | **Beats (N BPM) →** | One-click beat presets: ¼ / ½ / 1 / 2 / 4 beats at the show's current BPM — sets Duration instantly |
@@ -99,10 +105,13 @@ When a clip is selected, the **properties bar** at the bottom shows:
 | **Text** | *(text clips only)* The text string to display |
 | **Size (vmin)** | *(text clips only)* Font size in `vmin` units (1–30) |
 | **Link URL** | *(text clips only)* Optional clickable URL — rendered as `<a href="...">` on client devices; allowed schemes: `http`, `https`, `mailto`, `tel` |
-| **Rate (Hz)** | *(strobe / pulse only)* Flashes or cycles per second |
+| **Rate (Hz)** | *(strobe / pulse / bounce / shake / zoom_pulse / hue_rotate / neon_glow)* Cycles or flashes per second |
 | **Intensity (px)** | *(glitch only)* Maximum pixel offset for the jitter |
 | **Max Blur (px)** | *(blur only)* Starting blur radius in pixels (reduces to 0 over the clip) |
 | **Direction** | *(color_sweep only)* Sweep direction: → Left→Right, ← Right→Left, ↓ Top→Bottom, ↑ Bottom→Top |
+| **Amplitude (px)** | *(bounce / shake only)* Peak displacement in pixels |
+| **Amount** | *(zoom_pulse only)* Scale variation per cycle (0.2 = ±20% size change) |
+| **Glow Size (px)** | *(neon_glow only)* Peak drop-shadow radius in pixels |
 | **Fade In (s)** | Ramp-up time at the start of the clip (0 = instant) |
 | **Fade Out (s)** | Ramp-down time at the end of the clip (0 = instant) |
 
@@ -177,6 +186,77 @@ A solid colour that sweeps across the screen from one side.
 
 **Live rendering:** uses `clip-path: inset(…)` to reveal the colour block
 progressively from 0 % to 100 % over the clip duration.
+
+---
+
+## Five additional live-show effects (2nd set)
+
+The following five effect types extend the available FX palette.  They are
+available from the **FX** buttons in the timeline toolbar and from the **Type**
+dropdown in the properties bar.
+
+### 6 — Bounce (`bounce`)
+
+Colour block that bounces vertically using a sine-wave displacement.
+
+| Param | Default | Notes |
+|-------|---------|-------|
+| `color` | `#ff4080` | Fill colour |
+| `rate` | `1` | Bounce cycles per second (Hz) |
+| `amplitude` | `30` | Peak vertical displacement in pixels |
+
+**Live rendering:** applies `transform: translateY(…px)` each frame where the
+offset = `sin(2π × pos × rate) × amplitude × opacity_envelope`.
+
+### 7 — Shake (`shake`)
+
+Rapid horizontal shake — useful for impact hits and stingers.
+
+| Param | Default | Notes |
+|-------|---------|-------|
+| `color` | `#8040c0` | Fill colour |
+| `rate` | `4` | Shake cycles per second (Hz) |
+| `amplitude` | `15` | Peak horizontal displacement in pixels |
+
+**Live rendering:** applies `transform: translateX(…px)` with a sine function,
+scaled by the fade-in/fade-out envelope.
+
+### 8 — Zoom Pulse (`zoom_pulse`)
+
+Rhythmically scales the display in and out like a heartbeat or camera zoom.
+
+| Param | Default | Notes |
+|-------|---------|-------|
+| `color` | `#40c080` | Fill colour |
+| `rate` | `1` | Scale cycles per second (Hz) |
+| `amount` | `0.2` | Scale variation (0.2 = ±20 % size per cycle) |
+
+**Live rendering:** applies `transform: scale(…)` where scale = `1 + amount × sin(2π × pos × rate)`.
+
+### 9 — Hue Rotate (`hue_rotate`)
+
+Continuously cycles the display colour through the full hue wheel.
+
+| Param | Default | Notes |
+|-------|---------|-------|
+| `color` | `#ff6000` | Base colour (rotated through 360 °) |
+| `rate` | `0.5` | Full hue-wheel revolutions per second |
+
+**Live rendering:** applies `filter: hue-rotate(Ndeg)` where N = `pos × rate × 360` (mod 360),
+producing a smooth rainbow colour-cycling effect.
+
+### 10 — Neon Glow (`neon_glow`)
+
+Pulsing neon drop-shadow glow — great for logo reveals and transitions.
+
+| Param | Default | Notes |
+|-------|---------|-------|
+| `color` | `#00d0ff` | Glow and fill colour |
+| `size` | `20` | Peak glow radius in pixels |
+| `rate` | `2` | Glow pulse cycles per second (Hz) |
+
+**Live rendering:** applies `filter: drop-shadow(0 0 Npx color)` where N = `size × (0.5 + 0.5 × sin(2π × pos × rate))`,
+ranging from 0 to `size` px over each cycle.
 
 ---
 
@@ -555,7 +635,7 @@ curl -X POST http://localhost:8000/api/session/a1b2c3d4/stop
 | Key | Action |
 |-----|--------|
 | **Space** | Play / Pause |
-| **Delete** or **Backspace** | Delete selected clip |
+| **Delete** or **Backspace** | Delete selected clip (or selected marker if no clip is selected) |
 | **Ctrl+S** / **⌘S** | Save show |
 | **Ctrl+C** / **⌘C** | Copy selected clip (text or solid) |
 | **Ctrl+V** / **⌘V** | Paste copied clip at current playhead |
@@ -585,6 +665,20 @@ marker at the current playback position.
   on every track lane.
 - A small time label is drawn at the top of the ruler for each marker.
 - Markers are saved with the show file (`"markers"` key in the JSON).
+
+### Deleting markers
+
+There are two ways to remove a marker:
+
+1. **Inline × button** — hover over the ruler; a small **×** button appears at
+   the top of each marker.  Click the **×** to delete that marker immediately.
+
+2. **Click + Delete key** — click on the marker line in the ruler to select it
+   (it turns bright orange to confirm selection), then press **Delete** or
+   **Backspace** to remove it.
+
+Deleting a marker updates the show state immediately and is reflected in saved
+show files on the next **Save Show**.
 
 ### Snapping clips to markers
 
