@@ -540,6 +540,7 @@ let vidUrl    = null;     // object URL for loaded video
 let drag      = null;     // active drag descriptor
 let phDrag    = false;    // true while scrubbing the playhead via ruler drag
 let clipboard = null;     // deep-copied clip for Ctrl+C / Ctrl+V paste
+let _rafId    = null;     // rAF handle for per-frame video/timeline sync
 
 // ── Device presets ────────────────────────────────────────────────────────────
 // Each entry: { id, name, w (portrait width px), h (portrait height px) }
@@ -1094,6 +1095,37 @@ function compositeAt(t) {
   }
 }
 
+// ── RAF playback sync ─────────────────────────────────────────────────────────
+// vid.currentTime is the single authoritative time reference for the editor.
+// The browser's timeupdate event fires only ~4-10 Hz which causes visible lag
+// between the video frame and the playhead/preview during playback.
+// A requestAnimationFrame loop keeps every visual element locked to the same
+// clock at display frame-rate, eliminating variable drift.  Seeking and
+// scrubbing also update visuals immediately so the playhead never waits for
+// a deferred timeupdate callback.
+
+function _rafFrame() {
+  const vid = document.getElementById('video-player');
+  if (!vid || vid.paused || vid.ended) { _rafId = null; return; }
+  const t   = isFinite(vid.currentTime) ? vid.currentTime : 0;
+  // dur falls back to show.media.duration because stored metadata may be
+  // available while the video element is still seeking or buffering.
+  // t has no meaningful fallback other than 0 — we cannot estimate position.
+  const dur = isFinite(vid.duration)    ? vid.duration    : (show.media?.duration || 0);
+  setPlayheadPosAt(t);
+  compositeAt(t);
+  document.getElementById('time-display').textContent = fmtTime(t) + ' / ' + fmtTime(dur);
+  const bar = document.getElementById('scrub-bar');
+  if (dur > 0) { bar.max = dur; bar.value = t; }
+  // Keep the playhead visible in the timeline viewport
+  const tl  = document.getElementById('tl-outer');
+  const phX = t2x(t);
+  const vw  = tl.clientWidth - 90;  // 90 = --label-w
+  const sl  = tl.scrollLeft;
+  if (phX < sl || phX > sl + vw - 40) tl.scrollLeft = phX - vw / 2;
+  _rafId = requestAnimationFrame(_rafFrame);
+}
+
 // ── Playhead / Transport ─────────────────────────────────────────────────────
 
 function setPlayheadPos() {
@@ -1172,12 +1204,17 @@ function seekTo(t) {
   const target = clamp(t, 0, dur);
   if (isFinite(vid.duration)) {
     vid.currentTime = target;
+    // Immediately sync visuals — do not wait for the async timeupdate callback
+    setPlayheadPosAt(target);
+    compositeAt(target);
+    document.getElementById('time-display').textContent = fmtTime(target) + ' / ' + fmtTime(dur);
+    const bar = document.getElementById('scrub-bar');
+    if (dur > 0) { bar.max = dur; bar.value = target; }
   } else {
     // No video loaded — move playhead manually
-    const fakeCt = target;
-    setPlayheadPosAt(fakeCt);
-    compositeAt(fakeCt);
-    document.getElementById('time-display').textContent = fmtTime(fakeCt) + ' / ' + fmtTime(dur);
+    setPlayheadPosAt(target);
+    compositeAt(target);
+    document.getElementById('time-display').textContent = fmtTime(target) + ' / ' + fmtTime(dur);
   }
 }
 
@@ -1191,10 +1228,13 @@ function setPlayheadPosAt(t) {
 
 document.getElementById('scrub-bar').addEventListener('input', (e) => {
   const vid = document.getElementById('video-player');
+  const t = parseFloat(e.target.value);
   if (isFinite(vid.duration)) {
-    vid.currentTime = parseFloat(e.target.value);
+    vid.currentTime = t;
+    // Immediately sync visuals — do not wait for the async timeupdate callback
+    setPlayheadPosAt(t);
+    compositeAt(t);
   } else {
-    const t = parseFloat(e.target.value);
     setPlayheadPosAt(t);
     compositeAt(t);
   }
@@ -1924,9 +1964,21 @@ vid.addEventListener('timeupdate', () => {
   }
 });
 
-vid.addEventListener('play',   () => { document.getElementById('play-btn').textContent = '⏸ Pause'; });
-vid.addEventListener('pause',  () => { document.getElementById('play-btn').textContent = '▶ Play';  });
-vid.addEventListener('ended',  () => { document.getElementById('play-btn').textContent = '▶ Play';  });
+vid.addEventListener('play', () => {
+  document.getElementById('play-btn').textContent = '⏸ Pause';
+  // Start the per-frame sync loop so the playhead and preview stay locked to
+  // vid.currentTime at display frame-rate instead of timeupdate's ~4-10 Hz.
+  if (_rafId) cancelAnimationFrame(_rafId);
+  _rafId = requestAnimationFrame(_rafFrame);
+});
+vid.addEventListener('pause', () => {
+  document.getElementById('play-btn').textContent = '▶ Play';
+  if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
+});
+vid.addEventListener('ended', () => {
+  document.getElementById('play-btn').textContent = '▶ Play';
+  if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
+});
 vid.addEventListener('loadedmetadata', () => { render(); });
 
 // Video drag-and-drop onto the video panel
