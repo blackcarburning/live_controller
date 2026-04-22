@@ -161,6 +161,18 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   background: #000;
   opacity: 0;
 }
+#preview-image {
+  position: absolute; inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  opacity: 0;
+}
+#preview-image > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
 #preview-text {
   position: absolute; inset: 0;
   display: flex;
@@ -456,6 +468,7 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
       <div id="preview-scaler">
         <div id="preview">
           <div id="preview-solid"></div>
+          <div id="preview-image"><img id="preview-img" src="" alt="" draggable="false"></div>
           <div id="preview-text"></div>
         </div>
       </div>
@@ -480,6 +493,7 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   <span class="add-label">Add clip at playhead:</span>
   <button onclick="addClip('color')"   title="Solid colour block">+ Solid</button>
   <button onclick="addClip('text')"    title="Text overlay">+ Text</button>
+  <button onclick="addClip('image')"   title="Image from URL">+ Image</button>
   <button onclick="addClip('fade_in')" title="Fade from black to colour">+ Fade In</button>
   <button onclick="addClip('fade_out')"title="Fade from colour to black">+ Fade Out</button>
   <div class="tb-sep" style="height:18px;align-self:center"></div>
@@ -561,6 +575,35 @@ const DEVICE_PRESETS = [
 let activePreset    = DEVICE_PRESETS[1];  // default: iPhone 14
 let deviceLandscape = false;
 
+// ── Font presets ───────────────────────────────────────────────────────────────
+// All entries use web-safe / system font stacks that render consistently across
+// every browser and OS without requiring any font download.  An empty id means
+// "inherit the page default" (system-UI / sans-serif).
+
+const FONT_PRESETS = [
+  { id: '',          label: 'Default (system UI)' },
+  { id: 'sans',      label: 'Sans-serif',
+    css: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" },
+  { id: 'serif',     label: 'Serif',
+    css: "Georgia, 'Times New Roman', Times, serif" },
+  { id: 'mono',      label: 'Monospace',
+    css: "'Courier New', Courier, monospace" },
+  { id: 'impact',    label: 'Impact',
+    css: "Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif" },
+  { id: 'georgia',   label: 'Georgia',
+    css: "Georgia, Palatino, 'Palatino Linotype', serif" },
+  { id: 'verdana',   label: 'Verdana',
+    css: "Verdana, Geneva, Tahoma, sans-serif" },
+  { id: 'trebuchet', label: 'Trebuchet MS',
+    css: "'Trebuchet MS', 'Lucida Sans Unicode', 'Lucida Grande', sans-serif" },
+];
+
+/** Return the CSS font-family string for a stored font id ('' = default). */
+function fontCss(fontId) {
+  const preset = FONT_PRESETS.find(f => f.id === fontId);
+  return (preset && preset.css) ? preset.css : '';
+}
+
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
 function blankShow() {
@@ -623,6 +666,7 @@ function clipBg(clip) {
   switch (clip.type) {
     case 'color':        return clip.params?.color || '#c03030';
     case 'text':         return '#2a60c0';
+    case 'image':        return '#1a4060';
     case 'fade_in':      return '#c07030';
     case 'fade_out':     return '#7030c0';
     case 'strobe':       return clip.params?.color || '#e0b020';
@@ -643,6 +687,11 @@ function clipLabel(clip) {
   switch (clip.type) {
     case 'color':        return clip.params?.color || 'solid';
     case 'text':         return clip.params?.text ? `"${clip.params.text}"` : 'text';
+    case 'image': {
+      const src = clip.params?.src || '';
+      const name = src ? src.split('/').pop().split('?')[0].slice(0, 20) : '';
+      return name ? '\uD83D\uDDBC ' + name : 'image';
+    }
     case 'fade_in':      return 'fade in';
     case 'fade_out':     return 'fade out';
     case 'strobe':       return `strobe ${clip.params?.rate || 10}Hz`;
@@ -749,6 +798,43 @@ function validateLinkUrl(raw) {
     }
   } catch (_) {}
   return '';
+}
+
+// ── Image URL validation ───────────────────────────────────────────────────────
+
+/**
+ * Return a safe image URL string if the scheme is http or https.
+ * Returns '' for any other scheme (including javascript:, data:, blob:).
+ * The href is re-serialized from a parsed URL object so the returned string
+ * is always the browser-canonical form of the input.
+ */
+function validateImageUrl(raw) {
+  if (!raw) return '';
+  const trimmed = raw.trim();
+  try {
+    const u = new URL(trimmed);
+    if (u.protocol === 'http:' || u.protocol === 'https:') return u.href;
+  } catch (_) {}
+  return '';
+}
+
+// ── Image preload helper ───────────────────────────────────────────────────────
+
+/**
+ * Preload all image URLs present in the current show into the browser cache.
+ * Call this after loading a show file so images are ready before playback.
+ */
+function preloadShowImages() {
+  const urls = new Set();
+  for (const tr of show.tracks) {
+    for (const cl of tr.clips) {
+      if (cl.type === 'image' && cl.params && cl.params.src) {
+        const safe = validateImageUrl(cl.params.src);
+        if (safe) urls.add(safe);
+      }
+    }
+  }
+  urls.forEach(url => { const img = new Image(); img.src = url; });
 }
 
 function tlWidth() {
@@ -964,7 +1050,8 @@ function compositeAt(t) {
   const sorted = [...show.tracks].sort((a, b) => a.layer - b.layer);
 
   let bg = null, bgOp = 0;
-  let txt = null, txtColor = '#fff', txtOp = 0, txtSz = 5, txtLinkUrl = '';
+  let txt = null, txtColor = '#fff', txtOp = 0, txtSz = 5, txtLinkUrl = '', txtFont = '';
+  let imgSrc = null, imgFit = 'contain', imgOp = 0;
   let effectTransform = '', effectFilter = '', effectClipPath = '';
 
   for (const track of sorted) {
@@ -988,11 +1075,16 @@ function compositeAt(t) {
         bg   = params.color || '#ff0000';
         bgOp = op;
       } else if (type === 'text') {
-        txt        = params.text     || null;
-        txtColor   = params.color    || '#ffffff';
-        txtSz      = params.size     || 5;
+        txt        = params.text       || null;
+        txtColor   = params.color      || '#ffffff';
+        txtSz      = params.size       || 5;
         txtOp      = op;
-        txtLinkUrl = params.link_url || '';
+        txtLinkUrl = params.link_url   || '';
+        txtFont    = params.font_family || '';
+      } else if (type === 'image') {
+        imgSrc = validateImageUrl(params.src || '');
+        imgFit = params.fit || 'contain';
+        imgOp  = op;
       } else if (type === 'strobe') {
         const rate = params.rate || 10;
         if (Math.floor(pos * rate * 2) % 2 === 0) {
@@ -1071,6 +1163,17 @@ function compositeAt(t) {
   solidEl.style.filter     = effectFilter;
   solidEl.style.clipPath   = effectClipPath;
 
+  // ── Image layer ───────────────────────────────────────────────────────────
+  const imgEl  = document.getElementById('preview-image');
+  const imgTag = document.getElementById('preview-img');
+  if (imgSrc) {
+    if (imgTag.getAttribute('src') !== imgSrc) imgTag.src = imgSrc;
+    imgTag.style.objectFit = imgFit;
+    imgEl.style.opacity = imgOp;
+  } else {
+    imgEl.style.opacity = 0;
+  }
+
   if (txt !== null && txtOp > 0) {
     const { w: dw, h: dh } = currentDeviceDims();
     // Font size as a true device-pixel value so preview matches the device.
@@ -1086,11 +1189,13 @@ function compositeAt(t) {
     } else {
       textEl.textContent = txt;
     }
-    textEl.style.color    = txtColor;
-    textEl.style.fontSize = pxFont + 'px';
-    textEl.style.opacity  = txtOp;
+    textEl.style.color      = txtColor;
+    textEl.style.fontSize   = pxFont + 'px';
+    textEl.style.fontFamily = fontCss(txtFont);
+    textEl.style.opacity    = txtOp;
   } else {
     while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
+    textEl.style.fontFamily = '';
     textEl.style.opacity = 0;
   }
 }
@@ -1360,7 +1465,7 @@ function renderPropsBar() {
 
   // Type
   const sel = document.createElement('select');
-  [['color','Solid colour'],['text','Text'],['fade_in','Fade In'],['fade_out','Fade Out'],
+  [['color','Solid colour'],['text','Text'],['image','Image'],['fade_in','Fade In'],['fade_out','Fade Out'],
    ['strobe','Strobe'],['pulse','Pulse'],['glitch','Glitch'],['blur','Blur In'],['color_sweep','Color Sweep'],
    ['bounce','Bounce'],['shake','Shake'],['zoom_pulse','Zoom Pulse'],['hue_rotate','Hue Rotate'],['neon_glow','Neon Glow']
   ].forEach(([v, lbl]) => {
@@ -1436,6 +1541,22 @@ function renderPropsBar() {
     sz.addEventListener('change', () => { cl.params.size = parseFloat(sz.value) || 5; renderPreview(); });
     panel.appendChild(g('Size (vmin)', sz));
 
+    // Font family (web-safe system font stack)
+    const fontSel = document.createElement('select');
+    fontSel.style.cssText = 'font-size:11px;';
+    FONT_PRESETS.forEach(fp => {
+      const opt = document.createElement('option');
+      opt.value = fp.id;
+      opt.textContent = fp.label;
+      if (fp.id === (cl.params.font_family || '')) opt.selected = true;
+      fontSel.appendChild(opt);
+    });
+    fontSel.addEventListener('change', () => {
+      cl.params.font_family = fontSel.value;
+      renderPreview();
+    });
+    panel.appendChild(g('Font', fontSel));
+
     // Link URL (optional — makes the text a clickable link on client devices)
     const urlInp = document.createElement('input');
     urlInp.type        = 'text';
@@ -1454,6 +1575,60 @@ function renderPropsBar() {
       renderPreview();
     });
     panel.appendChild(g('Link URL', urlInp));
+  }
+
+  // Image clip properties
+  if (cl.type === 'image') {
+    if (!cl.params) cl.params = {};
+    const urlInp = document.createElement('input');
+    urlInp.type        = 'text';
+    urlInp.value       = cl.params.src || '';
+    urlInp.placeholder = 'https://example.com/image.jpg';
+    urlInp.style.cssText = 'width:210px;user-select:text;';
+    urlInp.title       = 'Image URL (http / https only). ' +
+                         'Recommended: optimised JPEG or WebP, ≤ 800 px wide for smooth mobile playback.';
+    urlInp.addEventListener('change', () => {
+      const safe = validateImageUrl(urlInp.value);
+      cl.params.src = safe;
+      urlInp.value  = safe;
+      const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
+      if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      renderPreview();
+      renderPropsBar();   // refresh to show load status
+    });
+    panel.appendChild(g('Image URL', urlInp));
+
+    // Fit mode
+    const fitSel = document.createElement('select');
+    fitSel.style.cssText = 'font-size:11px;';
+    [['contain','Contain (letterbox)'],['cover','Cover (crop)'],['fill','Fill (stretch)']].forEach(([v, lbl]) => {
+      const opt = document.createElement('option');
+      opt.value = v; opt.textContent = lbl;
+      if (v === (cl.params.fit || 'contain')) opt.selected = true;
+      fitSel.appendChild(opt);
+    });
+    fitSel.addEventListener('change', () => {
+      cl.params.fit = fitSel.value;
+      renderPreview();
+    });
+    panel.appendChild(g('Fit', fitSel));
+
+    // Load status / dimension check (async — populates after image loads)
+    if (cl.params.src) {
+      const hint = document.createElement('span');
+      hint.style.cssText = 'font-size:10px;color:var(--muted);white-space:nowrap;';
+      hint.textContent = '\u23F3 loading\u2026';
+      const probe = new Image();
+      probe.onload = () => {
+        const w = probe.naturalWidth, h = probe.naturalHeight;
+        const large = w > 1200 || h > 1200;
+        hint.textContent = `${w}\u00d7${h}px ${large ? '\u26a0 large \u2014 consider resizing to \u2264800px' : '\u2713'}`;
+        hint.style.color = large ? '#f0a040' : '#60b060';
+      };
+      probe.onerror = () => { hint.textContent = '\u2717 could not load'; hint.style.color = '#c04040'; };
+      probe.src = cl.params.src;
+      panel.appendChild(hint);
+    }
   }
 
   // Effect-specific params (new effect types)
@@ -1639,13 +1814,14 @@ function addClip(type) {
   const start = isFinite(vid.currentTime) ? vid.currentTime : 0;
 
   const sorted = [...show.tracks].sort((a, b) => a.layer - b.layer);
-  const target = type === 'text'
+  const target = (type === 'text' || type === 'image')
     ? (sorted.find(t => t.layer >= 10) || sorted[sorted.length - 1])
     : (sorted.find(t => t.layer <  10) || sorted[0]);
 
   function defaultParams(t) {
     switch (t) {
-      case 'text':        return { color: '#ffffff', text: 'Text', size: 5 };
+      case 'text':        return { color: '#ffffff', text: 'Text', size: 5, font_family: '' };
+      case 'image':       return { src: '', fit: 'contain' };
       case 'strobe':      return { color: '#ffffff', rate: 10 };
       case 'pulse':       return { color: '#ffffff', rate: 1 };
       case 'glitch':      return { color: '#ff4040', intensity: 8 };
@@ -1695,7 +1871,7 @@ function copySelected() {
   const found = getClip(selId);
   if (!found) return;
   // All supported clip types can be copied: color, text, fade_in, fade_out, and new FX types
-  const allowedTypes = ['color', 'text', 'fade_in', 'fade_out', 'strobe', 'pulse', 'glitch', 'blur', 'color_sweep',
+  const allowedTypes = ['color', 'text', 'image', 'fade_in', 'fade_out', 'strobe', 'pulse', 'glitch', 'blur', 'color_sweep',
                         'bounce', 'shake', 'zoom_pulse', 'hue_rotate', 'neon_glow'];
   if (!allowedTypes.includes(found.cl.type)) return;
   clipboard = JSON.parse(JSON.stringify(found.cl));  // deep copy, preserves all params
@@ -1712,7 +1888,7 @@ function pasteClip() {
 
   // Route to the correct track (text → Text track, others → Solids track)
   const sorted = [...show.tracks].sort((a, b) => a.layer - b.layer);
-  const target = newClip.type === 'text'
+  const target = (newClip.type === 'text' || newClip.type === 'image')
     ? (sorted.find(t => t.layer >= 10) || sorted[sorted.length - 1])
     : (sorted.find(t => t.layer <  10) || sorted[0]);
 
@@ -1864,6 +2040,7 @@ function loadShowData(data, filename) {
   selId = null;
   render();
   renderPropsBar();
+  preloadShowImages();
 }
 
 function migrateV1(data) {

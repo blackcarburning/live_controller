@@ -61,6 +61,7 @@ playhead position:
 |--------|-----------|-------------|
 | **+ Solid** | `color` | Fills the screen with a solid colour for the duration |
 | **+ Text** | `text` | Displays centred text above the colour layer |
+| **+ Image** | `image` | Displays an image (by URL) over the preview |
 | **+ Fade In** | `fade_in` | Fades from black into a colour over the duration |
 | **+ Fade Out** | `fade_out` | Fades from a colour back to black over the duration |
 | **+ Strobe** | `strobe` | Rapid on/off flashing at a configurable rate (Hz) |
@@ -97,14 +98,17 @@ When a clip is selected, the **properties bar** at the bottom shows:
 
 | Field | Notes |
 |-------|-------|
-| **Type** | Change the clip type (all fourteen types listed above) |
+| **Type** | Change the clip type (all fifteen types listed above) |
 | **Start (s)** | Exact start time in seconds |
 | **Duration (s)** | Length of the clip in seconds |
 | **Beats (N BPM) →** | One-click beat presets: ¼ / ½ / 1 / 2 / 4 beats at the show's current BPM — sets Duration instantly |
 | **Colour** | Background / text colour (colour picker) |
 | **Text** | *(text clips only)* The text string to display |
 | **Size (vmin)** | *(text clips only)* Font size in `vmin` units (1–30) |
+| **Font** | *(text clips only)* Font family — 8 web-safe system stacks; empty = browser default |
 | **Link URL** | *(text clips only)* Optional clickable URL — rendered as `<a href="...">` on client devices; allowed schemes: `http`, `https`, `mailto`, `tel` |
+| **Image URL** | *(image clips only)* `http` / `https` URL of the image file |
+| **Fit** | *(image clips only)* `Contain` (letterbox) / `Cover` (crop) / `Fill` (stretch) |
 | **Rate (Hz)** | *(strobe / pulse / bounce / shake / zoom_pulse / hue_rotate / neon_glow)* Cycles or flashes per second |
 | **Intensity (px)** | *(glitch only)* Maximum pixel offset for the jitter |
 | **Max Blur (px)** | *(blur only)* Starting blur radius in pixels (reduces to 0 over the clip) |
@@ -453,6 +457,154 @@ and `text-decoration: underline` to indicate it is clickable.
 
 ---
 
+## Font selection in text clips
+
+### Font strategy
+
+The editor uses **web-safe / system font stacks** only.  No external fonts are
+downloaded at runtime, so every font listed below renders consistently on every
+browser and operating system without requiring network access.
+
+### Available fonts
+
+| Font id | Label | Characteristics |
+|---------|-------|-----------------|
+| *(empty)* | Default (system UI) | Inherits the browser/OS system font — most neutral choice |
+| `sans` | Sans-serif | `-apple-system`, Segoe UI, Roboto, Helvetica, Arial — renders as the system sans-serif on every platform |
+| `serif` | Serif | Georgia, Times New Roman — classic document serif |
+| `mono` | Monospace | Courier New — fixed-width; good for code or numbers |
+| `impact` | Impact | Bold condensed display font — high-impact headlines |
+| `georgia` | Georgia | Georgia / Palatino — elegant serif, wide device coverage |
+| `verdana` | Verdana | Wide letter-spacing, good on small screens |
+| `trebuchet` | Trebuchet MS | Humanist sans; legible at many sizes |
+
+### Adding a font to a text clip
+
+1. Select a **text** clip on the timeline.
+2. In the properties bar, click the **Font** dropdown.
+3. Choose a font — the preview updates immediately.
+4. Save the show; the `font_family` key is stored in `params`.
+
+### Backward compatibility
+
+Clips without a `font_family` key (created before this feature) continue to
+render using the browser default.  The `font_family` field defaults to `''`
+(empty), which resolves to the system UI font.
+
+### Show file format (font_family field)
+
+```json
+{
+  "id": "txt001",
+  "type": "text",
+  "start": 4.0,
+  "duration": 3.0,
+  "params": {
+    "text": "IGNITE",
+    "color": "#ff8800",
+    "size": 10,
+    "font_family": "impact"
+  },
+  "fade_in": 0.2,
+  "fade_out": 0.2
+}
+```
+
+---
+
+## Image clips
+
+### Overview
+
+The `image` clip type displays an external image (JPEG, PNG, WebP, GIF) over
+the preview for the clip's duration.  Images are inserted by URL and rendered
+in the same WYSIWYG preview used for colour and text clips.
+
+### Adding an image
+
+1. In the timeline toolbar click **+ Image**.  A new image clip is placed at
+   the current playhead on the **Text** track (layer 10, above solids).
+2. Click the clip to select it.
+3. In the properties bar fill in **Image URL** with a full `http://` or
+   `https://` URL pointing to the image file.
+4. Press **Tab** or **Enter**.  The URL is validated and the preview updates.
+5. Choose a **Fit** mode:
+   - **Contain (letterbox)** *(default)* — scales the image to fit inside the
+     preview while preserving its aspect ratio; may show black bars.
+   - **Cover (crop)** — fills the full preview, cropping the image if necessary.
+   - **Fill (stretch)** — stretches the image to fill exactly.
+6. Optionally adjust **Fade In (s)** and **Fade Out (s)** in the properties bar.
+7. Save the show.
+
+### URL validation and safety
+
+Only `http:` and `https:` image URLs are accepted.  `data:`, `blob:`,
+`javascript:`, and other schemes are silently rejected and the field is cleared.
+The URL is always re-serialised through the browser's URL parser before it is
+stored, so the saved URL is always in canonical form.
+
+### Fit modes
+
+| Mode | Object-fit | When to use |
+|------|-----------|-------------|
+| Contain | `contain` | Logos, graphics with transparency or fixed aspect ratio |
+| Cover | `cover` | Full-screen hero images where cropping is acceptable |
+| Fill | `fill` | Pixel-perfect banners sized exactly for the device |
+
+### Show file format (image clip)
+
+```json
+{
+  "id": "img001",
+  "type": "image",
+  "start": 10.0,
+  "duration": 5.0,
+  "params": {
+    "src": "https://cdn.example.com/banner.webp",
+    "fit": "contain"
+  },
+  "fade_in": 0.5,
+  "fade_out": 0.5
+}
+```
+
+### Load-status indicator
+
+While an image clip is selected, a small status line appears in the properties
+bar after the **Fit** control:
+
+- **⏳ loading…** — image is being fetched.
+- **800×600px ✓** — loaded successfully; dimensions are within recommended range.
+- **2400×1600px ⚠ large — consider resizing to ≤800px** — image is large;
+  see the performance recommendations below.
+- **✗ could not load** — the URL returned an error (check the URL and CORS policy).
+
+### Performance recommendations for live use
+
+Images add network and memory overhead.  Follow these guidelines for smooth
+playback, especially on phones:
+
+| Recommendation | Detail |
+|---------------|--------|
+| **Format** | Use **WebP** (best quality/size) or optimised JPEG.  Avoid uncompressed PNG for photographs. |
+| **Dimensions** | Resize to ≤ **800 px** on the longest edge before use.  Phone previews are ~390–440 logical pixels wide; a 2 MP image is wasted and slows rendering. |
+| **File size** | Aim for ≤ **150 KB** per image.  On a 50 Mbps connection a 150 KB image loads in ~24 ms; a 2 MB image takes ~320 ms — risking a visible blank frame at show time. |
+| **Hosting** | Use images served from a fast, reliable host (CDN, local server, or `show-sync/app/static/`).  Remote images from social media or slow third-party hosts are unpredictable under show conditions. |
+| **Preloading** | The editor automatically preloads all image URLs in the show when a show file is opened.  This populates the browser cache so images are ready before playback.  Open the show file a few seconds before triggering playback to allow preloading to complete. |
+| **CORS** | The image server must send appropriate `Access-Control-Allow-Origin` headers if the image is cross-origin (different domain from the show-sync server). |
+
+### Cross-browser rendering notes
+
+- `object-fit: contain/cover/fill` is supported in all modern browsers (Chrome,
+  Safari, Firefox, Edge — including mobile).
+- Images fetched from a different origin than the show-sync server may be blocked
+  by the browser's CORS policy.  Host images on the same server or configure
+  the CDN/image host to allow `Access-Control-Allow-Origin: *`.
+- Animated GIFs are rendered by the browser natively; however, large animated
+  GIFs (> 500 KB) can cause jank on older phones — prefer short WebP animations.
+
+---
+
 ## Zoom
 
 Use the **Zoom − / +** buttons in the timeline toolbar to increase or decrease
@@ -645,9 +797,9 @@ curl -X POST http://localhost:8000/api/session/a1b2c3d4/stop
 
 ## Copy / Paste clips
 
-1. Click a **text** or **solid/colour** clip to select it.
+1. Click a **text**, **image**, or **solid/colour** clip to select it.
 2. Press **Ctrl+C** (or **⌘C** on Mac) to copy it.
-   - The full clip is copied: type, duration, colour, text, size, fade in/out.
+   - The full clip is copied: type, duration, colour, text, font, image URL, size, fade in/out.
 3. Seek or play to the position where you want the duplicate.
 4. Press **Ctrl+V** (or **⌘V**) to paste.
    - A new clip is placed with its start at the **current playhead position**.
