@@ -787,11 +787,19 @@ curl -X POST http://localhost:8000/api/session/a1b2c3d4/stop
 | Key | Action |
 |-----|--------|
 | **Space** | Play / Pause |
+| **← Left arrow** | Step playhead back by the configured nudge amount |
+| **→ Right arrow** | Step playhead forward by the configured nudge amount |
 | **Delete** or **Backspace** | Delete selected clip (or selected marker if no clip is selected) |
 | **Ctrl+S** / **⌘S** | Save show |
 | **Ctrl+C** / **⌘C** | Copy selected clip (text or solid) |
 | **Ctrl+V** / **⌘V** | Paste copied clip at current playhead |
 | **m** | Add a marker at the current playhead position |
+
+> **Arrow key step size** — the **Step** and **fps** inputs in the transport
+> bar control how far each arrow-key press moves the playhead.  The default is
+> **1 frame at 25 fps** (= 40 ms).  Change *Step* to nudge by multiple frames
+> at once, or change *fps* to match your source material (e.g. 24, 30, 60).
+> Arrow keys have no effect while a text/number input field is focused.
 
 ---
 
