@@ -204,6 +204,24 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   min-width: 134px;
 }
 #scrub-bar { flex: 1; }
+.nudge-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.nudge-group input[type=number] {
+  width: 46px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  font-size: 11px;
+  padding: 1px 3px;
+  text-align: center;
+}
 
 /* ── Timeline toolbar ───────────────────────────────────────────────────────── */
 #tl-toolbar {
@@ -483,6 +501,15 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
       <button id="play-btn" onclick="togglePlay()">▶ Play</button>
       <span id="time-display">0:00.00 / 0:00.00</span>
       <input type="range" id="scrub-bar" min="0" max="100" step="any" value="0">
+      <div class="nudge-group" title="Arrow-key step size (← / →)">
+        <span>Step:</span>
+        <input type="number" id="nudge-frames" value="1" min="1" max="999" step="1"
+               title="Frames per arrow-key step">
+        <span>fr @</span>
+        <input type="number" id="nudge-fps" value="25" min="1" max="240" step="1"
+               title="Frame rate used to convert frames → seconds">
+        <span>fps</span>
+      </div>
     </div>
   </div>
 
@@ -1321,6 +1348,24 @@ function seekTo(t) {
     compositeAt(target);
     document.getElementById('time-display').textContent = fmtTime(target) + ' / ' + fmtTime(dur);
   }
+}
+
+/** Return the current nudge step in seconds from the Step/FPS inputs. */
+function nudgeStepSecs() {
+  const frames = Math.max(1, parseInt(document.getElementById('nudge-frames').value, 10) || 1);
+  const fps    = Math.max(1, parseInt(document.getElementById('nudge-fps').value,    10) || 25);
+  return frames / fps;
+}
+
+/**
+ * Step the playhead forward (dir = +1) or backward (dir = -1) by the
+ * configured nudge amount.  Uses seekTo() so the video and preview stay in
+ * sync.  Clamps to valid timeline bounds [0, duration].
+ */
+function stepPlayhead(dir) {
+  const vid = document.getElementById('video-player');
+  const cur = isFinite(vid.currentTime) ? vid.currentTime : 0;
+  seekTo(cur + dir * nudgeStepSecs());
 }
 
 function setPlayheadPosAt(t) {
@@ -2176,6 +2221,15 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
     togglePlay();
+  }
+  // Step playhead backward / forward one nudge unit
+  if (e.code === 'ArrowLeft') {
+    e.preventDefault();
+    stepPlayhead(-1);
+  }
+  if (e.code === 'ArrowRight') {
+    e.preventDefault();
+    stepPlayhead(+1);
   }
   if ((e.code === 'Delete' || e.code === 'Backspace') && selId) {
     e.preventDefault();
