@@ -103,7 +103,7 @@ ARDUINO_PROBE_CMD = b'?\n'
 # --- Sync-Show API Defaults ---
 # These are the instance-specific defaults used in the initial deployment.
 # Override both values via the Sync Show API config group in the settings panel.
-DEFAULT_SYNC_SHOW_HOST = "https://localhost-0.tailc4daa4.ts.net"
+DEFAULT_SYNC_SHOW_HOST = "https://meshlive.blackcarburning.com"
 DEFAULT_SYNC_SHOW_SESSION = "0e49315f"
 # Global timing trim applied to the sync-show scheduled start (milliseconds).
 # Positive = sync-show starts later; Negative = sync-show starts earlier.
@@ -2512,6 +2512,17 @@ class LiveController(QWidget):
         # --- Build UI and start background services ---
         self.setup_ui()
         self.apply_config_to_ui()
+        # Enforce a fixed sync-show session ID and disable editing in the UI so
+        # the application always uses the hard-coded session provided by ops.
+        try:
+            self.sync_show_session_input.setText(DEFAULT_SYNC_SHOW_SESSION)
+            # Disable the widget so the operator cannot change it from the UI.
+            self.sync_show_session_input.setEnabled(False)
+            self.sync_show_session_input.setToolTip("Session ID is hard-coded and cannot be changed here.")
+        except Exception:
+            # If the UI widget is not present for any reason, continue without
+            # crashing — trigger_sync_show will still use the DEFAULT constant.
+            pass
         self.hotkey_listener = GlobalHotkeyListener()
         self.hotkey_listener.hotkey_pressed.connect(self.on_global_hotkey)
         self.hotkey_listener.start()
@@ -4464,11 +4475,11 @@ class LiveController(QWidget):
             return
 
         host = self.sync_show_host_input.text().strip().rstrip('/')
-        session = self.sync_show_session_input.text().strip()
         if not host:
             host = DEFAULT_SYNC_SHOW_HOST
-        if not session:
-            session = DEFAULT_SYNC_SHOW_SESSION
+        # Use the hard-coded session ID rather than reading from the UI so the
+        # controller is guaranteed to always target the same session.
+        session = DEFAULT_SYNC_SHOW_SESSION
 
         # Record the active session so stop_sync_show() can clean it up later.
         self._active_sync_show_host = host

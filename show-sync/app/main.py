@@ -82,7 +82,7 @@ def live_page(request: Request):
         if active_show_name:
             url += "?show=" + urllib.parse.quote(active_show_name, safe="")
         return RedirectResponse(url=url)
-    return templates.TemplateResponse("live.html", {"request": request})
+    return templates.TemplateResponse(request, "live.html")
 
 
 @app.get("/api/active-session")
@@ -133,8 +133,9 @@ def join_page(request: Request, session_id: str):
             "last_start": None,
         }
     return templates.TemplateResponse(
+        request,
         "join.html",
-        {"request": request, "session_id": session_id}
+        {"session_id": session_id}
     )
 
 
