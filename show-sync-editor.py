@@ -101,6 +101,47 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _HTML = os.path.join(_HERE, "show-sync-editor.html")
 _INITIAL = sys.argv[1] if len(sys.argv) > 1 else None
 
+_RECENT_FILE = os.path.join(os.path.expanduser('~'), '.show-sync-editor-recents.json')
+_RECENT_MAX = 10
+
+import time
+
+def _load_recents():
+    try:
+        with open(_RECENT_FILE, encoding='utf-8') as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                return data
+    except Exception:
+        pass
+    return []
+
+
+def _write_recents(lst):
+    try:
+        with open(_RECENT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(lst, f, indent=2)
+    except Exception:
+        pass
+
+
+def _save_recent_entry(entry):
+    # Normalise entry and prepend to recents, trimming to _RECENT_MAX
+    try:
+        recents = _load_recents()
+        # Remove any existing with same fingerprint (path or filename)
+        fingerprint = entry.get('path') or entry.get('filename')
+        if fingerprint:
+            recents = [r for r in recents if (r.get('path') or r.get('filename')) != fingerprint]
+        entry['timestamp'] = time.time()
+        recents.insert(0, entry)
+        recents = recents[:_RECENT_MAX]
+        _write_recents(recents)
+        return True
+    except Exception:
+        return False
+
+
 # The server only binds to 127.0.0.1 (loopback).  Video and save endpoints
 # accept user-supplied paths but restrict them to the user home directory to
 # limit exposure if a malicious local page ever tried a CSRF-style request.
@@ -155,6 +196,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if parsed.path == "/api/save":
             n = int(self.headers.get("Content-Length", 0))
             self._save(self.rfile.read(n))
+        elif parsed.path == "/api/recent":
+            n = int(self.headers.get("Content-Length", 0))
+            self._save_recent(self.rfile.read(n))
         else:
             self.send_response(404)
             self.end_headers()
@@ -176,14 +220,51 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _initial(self):
-        if not _INITIAL:
-            return self._json(None)
+        recents = _load_recents()
+        # If a filename was passed to the server, try to load that show.
+        if _INITIAL:
+            try:
+                with open(_INITIAL, encoding="utf-8") as f:
+                    data = json.load(f)
+                self._json({"show": data, "filename": os.path.basename(_INITIAL), "recents": recents})
+                return
+            except Exception as exc:
+                # Fall through and still return recents + error
+                self._json({"error": str(exc), "recents": recents})
+                return
+        # No initial file — return the most recent autosave (if any) plus the list
+        if recents:
+            top = recents[0]
+            self._json({"show": top.get('data'), "filename": top.get('filename'), "recents": recents})
+        else:
+            self._json({"recents": recents})
+
+    def _save_recent(self, body):
+        # CSRF guard: only accept requests that originate from our own editor page.
+        origin = self.headers.get("Origin", "")
+        referer = self.headers.get("Referer", "")
+        server_base = f"http://127.0.0.1:{PORT}"
+        if origin and not origin.startswith(server_base):
+            self.send_response(403)
+            self.end_headers()
+            return
+        if not origin and referer and not referer.startswith(server_base):
+            self.send_response(403)
+            self.end_headers()
+            return
+
         try:
-            with open(_INITIAL, encoding="utf-8") as f:
-                data = json.load(f)
-            self._json({"show": data, "filename": os.path.basename(_INITIAL)})
+            payload = json.loads(body)
+            data = payload.get('data')
+            filename = payload.get('filename') or payload.get('path') or ''
+            path = payload.get('path', '')
+            if data is None:
+                raise ValueError('Missing data')
+            entry = {'filename': filename, 'path': path, 'data': data}
+            ok = _save_recent_entry(entry)
+            self._json({'ok': ok})
         except Exception as exc:
-            self._json({"error": str(exc)})
+            self._json({'ok': False, 'error': str(exc)})
 
     def _video(self, raw):
         if not raw:

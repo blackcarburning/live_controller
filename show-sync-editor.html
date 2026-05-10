@@ -444,6 +444,7 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   <button onclick="newShow()">New</button>
   <button onclick="movInput()">Load .mov</button>
   <button onclick="showInput()">Load Show</button>
+  <button onclick="showLoadRecent()">Load Recent</button>
   <button class="primary" onclick="saveShow()">Save Show</button>
   <div class="tb-sep"></div>
   <label>BPM</label>
@@ -557,6 +558,7 @@ let drag      = null;     // active drag descriptor
 let phDrag    = false;    // true while scrubbing the playhead via ruler drag
 let clipboard = null;     // deep-copied clip for Ctrl+C / Ctrl+V paste
 let _rafId    = null;     // rAF handle for per-frame video/timeline sync
+let _recents  = [];       // cached recent projects from server
 
 // ── Device presets ────────────────────────────────────────────────────────────
 // Each entry: { id, name, w (portrait width px), h (portrait height px) }
@@ -2218,11 +2220,73 @@ document.addEventListener('keydown', (e) => {
 fetch('/api/initial')
   .then(r => r.json())
   .then(data => {
+    if (!data) return;
+    if (data.recents) _recents = data.recents;
     if (data && data.show) {
       loadShowData(data.show, data.filename || 'show.json');
     }
   })
   .catch(() => {}); // standalone file:// usage — ignore
+
+// ── Recent projects UI + autosave ───────────────────────────────────────────
+function showLoadRecent() {
+  // Ensure we have the latest recents from server
+  fetch('/api/initial').then(r => r.json()).then(data => {
+    if (data && data.recents) _recents = data.recents;
+    if (!_recents || !_recents.length) return alert('No recent projects');
+    showRecentPicker(_recents);
+  }).catch(() => { if (!_recents.length) alert('No recent projects'); else showRecentPicker(_recents); });
+}
+
+function showRecentPicker(list) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--panel);border:1px solid var(--border);padding:12px;width:560px;max-height:70vh;overflow:auto;border-radius:8px;color:var(--text);';
+  const h = document.createElement('h3'); h.textContent = 'Recent projects'; h.style.margin = '0 0 8px 0'; box.appendChild(h);
+  list.forEach((it, idx) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;padding:8px 4px;border-bottom:1px solid rgba(255,255,255,0.03);cursor:pointer;';
+    const left = document.createElement('div');
+    const fn = it.filename || ('recent-' + idx + '.json');
+    const ts = it.timestamp ? new Date(it.timestamp * 1000).toLocaleString() : '';
+    left.innerHTML = `<div style="font-weight:600">${fn}</div><div style="font-size:11px;color:var(--muted)">${ts}</div>`;
+    const right = document.createElement('div');
+    const loadBtn = document.createElement('button'); loadBtn.textContent = 'Load';
+    loadBtn.style.marginRight = '8px';
+    loadBtn.onclick = () => { loadShowData(it.data, it.filename || fn); document.body.removeChild(overlay); };
+    const delBtn = document.createElement('button'); delBtn.textContent = 'Remove'; delBtn.onclick = (e) => { e.stopPropagation(); removeRecent(idx); overlay.remove(); showLoadRecent(); };
+    right.appendChild(loadBtn); right.appendChild(delBtn);
+
+    row.appendChild(left); row.appendChild(right);
+    row.onclick = () => { loadShowData(it.data, it.filename || fn); document.body.removeChild(overlay); };
+    box.appendChild(row);
+  });
+  const close = document.createElement('div');
+  close.style.cssText = 'text-align:right;margin-top:8px;';
+  const cbtn = document.createElement('button'); cbtn.textContent = 'Close'; cbtn.onclick = () => document.body.removeChild(overlay);
+  close.appendChild(cbtn); box.appendChild(close);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+}
+
+function removeRecent(idx) {
+  _recents.splice(idx, 1);
+  // Persist current show as an update to recents (server-side trimming keeps size)
+  try { fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curFile || '', data: show }) }).catch(()=>{}); } catch(e){}
+}
+
+function saveRecent() {
+  try {
+    const payload = { filename: curFile || '', path: curFile || '', data: show };
+    fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      .then(r => r.json()).then(res => { if (res && res.ok) { /* noop */ } });
+  } catch (e) {}
+}
+
+// Auto-save every 10s and on close
+setInterval(saveRecent, 10000);
+window.addEventListener('beforeunload', (e) => { saveRecent(); });
 
 // ── Initial render ────────────────────────────────────────────────────────────
 
