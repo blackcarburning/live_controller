@@ -1450,7 +1450,8 @@ document.addEventListener('mousemove', (e) => {
     const raw = clamp(drag.origFadeIn + dt, 0, Math.max(0, cl.duration - (cl.fade_out || 0) - 0.01));
     cl.fade_in = Math.max(0, raw);
   } else if (drag.type === 'fade-right') {
-    const raw = clamp(drag.origFadeOut - dt, 0, Math.max(0, cl.duration - (cl.fade_in || 0) - 0.01));
+    // Adjust fade_out: dragging right should increase fade_out (dt positive)
+    const raw = clamp(drag.origFadeOut + dt, 0, Math.max(0, cl.duration - (cl.fade_in || 0) - 0.01));
     cl.fade_out = Math.max(0, raw);
   }
 
