@@ -395,11 +395,18 @@ def main():
             pass
 
         try:
-            t.join()
-        except KeyboardInterrupt:
-            # Fallback: ensure shutdown if signal didn't arrive in the main loop
-            print("\nStopping.")
-            httpd.shutdown()
+            # Wait in a loop so KeyboardInterrupt is reliably delivered on all platforms
+            while t.is_alive():
+                try:
+                    time.sleep(0.5)
+                except KeyboardInterrupt:
+                    # User pressed Ctrl+C — shutdown server and break
+                    print("\nStopping.")
+                    try:
+                        httpd.shutdown()
+                    except Exception:
+                        pass
+                    break
         finally:
             # restore original handlers
             try:
