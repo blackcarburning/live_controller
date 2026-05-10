@@ -417,6 +417,23 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .clip-fade-right { right: 6px; }
 .clip-fade-handle::after { content: ''; width: 8px; height: 2px; background: rgba(255,255,255,0.6); border-radius:1px; }
 
+/* Visual fade overlays inside a clip showing the fade-in/out regions */
+.clip-fade-overlay-left, .clip-fade-overlay-right {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  pointer-events: none;
+  z-index: 3;
+}
+.clip-fade-overlay-left {
+  left: 0;
+  background: linear-gradient(to right, rgba(0,0,0,0.45), rgba(0,0,0,0));
+}
+.clip-fade-overlay-right {
+  right: 0;
+  background: linear-gradient(to left, rgba(0,0,0,0.45), rgba(0,0,0,0));
+}
+
 .clip-body {
   flex: 1;
   min-width: 0;
@@ -1045,8 +1062,17 @@ function makeClipEl(clip, trackId) {
   rh.className = 'clip-handle';
   rh.addEventListener('mousedown', (e) => startDrag(e, 'right', clip.id));
 
-  // Fade handles for clips that support fades (solid, text, image)
+  // Fade overlays + handles for clips that support fades (solid, text, image)
   if (['color','text','image','fade_in','fade_out'].includes(clip.type)) {
+    const ol = document.createElement('div');
+    ol.className = 'clip-fade-overlay-left';
+    ol.style.width = ((clip.fade_in || 0) / Math.max(clip.duration || 1, 1) * 100) + '%';
+    const or = document.createElement('div');
+    or.className = 'clip-fade-overlay-right';
+    or.style.width = ((clip.fade_out || 0) / Math.max(clip.duration || 1, 1) * 100) + '%';
+    el.appendChild(ol);
+    el.appendChild(or);
+
     const fl = document.createElement('div');
     fl.className = 'clip-fade-handle clip-fade-left';
     fl.title = 'Adjust fade in';
@@ -1455,11 +1481,15 @@ document.addEventListener('mousemove', (e) => {
     cl.fade_out = Math.max(0, raw);
   }
 
-  // Fast visual update — just move the DOM element
+  // Fast visual update — update DOM element and fade overlays
   const el = document.querySelector(`[data-clip-id="${drag.clipId}"]`);
   if (el) {
     el.style.left  = t2x(cl.start) + 'px';
     el.style.width = Math.max(8, t2x(cl.duration)) + 'px';
+    const ol = el.querySelector('.clip-fade-overlay-left');
+    const or = el.querySelector('.clip-fade-overlay-right');
+    if (ol) ol.style.width = ((cl.fade_in || 0) / Math.max(cl.duration || 1, 1) * 100) + '%';
+    if (or) or.style.width = ((cl.fade_out || 0) / Math.max(cl.duration || 1, 1) * 100) + '%';
   }
 
   renderPreview();
@@ -1849,8 +1879,12 @@ function renderPropsBar() {
   }
 
   // Fade in / out
-  panel.appendChild(g('Fade In (s)',  numInp((cl.fade_in  || 0).toFixed(2), v => { cl.fade_in  = Math.max(0, v); renderPreview(); })));
-  panel.appendChild(g('Fade Out (s)', numInp((cl.fade_out || 0).toFixed(2), v => { cl.fade_out = Math.max(0, v); renderPreview(); })));
+  const fadeInInp = numInp((cl.fade_in  || 0).toFixed(2), v => { cl.fade_in  = Math.max(0, v); renderPreview(); });
+  fadeInInp.id = 'fade-in-input';
+  const fadeOutInp = numInp((cl.fade_out || 0).toFixed(2), v => { cl.fade_out = Math.max(0, v); renderPreview(); });
+  fadeOutInp.id = 'fade-out-input';
+  panel.appendChild(g('Fade In (s)',  fadeInInp));
+  panel.appendChild(g('Fade Out (s)', fadeOutInp));
   const del = document.createElement('button');
   del.className   = 'danger';
   del.textContent = 'Delete';
@@ -1859,10 +1893,16 @@ function renderPropsBar() {
 }
 
 function syncPropsInputs(cl) {
-  // Quick update of Start/Duration inputs during drag
+  // Quick update of Start/Duration inputs during drag (best-effort)
   const inputs = document.querySelectorAll('#props-bar input[type="number"]');
+  // find start/duration by proximity to labels: assume first two are start/duration
   if (inputs[0]) inputs[0].value = cl.start.toFixed(3);
   if (inputs[1]) inputs[1].value = cl.duration.toFixed(3);
+  // Update fade inputs by ID if present
+  const fi = document.getElementById('fade-in-input');
+  const fo = document.getElementById('fade-out-input');
+  if (fi) fi.value = (cl.fade_in || 0).toFixed(2);
+  if (fo) fo.value = (cl.fade_out || 0).toFixed(2);
 }
 
 // ── Add / Delete clips ────────────────────────────────────────────────────────
