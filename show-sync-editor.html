@@ -397,6 +397,22 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   border-radius: 1px;
 }
 
+/* Fade handles inside clips (small triangular grips) */
+.clip-fade-handle {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 12px;
+  margin-top: -6px;
+  background: rgba(0,0,0,0.2);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 2px;
+  cursor: ew-resize;
+  z-index: 6;
+}
+.clip-fade-left { left: 4px; }
+.clip-fade-right { right: 4px; }
+
 .clip-body {
   flex: 1;
   min-width: 0;
@@ -1025,6 +1041,20 @@ function makeClipEl(clip, trackId) {
   rh.className = 'clip-handle';
   rh.addEventListener('mousedown', (e) => startDrag(e, 'right', clip.id));
 
+  // Fade handles for clips that support fades (solid, text, image)
+  if (['color','text','image','fade_in','fade_out'].includes(clip.type)) {
+    const fl = document.createElement('div');
+    fl.className = 'clip-fade-handle clip-fade-left';
+    fl.title = 'Adjust fade in';
+    fl.addEventListener('mousedown', (e) => startDrag(e, 'fade-left', clip.id));
+    const fr = document.createElement('div');
+    fr.className = 'clip-fade-handle clip-fade-right';
+    fr.title = 'Adjust fade out';
+    fr.addEventListener('mousedown', (e) => startDrag(e, 'fade-right', clip.id));
+    el.appendChild(fl);
+    el.appendChild(fr);
+  }
+
   el.appendChild(lh);
   el.appendChild(body);
   el.appendChild(rh);
@@ -1374,6 +1404,8 @@ function startDrag(e, type, clipId) {
     startX:    e.clientX,
     origStart: cl.start,
     origDur:   cl.duration,
+    origFadeIn: cl.fade_in || 0,
+    origFadeOut: cl.fade_out || 0,
   };
 }
 
@@ -1395,17 +1427,24 @@ document.addEventListener('mousemove', (e) => {
 
   if (drag.type === 'move') {
     const raw = clamp(drag.origStart + dt, 0, maxT - cl.duration);
-    cl.start = snapToMarker(raw);
+    cl.start = snapTo(raw);
   } else if (drag.type === 'left') {
     const rawStart  = clamp(drag.origStart + dt, 0, drag.origStart + drag.origDur - 0.05);
-    const newStart  = snapToMarker(rawStart);
+    const newStart  = snapTo(rawStart);
     const newDur    = drag.origDur - (newStart - drag.origStart);
     cl.start    = newStart;
     cl.duration = Math.max(0.05, newDur);
   } else if (drag.type === 'right') {
     const rawEnd    = cl.start + clamp(drag.origDur + dt, 0.05, maxT - cl.start);
-    const snappedEnd = snapToMarker(rawEnd);
+    const snappedEnd = snapTo(rawEnd);
     cl.duration = Math.max(0.05, snappedEnd - cl.start);
+  } else if (drag.type === 'fade-left') {
+    // Adjust fade_in in seconds based on pointer movement (dragging right increases fade)
+    const raw = clamp(drag.origFadeIn + dt, 0, Math.max(0, cl.duration - (cl.fade_out || 0) - 0.01));
+    cl.fade_in = Math.max(0, raw);
+  } else if (drag.type === 'fade-right') {
+    const raw = clamp(drag.origFadeOut - dt, 0, Math.max(0, cl.duration - (cl.fade_in || 0) - 0.01));
+    cl.fade_out = Math.max(0, raw);
   }
 
   // Fast visual update — just move the DOM element
@@ -1946,21 +1985,42 @@ function deleteMarker(id) {
   render();
 }
 
-// ── Snap-to-marker helper ─────────────────────────────────────────────────────
-// Returns `t` snapped to the nearest marker if within the snap threshold
-// (8 px at the current zoom level).  Used in the drag handler for both
-// moving clips and resizing their start/end handles.
+// ── Snap helpers ───────────────────────────────────────────────────────────
+// Snap to marker, beat grid, or nearby clip edges (other clips).
+function snapTo(t) {
+  const candidates = [];
+  const pxThresh = 8; // pixels
+  const secThresh = pxThresh / pps;
 
-function snapToMarker(t) {
-  if (!show.markers || !show.markers.length) return t;
-  const threshold = 8 / pps;   // 8 px expressed in seconds at current zoom
-  // Find the single nearest marker; iterate all markers for correctness
-  let nearest = null, nearestDist = Infinity;
-  for (const mk of show.markers) {
-    const d = Math.abs(t - mk.time);
-    if (d < nearestDist) { nearest = mk; nearestDist = d; }
+  // Markers
+  if (show.markers && show.markers.length) {
+    for (const mk of show.markers) candidates.push({type:'marker', t: mk.time});
   }
-  return (nearest && nearestDist <= threshold) ? nearest.time : t;
+
+  // Beat grid (bar) — snap to nearest beat multiple
+  const bpm = show.bpm || 120;
+  const beat = 60 / bpm;
+  if (beat > 0 && isFinite(beat)) {
+    const n = Math.round(t / beat);
+    candidates.push({type:'beat', t: n * beat});
+  }
+
+  // Clip edges (start / end) from other clips
+  for (const tr of show.tracks) {
+    for (const c of tr.clips) {
+      candidates.push({type:'edge', t: c.start});
+      candidates.push({type:'edge', t: c.start + c.duration});
+    }
+  }
+
+  // Find nearest candidate
+  let nearest = null, nd = Infinity;
+  for (const c of candidates) {
+    const d = Math.abs(t - c.t);
+    if (d < nd) { nearest = c; nd = d; }
+  }
+  if (nearest && nd <= secThresh) return nearest.t;
+  return t;
 }
 
 // ── Zoom ──────────────────────────────────────────────────────────────────────
