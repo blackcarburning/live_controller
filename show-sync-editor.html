@@ -2086,14 +2086,8 @@ function zoom(dir) {
 // ── File I/O ──────────────────────────────────────────────────────────────────
 
 function movInput() {
-  // Prompt for a filesystem path first (when running via the bundled server you can enter an absolute
-  // path under your home directory and the server will stream it). Leave blank to pick a local file.
-  const path = prompt('Enter full path to a media file under your home directory, or Cancel to choose a local file');
-  if (path && path.trim()) {
-    loadMovPath(path.trim());
-  } else {
-    document.getElementById('mov-input').click();
-  }
+  // Open native file picker to choose a .mov/.mp4 etc file from the local filesystem.
+  document.getElementById('mov-input').click();
 }
 function showInput() { document.getElementById('show-input').click(); }
 
