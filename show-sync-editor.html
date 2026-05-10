@@ -185,6 +185,7 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   opacity: 0;
   pointer-events: none;
   word-break: break-word;
+  white-space: pre-wrap; /* allow multiline text */
 }
 
 /* Video panel */
@@ -1253,14 +1254,34 @@ function compositeAt(t) {
       const a = document.createElement('a');
       a.href = txtLinkUrl;
       a.textContent = txt;
-      a.style.cssText = 'color:' + txtColor + ';text-decoration:underline;pointer-events:none;';
+      a.style.cssText = 'color:' + txtColor + ';text-decoration:underline;pointer-events:none;white-space:pre-wrap;';
       textEl.appendChild(a);
     } else {
-      textEl.textContent = txt;
+      // Preserve line breaks and spacing
+      const div = document.createElement('div');
+      div.textContent = txt;
+      div.style.whiteSpace = 'pre-wrap';
+      textEl.appendChild(div);
     }
     textEl.style.color      = txtColor;
     textEl.style.fontSize   = pxFont + 'px';
     textEl.style.fontFamily = fontCss(txtFont);
+    // Alignment: cl.params.align -> justifyContent and textAlign
+    const align = (clip.params && clip.params.align) || 'center';
+    if (align === 'left') {
+      textEl.style.justifyContent = 'flex-start';
+      textEl.style.textAlign = 'left';
+      textEl.style.paddingLeft = '12px';
+    } else if (align === 'right') {
+      textEl.style.justifyContent = 'flex-end';
+      textEl.style.textAlign = 'right';
+      textEl.style.paddingRight = '12px';
+    } else {
+      textEl.style.justifyContent = 'center';
+      textEl.style.textAlign = 'center';
+      textEl.style.paddingLeft = '';
+      textEl.style.paddingRight = '';
+    }
     textEl.style.opacity    = txtOp;
   } else {
     while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
@@ -1607,11 +1628,12 @@ function renderPropsBar() {
 
   // Text fields (only for text clips)
   if (cl.type === 'text') {
-    const txt = document.createElement('input');
-    txt.type         = 'text';
+    const txt = document.createElement('textarea');
+    txt.rows = 3;
     txt.value        = cl.params.text || '';
-    txt.placeholder  = 'Text content';
+    txt.placeholder  = 'Text content (supports multiple lines)';
     txt.style.userSelect = 'text';
+    txt.style.width = '320px';
     txt.addEventListener('input', () => {
       cl.params.text = txt.value;
       const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
@@ -1619,6 +1641,15 @@ function renderPropsBar() {
       renderPreview();
     });
     panel.appendChild(g('Text', txt));
+
+    const alignSel = document.createElement('select');
+    [['left','Left'],['center','Center'],['right','Right']].forEach(([v,lbl])=>{
+      const opt = document.createElement('option'); opt.value=v; opt.textContent=lbl;
+      if ((cl.params.align||'center')===v) opt.selected=true;
+      alignSel.appendChild(opt);
+    });
+    alignSel.addEventListener('change', ()=>{ cl.params.align = alignSel.value; renderPreview(); });
+    panel.appendChild(g('Align', alignSel));
 
     const sz = document.createElement('input');
     sz.type  = 'number';
@@ -1918,7 +1949,7 @@ function addClip(type) {
 
   function defaultParams(t) {
     switch (t) {
-      case 'text':        return { color: '#ffffff', text: 'Text', size: 5, font_family: '' };
+      case 'text':        return { color: '#ffffff', text: 'Text', size: 5, font_family: '', align: 'center' };
       case 'image':       return { src: '', fit: 'contain' };
       case 'strobe':      return { color: '#ffffff', rate: 10 };
       case 'pulse':       return { color: '#ffffff', rate: 1 };
