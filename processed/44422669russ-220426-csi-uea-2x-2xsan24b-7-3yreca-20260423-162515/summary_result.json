@@ -1,0 +1,71 @@
+{
+  "project": "44422669russ-220426-csi-uea-2x-2xsan24b-7-3yreca-20260423-162515",
+  "vendor": "TD SYNNEX (pricing artefacts in bundle are IBM ECMSSD configurator outputs)",
+  "quote_source": "No final distributor/reseller quote is present. Best available pricing basis is the set of IBM configurator TXT exports dated 2026-04-22, corroborated by matching XML files.",
+  "revision_or_date": "IBM configurator exports dated 2026-04-22; TD SYNNEX covering email dated 2026-04-23",
+  "subtotal": {
+    "currency": "GBP",
+    "one_time_ex_shipping_ex_vat": "3937792.40",
+    "basis": "Combined list/configurator purchase totals from the three IBM configuration summaries"
+  },
+  "vat": {
+    "currency": "GBP",
+    "amount": null,
+    "status": "Not stated in the supplied bundle; VAT-inclusive total cannot be confirmed from evidence"
+  },
+  "total": {
+    "currency": "GBP",
+    "shipping_non_discountable": "10073.96",
+    "one_time_before_vat_including_shipping": "3947866.36",
+    "recurring_monthly_maintenance": "2900.54",
+    "status": "Best available pre-VAT total from bundle; not a final discounted quote"
+  },
+  "lead_time": {
+    "status": "No committed lead time stated",
+    "requested_arrival_date": "2026-05-06"
+  },
+  "inclusions": [
+    "2 x Diamondback Tape Library 3yr configurations",
+    "Diamondback recurring maintenance totalling GBP 2,900.54 per month",
+    "2 x media bundles, each showing 15 x 20-pack LTO-10 cartridges (300 per bundle, 600 total)",
+    "4 x SAN24B-7 switch configurations appear intended, inferred from the filename, request email, and total of GBP 257,082.32 equalling 4 x GBP 64,270.58",
+    "40 x 10m OM3 LC/LC cables appear intended in total",
+    "3 year IBM Storage Expert Care Advanced on the switch configurations",
+    "4883-L9A SP Warranty and Maintenance 3Y 24x7 Same Day ORT on the library configurations"
+  ],
+  "exclusions": [
+    "No final TD SYNNEX quote, discount schedule, or deal-registration-backed sell price",
+    "No VAT line",
+    "No committed lead time",
+    "No spreadsheet found in batch",
+    "No implementation/installation statement beyond the service or warranty lines shown",
+    "Diamondback config explicitly shows No Host/SAN Cable from Plant"
+  ],
+  "assumptions": [
+    "This summary covers the entire supplied UEA Diamondback batch",
+    "The pricing is IBM list/configurator pricing rather than final reseller discounted pricing",
+    "Switch quantity of 4 is inferred because extracted switch detail truncates after System 2, while the overall total evidences four identical switch systems",
+    "Shipping has been added to the one-time subtotal to derive the best available pre-VAT total"
+  ],
+  "risks": [
+    "Diamondback drive count discrepancy: request email says 8 LTO10 drives per library and filename says 8xLTO10-FC, but the visible config line shows AGH4 LTO10 FH Fibre Channel Drive Qty 10 per system",
+    "Media VOLSER discrepancy: email says starting VOLSER is required for each location, filename says NO-VOLSER, but visible media features encode DUM000 and both visible bundles show the same starting sequence",
+    "Switch population needs confirmation: request asks for 14 populated ports (12 SW plus 2 LW), while the visible config shows one 8-port SW SFP bundle, one 8-port SW upgrade, and two LW SFPs",
+    "TD SYNNEX email states the configs are for review prior to quoting and that best discounts depend on deal registration approval/reference",
+    "Diamondback config warns that ServicePacs cannot be combined with additional services and that custom ServicePacs require scoping assistance"
+  ],
+  "flags": [
+    "No spreadsheet found in batch",
+    "No final quote document present; pricing source is pre-quote configurator output",
+    "Switch and library TXT extracts are truncated in the prepared bundle, so some per-system detail is incomplete"
+  ],
+  "source_files_used": [
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/UEA_tdsyn.txt",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.txt",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.xml",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.txt",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.xml",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.txt",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.xml"
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "project": "UEA Diamondback tape solution batch",
+  "vendor": "IBM configuration outputs shared by TD SYNNEX; final discounted reseller quote is not present in the bundle",
+  "quote_source": "No single readable consolidated quote file. Best available source is the combined IBM ECMSSD configuration outputs dated 2026-04-22; the listed workbook 230427CSI UEA deal reg Quotes.xlsx is unreadable due to invalid XML.",
+  "revision_or_date": "2026-04-22 (ECMSSD version 31; source files timestamped 15:32:08, 15:34:23, and 15:40:17)",
+  "subtotal": "GBP 3,937,792.40 ex VAT (sum of system totals, excluding shipping)",
+  "vat": "Not stated in the source files",
+  "total": "GBP 3,947,866.36 ex VAT if the stated non-discountable shipping charges are added; VAT is still not shown",
+  "lead_time": "Not stated; customer requested arrival date shown as 2026-05-06",
+  "inclusions": [
+    "2 x Diamondback Tape Library systems with combined OTC value GBP 3,076,942.08 and combined monthly maintenance GBP 2,900.54",
+    "Diamondback line items include Full Capacity License, 10 x LTO10 FH Fibre Channel Drive entries per system, 2 x PDUs in frame, IEC 309 power cords, dual 2.8m power cord PDU-to-PSU, fiber tape drive wrap tool, diagnostic cartridge for LTO10, cleaning cartridge, service magazine, and a 3-year ServicePac warranty/maintenance line",
+    "2 x lots of 300 LTO-10 30TB labeled cartridges with combined OTC value GBP 603,768.00",
+    "Media labeling settings explicitly include DUM000 start, red alpha prefix background, and vibrant label background",
+    "4 x SAN24B-7 switch builds with combined OTC value GBP 257,082.32",
+    "Each switch build explicitly includes SAN24B-7 base unit, 2 x long-wave secure SFPs, 1 x 8-port 32Gbps SW SFP bundle, 1 x 8-port 32Gbps SW upgrade, 10 x OM3 LC/LC 10m cables, and 3-year IBM Storage Expert Care Advanced"
+  ],
+  "exclusions": [
+    "VAT / tax amount",
+    "Final reseller discounting or deal-registration pricing outcome",
+    "Confirmed supplier lead time",
+    "Final consolidated commercial quote document / terms",
+    "Host/SAN cable from plant on the Diamondback library configuration",
+    "Additional services beyond the selected ServicePac / Expert Care combinations"
+  ],
+  "assumptions": [
+    "IBM configurator notes say prices are informational list prices, subject to change, and may not reflect the price actually paid by the customer",
+    "Shipping is treated separately because it is shown as non-discountable and outside the system totals",
+    "The three readable configuration outputs are treated as one batch because the TD SYNNEX email frames them as a single request for UEA",
+    "This summary relies on the readable TXT/CSV/XML exports because the nominal XLSX quote workbook could not be opened"
+  ],
+  "risks": [
+    "Primary workbook source is unreadable, so there is no readable single-file commercial source of truth",
+    "Diamondback file name says 8xLTO10-FC and the email request asks for 8 LTO10 drives, but the readable configuration shows 10 x AGH4 LTO10 FH Fibre Channel Drive entries per system",
+    "Switch request asks for 12 x SW SFPs and 2 x LW SFPs per switch, but the readable switch configuration only makes the 2 LW SFPs explicit and shows one 8-port SW SFP bundle plus one 8-port upgrade",
+    "Presales note says LTO-10 media needs a starting VOLSER for each location, but the readable media config hard-codes DUM000",
+    "ServicePac warnings say selected ServicePacs cannot be combined with additional service offerings, and custom ServicePacs require scoping assistance",
+    "Lead time is not stated; only a requested arrival date is shown"
+  ],
+  "flags": [
+    "Monthly maintenance of GBP 2,900.54 is separate from the OTC totals",
+    "Combined non-discountable shipping totals GBP 10,073.96",
+    "VAT is absent from all readable pricing outputs",
+    "UEA customer identified from UEA_tdsyn.txt; final supplier quote appears not yet issued"
+  ],
+  "source_files_used": [
+    "230427CSI UEA deal reg Quotes.xlsx (unreadable)",
+    "44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.txt",
+    "44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.csv",
+    "44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.xml",
+    "44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.txt",
+    "44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.csv",
+    "44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.xml",
+    "44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.txt",
+    "44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.csv",
+    "44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.xml",
+    "UEA_tdsyn.txt"
+  ]
+}

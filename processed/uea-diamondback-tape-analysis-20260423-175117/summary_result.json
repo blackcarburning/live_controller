@@ -1,0 +1,54 @@
+{
+  "project": "uea-diamondback-tape-analysis-20260423-175117",
+  "vendor": "IBM configurator outputs supplied in TD SYNNEX / IBM sales context",
+  "quote_source": "Intended source: /root/.openclaw/dropbox/inbox/UEA/Diamondback/230427CSI UEA deal reg Quotes.xlsx (unreadable in prepared bundle). Working pricing basis: IBM configurator TXT/CSV exports for Diamondback, SAN24B-7, and media.",
+  "revision_or_date": "2026-04-22",
+  "subtotal": "GBP 3,937,792.40 (combined OTC/system totals before shipping from readable IBM configurator outputs)",
+  "vat": "Not evidenced; readable configurator outputs say applicable taxes are not shown",
+  "total": "GBP 3,947,866.36 including non-discountable shipping of GBP 10,073.96",
+  "lead_time": "Customer requested arrival date 2026-05-06 is evidenced; no explicit committed lead time is stated",
+  "inclusions": [
+    "2 x Diamondback tape library systems",
+    "10 x LTO10 FH Fibre Channel drives per library (20 total in the readable library config)",
+    "4 x SAN24B-7 switches total",
+    "40 x OM3 LC/LC 10 m FC cables total",
+    "600 x LTO-10 cartridges total, evidenced as 2 x 300 via two 15 x 20-pack media groups",
+    "Custom VOLSER selections and base-10 label sequence on the media config",
+    "Diamondback monthly maintenance of GBP 2,900.54/month across the two-library library config"
+  ],
+  "exclusions": [
+    "No readable customer-facing rollup from the included XLSX because the workbook failed to parse in the prepared bundle",
+    "No VAT amount",
+    "No explicit final discounted customer sell price in the readable IBM configurator outputs",
+    "No explicit committed lead time beyond the requested arrival date",
+    "Host/SAN cable from plant is explicitly not included in the library config"
+  ],
+  "assumptions": [
+    "Combined subtotal/total figures are built from the three readable IBM configurator outputs in the prepared bundle",
+    "Shipping is treated as additional to OTC/system totals because the configurator outputs list it separately and say it is automatically added to quote/order/invoice",
+    "The unreadable XLSX may have been intended as the commercial rollup, but it cannot be used as evidence here"
+  ],
+  "risks": [
+    "Diamondback drive-count mismatch: email asks for 8 drives per library, readable library config shows 10 per library",
+    "Switch requirement for 14 licensed / 12 SW populated / 2 LW populated is not stated explicitly in one clean readable line, even though the raw switch config broadly supports the presales note",
+    "Media filename says NO-VOLSER while the readable media config clearly includes VOLSER selections",
+    "Readable IBM configurator totals are informational/list-style outputs and may not equal final customer-paid pricing",
+    "The included XLSX source is unreadable in this prepared bundle"
+  ],
+  "flags": [
+    "Included XLSX quote source could not be parsed in the prepared input bundle",
+    "VAT not evidenced in readable raw quote files",
+    "Requested arrival date is evidenced; committed lead time is not",
+    "Raw quote batch is commercially coherent but not clean enough to treat as final customer-ready without caveats"
+  ],
+  "source_files_used": [
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.txt",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.csv",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.txt",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.csv",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.txt",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.csv",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/UEA_tdsyn.txt",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/230427CSI UEA deal reg Quotes.xlsx"
+  ]
+}

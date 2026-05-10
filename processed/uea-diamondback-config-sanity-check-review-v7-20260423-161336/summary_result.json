@@ -1,0 +1,76 @@
+{
+  "project": "UEA Diamondback Config Sanity Check Review v7",
+  "vendor": {
+    "value": "IBM / CSI",
+    "confidence": "low",
+    "note": "IBM is explicit in the cited configuration outputs; CSI appears in filenames and in the cited spreadsheet name. The exact contracting / quoting entity is not explicit in the prepared bundle alone."
+  },
+  "quote_source": {
+    "most_likely_file": "230427CSI UEA deal reg Quotes.xlsx",
+    "confidence": "medium",
+    "basis": "The v7 review says this spreadsheet directly states Total Customer Price GBP 986,776.84 and that all prices are without taxes such as VAT. The same review says IBM TXT totals are informational and do not reflect the prices actually paid by the customer.",
+    "independently_verified_in_this_run": false,
+    "note": "The spreadsheet was cited inside the prepared review document but was not present in the prepared bundle available for this run."
+  },
+  "revision_or_date": "v7 dated 23 April 2026",
+  "subtotal": {
+    "amount": 986776.84,
+    "currency": "GBP",
+    "confidence": "medium",
+    "basis": "Most supportable one-time customer figure cited in the prepared review. The spreadsheet is said to show both Total Customer Price and Total Customer price incl. freight charges at this same value.",
+    "tax_status": "excluding VAT"
+  },
+  "vat": {
+    "amount": null,
+    "currency": "GBP",
+    "status": "not evidenced",
+    "note": "The prepared review says: All prices are without taxes, such as VAT."
+  },
+  "total": {
+    "amount": 986776.84,
+    "currency": "GBP",
+    "confidence": "medium",
+    "basis": "Best-supported total from the prepared bundle is GBP 986,776.84 excluding VAT. No VAT-inclusive grand total is evidenced.",
+    "tax_status": "excluding VAT"
+  },
+  "lead_time": {
+    "value": null,
+    "status": "not evidenced"
+  },
+  "inclusions": [
+    "Two Diamondback library systems are cited in the reviewed batch evidence.",
+    "The cited Diamondback configuration reportedly contains 10 LTO-10 Fibre Channel drives per library.",
+    "A separate LTO-10 media quote reportedly contains two repeated blocks of 15 x 20-pack cartridges, interpreted in the review as 300 cartridges per block and 600 total across the batch.",
+    "The media quote reportedly includes VOLSER starting characters DUM000 plus Base 10 Count Lbl Sequence.",
+    "Four SAN switch systems are cited, with per-switch evidence reportedly showing 2 LW SFPs, 1 x 8 x 32Gbps SW SFP Bundle, 1 x 8 Port 32Gbps SW Upgrade, and 10 x 10 m OM3 cables."
+  ],
+  "exclusions": [
+    "VAT is excluded / not evidenced.",
+    "Lead time is not evidenced.",
+    "The prepared bundle for this run did not include the raw spreadsheet or IBM TXT outputs, only a review document that cites them.",
+    "The review scope explicitly excluded folders named old quotes - do not use."
+  ],
+  "assumptions": [
+    "230427CSI UEA deal reg Quotes.xlsx is treated as the most likely commercial source of truth because the review says it directly states the customer total, while IBM TXT outputs are described as not representing actual paid prices.",
+    "The two repeated 300-cartridge media blocks likely correspond to the two library lots, but that mapping is inferred rather than explicitly labelled per library.",
+    "GBP 986,776.84 is treated as both the most likely subtotal and total excluding VAT because the review says Total Customer Price and Total Customer price incl. freight charges are the same value and no VAT is evidenced."
+  ],
+  "risks": [
+    "Drive-count mismatch: the emailed requirement cited in the review asks for 8 drives per library, while the Diamondback config reportedly shows 10 drives per library.",
+    "The 300-cartridge requirement is evidenced only through a separate media quote, not inside the Diamondback library config itself.",
+    "Switch compliance with 12 SW optics populated and 14 ports licensed is described as credible but not fully explicit from the visible evidence cited in the review.",
+    "Naming inconsistency: 8xLTO10-FC folder name versus 10 drives in the cited Diamondback config.",
+    "Naming inconsistency: NO-VOLSER folder name versus explicit VOLSER character selections in the cited media quote.",
+    "Pricing evidence is second-hand in this run because the spreadsheet was cited but not present for independent validation."
+  ],
+  "flags": [
+    "No spreadsheet found in batch.",
+    "Prepared evidence for this run consists of the extracted v7 review document only.",
+    "IBM configuration/list totals are cited as informational and not the actual customer-paid prices.",
+    "VAT amount not evidenced.",
+    "Lead time not evidenced."
+  ],
+  "source_files_used": [
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/UEA Diamondback Config Sanity Check Review v7.docx (used via the prepared extract embedded in summary_input.json)"
+  ]
+}

@@ -1,0 +1,1084 @@
+{
+  "project": "uea-diamondback-tape-analysis-20260423-175117",
+  "output_dir": "/root/.openclaw/workspace/processed/uea-diamondback-tape-analysis-20260423-175117",
+  "quote_source": "/root/.openclaw/dropbox/inbox/UEA/Diamondback/230427CSI UEA deal reg Quotes.xlsx",
+  "source_files": [
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/230427CSI UEA deal reg Quotes.xlsx",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.csv",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.txt",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.csv",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.txt",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.csv",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.txt",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/UEA_tdsyn.txt"
+  ],
+  "source_bundle": [
+    {
+      "type": "xlsx",
+      "name": "230427CSI UEA deal reg Quotes.xlsx",
+      "error": "Unable to read workbook: could not read stylesheet from /root/.openclaw/dropbox/inbox/UEA/Diamondback/230427CSI UEA deal reg Quotes.xlsx.\nThis is most probably because the workbook source files contain some invalid XML.\nPlease see the exception for more details."
+    },
+    {
+      "type": "csv",
+      "name": "44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.csv",
+      "rows": [
+        [
+          "\ufeff\"Output File Name: 44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.csv\""
+        ],
+        [
+          "8969-P24-"
+        ],
+        [
+          "Date : 04/22/2026",
+          "ECMSSD Version : 31"
+        ],
+        [
+          "Time : 15:40:17",
+          "Last Build : April 22, 2026"
+        ],
+        [
+          "CFREPORT :  44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.cfr"
+        ],
+        [
+          "Currency : GBP"
+        ],
+        [
+          "Hardware Price File : GB GBP British pounds sterling Commercial--Storage 04/22/2026"
+        ],
+        [
+          "Software Price File : GB GBP British pounds sterling Commercial--Storage 04//22/2026"
+        ],
+        [
+          "This configurator is classified for proposal usage for IBM personnel"
+        ],
+        [
+          "and Business Partners only.  The configurator USER must provide"
+        ],
+        [
+          "complete and accurate information in order to produce a valid"
+        ],
+        [
+          "upgrade system order or proposal.  The user will be held responsible"
+        ],
+        [
+          "for verifying that the price, terms, and conditions are consistent"
+        ],
+        [
+          "with the current sales manual.  Commitments on prices should not be"
+        ],
+        [
+          "made without complete verification with the sales manuals. Prices"
+        ],
+        [
+          "are for your information only and are subject to change. Applicable"
+        ],
+        [
+          "taxes are not shown."
+        ],
+        [
+          "********************  USER SELECTED/CRITICAL MESSAGES  ********************"
+        ],
+        [
+          " CEID: 18z7gnvm                                                            "
+        ],
+        [
+          "Created on We Apr 22 2026 15:40:17 GMT+0100 (UTC) by SYSTEM                "
+        ],
+        [
+          "You have selected IBM Storage Expert Care for your Client.                 "
+        ],
+        [
+          "*******************************  HARDWARE  *******************************"
+        ],
+        [
+          "Product",
+          "Description",
+          "Qty",
+          "Purchase",
+          "Maint"
+        ],
+        [
+          "8969-P24",
+          "IBM Storage Networking SAN24B-7",
+          "1",
+          "183.69"
+        ],
+        [
+          "2627",
+          "SFP+,LWL,32G,10KM,1-PK,SECURE",
+          "2",
+          "27196.22"
+        ],
+        [
+          "2680",
+          "SAN24B-7 8 x 32Gbps SW SFP Bundle",
+          "1",
+          "18093.08"
+        ],
+        [
+          "5810",
+          "OM3 Cable LC/LC 10 m",
+          "10",
+          "850.00"
+        ],
+        [
+          "7521",
+          "SAN24B-7 8 Port 32Gbps SW Upgrade",
+          "1",
+          "12858.02"
+        ],
+        [
+          "AKCH",
+          "Standard S&H Indicator",
+          "1",
+          "0.00"
+        ],
+        [
+          "ALH0",
+          "Expert Care Indicator",
+          "1",
+          "N/C"
+        ],
+        [
+          "ALK3",
+          "EC Advanced 3 Year",
+          "1",
+          "N/C"
+        ],
+        [
+          "========="
+        ],
+        [
+          "8969-P24 Price",
+          "59181.01"
+        ],
+        [
+          "Non-discountable Shipping and Handling Charge",
+          "232.12"
+        ],
+        [
+          "9474-A03",
+          "3 year IBM Storage Expert Care Advanced",
+          "1",
+          "5089.57"
+        ],
+        [
+          "========="
+        ],
+        [
+          "9474-A03 Price",
+          "5089.57"
+        ],
+        [
+          "*******************************  SOFTWARE  *******************************"
+        ],
+        [
+          "Product",
+          "Description",
+          "Qty",
+          "License"
+        ],
+        [
+          "5773-STG",
+          "Support Line for Storage - 3 Year",
+          "1",
+          "N/C"
+        ],
+        [
+          "M1TVX4",
+          "Support per Server (N/C)",
+          "1",
+          "N/C"
+        ],
+        [
+          "========="
+        ],
+        [
+          "5773-STG Price",
+          "0.00"
+        ],
+        [
+          "*****************************  GRAND TOTALS  *****************************"
+        ],
+        [
+          "Hardware Price",
+          "64270.58"
+        ],
+        [
+          "========="
+        ],
+        [
+          "System Total",
+          "64270.58"
+        ],
+        [
+          "Non-discountable Shipping and Handling Charge",
+          "232.12"
+        ],
+        [
+          "N/O  - Not Offered"
+        ],
+        [
+          "N/A  - Price Not Available in Price Database"
+        ],
+        [
+          "N/C  - No Charge"
+        ],
+        [
+          "A    - Annual Maintenance Price"
+        ],
+        [
+          "W/D  - WITHDRAWN"
+        ],
+        [
+          "F    - ESA 24x7 Full Coverage"
+        ],
+        [
+          "P    - ESA 9x5 Prime Coverage"
+        ],
+        [
+          "Parts removed as a result of a model upgrade become the property of IBM."
+        ],
+        [
+          "Output File Name: 44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.csv"
+        ],
+        [
+          "8969-P24-"
+        ],
+        [
+          "Date : 04/22/2026",
+          "ECMSSD Version : 31"
+        ],
+        [
+          "Time : 15:40:17",
+          "Last Build : April 22, 2026"
+        ],
+        [
+          "CFREPORT :  44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.cfr"
+        ],
+        [
+          "Currency : GBP"
+        ],
+        [
+          "Hardware Price File : GB GBP British pounds sterling Commercial--Storage 04/22/2026"
+        ],
+        [
+          "Software Price File : GB GBP British pounds sterling Commercial--Storage 04//22/2026"
+        ],
+        [
+          "This configurator is classified for proposal usage for IBM personnel"
+        ],
+        [
+          "and Business Partners only.  The configurator USER must provide"
+        ],
+        [
+          "complete and accurate information in order to produce a valid"
+        ],
+        [
+          "upgrade system order or proposal.  The user will be held responsible"
+        ],
+        [
+          "for verifying that the price, terms, and conditions are consistent"
+        ],
+        [
+          "with the current sales manual.  Commitments on prices should not be"
+        ],
+        [
+          "made without complete verification with the sales manuals. Prices"
+        ],
+        [
+          "are for your information only and are subject to change. Applicable"
+        ],
+        [
+          "taxes are not shown."
+        ],
+        [
+          "*******************************  HARDWARE  *******************************"
+        ],
+        [
+          "Product",
+          "Description",
+          "Qty",
+          "Purchase",
+          "Maint"
+        ],
+        [
+          "8969-P24",
+          "IBM Storage Networking SAN24B-7",
+          "1",
+          "183.69"
+        ],
+        [
+          "2627",
+          "SFP+,LWL,32G,10KM,1-PK,SECURE",
+          "2",
+          "27196.22"
+        ],
+        [
+          "2680",
+          "SAN24B-7 8 x 32Gbps SW SFP Bundle",
+          "1",
+          "18093.08"
+        ],
+        [
+          "5810",
+          "OM3 Cable LC/LC 10 m",
+          "10",
+          "850.00"
+        ],
+        [
+          "7521",
+          "SAN24B-7 8 Port 32Gbps SW Upgrade",
+          "1",
+          "12858.02"
+        ],
+        [
+          "AKCH",
+          "Standard S&H Indicator",
+          "1",
+          "0.00"
+        ],
+        [
+          "ALH0",
+          "Expert Care Indicator",
+          "1",
+          "N/C"
+        ],
+        [
+          "ALK3",
+          "EC Advanced 3 Year",
+          "1",
+          "N/C"
+        ],
+        [
+          "========="
+        ],
+        [
+          "8969-P24 Price",
+          "59181.01"
+        ],
+        [
+          "Non-discountable Shipping and Handling Charge",
+          "232.12"
+        ],
+        [
+          "9474-A03",
+          "3 year IBM Storage Expert Care Advanced",
+          "1",
+          "5089.57"
+        ],
+        [
+          "========="
+        ],
+        [
+          "9474-A03 Price",
+          "5089.57"
+        ]
+      ]
+    },
+    {
+      "type": "txt",
+      "name": "44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.txt",
+      "text": "04/22/2026                                  44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA \n15:40:17\nConfiguration Summary\n\nHardware Section Totals\n        Initial orders\n                 Purchase                           257,082.32  \n____________________________________________________\n\nOverall Hardware Order (Net Charges)\n                 Purchase                       GBP 257,082.32  \n\n\nSoftware Section Totals\n____________________________________________________\n\n____________________________________________________\n\nOverall System Order (Net Grand Totals)\n\n                 OTC                                257,082.32\n\n\n                                                                                                                          \n______________________________________________________________________\n\nTotal Non-discountable Shipping and Handling Charge: GBP 928.48\n______________________________________________________________________\n\n\n\nNotes:\n1) All list prices are effective as of\n   04/22/2026, and are subject to change without notice.\n   Prices do not include any applicable recycling fees.\n2) Maintenance prices shown are reference prices\n   (ESA - US Only) and are standard level of service.\n3) All removed parts belong to IBM on any\n   upgrade or Return Parts transaction.\n4) Informational totals are calculated based\n   upon current list and/or reference price and do not reflect\n   the prices actually paid by the customer.\n   Base starting-point prices show only the\n   recurring charges.\n5) Shipping & Handling Charges shown in the configuration\n   and system summary section(s) of this output are calculated\n   based on the specific machine(s) configuration, \n   are not eligible for discount, and will automatically be\n   added to any quote, order, and invoice.\n\nConfiguration Comments:\n CEID: 18z7gnvm\nCreated on We Apr 22 2026 15:40:17 GMT+0100 (UTC) by SYSTEM\nYou have selected IBM Storage Expert Care for your Client.\nCustomer Requested Arrival Date: 2026/05/06\n04/22/2026                                  44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA \n14:40:17\nSystem 1 - Summary\n\nHardware Section Totals\n        Initial orders\n                 Purchase                            64,270.58  \n____________________________________________________\n\nOverall Hardware Order (Net Charges)\n                 Purchase                        GBP 64,270.58  \n\n\nSoftware Section Totals\n____________________________________________________\n\n____________________________________________________\n\nOverall System Order (Net Grand Totals)\n\n                 OTC                                 64,270.58\n\n\n\n______________________________________________________________________\n\nNon-discountable Shipping and Handling Charge:          232.12\n______________________________________________________________________\n\n\n04/22/2026                                  44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA \n15:40:17\nSystem 1 - Initial Hardware\n                                                                                                                          \n                                                                                              Extended           \nProduct                      Description                       Qty     Extended Purchase       Maint       Term  \n________  ___________________________________________________  _____  ____________________  _____________  _____________  \n                                                                                                                          \n8969-P24  IBM Storage Networking SAN24B-7                          1                183.69                                                     \n    2627  SFP+,LWL,32G,10KM,1-PK,SECURE                            2             27,196.22                                                     \n    2680  SAN24B-7 8 x 32Gbps SW SFP Bundle                        1             18,093.08                                                     \n    5810  OM3 Cable LC/LC 10 m                                    10                850.00                                                     \n    7521  SAN24B-7 8 Port 32Gbps SW Upgrade                        1             12,858.02                                                     \n    AKCH  Standard S&H Indicator                                   1             See notes                                                     \n    ALH0  Expert Care Indicator                                    1                   N/C                                                     \n    ALK3  EC Advanced 3 Year                                       1                   N/C                                                     \n                                                                      ____________________  _____________  _____________  \n          Serial: N/A                                          Total         GBP 59,181.01       GBP 0.00                                         \n                                                                                                                          \n          Non-discountable Shipping and Handling Charge:                     GBP    232.12\n                                                                                                                          \n9474-A03  3 year IBM Storage Expert Care Advanced                  1              5,089.57                                                     \n                                                                      ____________________  _____________  _____________  \n          Serial: N/A                                          Total          GBP 5,089.57       GBP 0.00                                         \n                                                                                                                          \n04/22/2026                                  44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA \n15:40:17\nSystem 1 - Initial Software\n                                                                                                                          \n                                                                                           Lic   \nProduct                   Description                   Qty       Extended Price     Term  Type  \n________  ____________________________________________  _____  ____________________  ____  ____  \n                                                                                                 \n5773-STG  Support Line for Storage - 3 Year                 1                   N/C              \n  M1TVX4  Support per Server (N/C)                          1                   N/C              \n                                                               ____________________  \n          Serial: N/A                                   Total              GBP 0.00              \n                                                                                                 \n04/22/2026                                  44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA \n14:40:17\nSystem 2 - Summary\n\nHardware Section Totals\n        Initial orders\n                 Purchase                            64,270.58  \n____________________________________________________\n\nOverall Hardware Order (Net Charges)\n                 Purchase                        GBP 64,270.58  \n\n\nSoftware Section Totals\n____________________________________________________\n\n____________________________________________________\n\nOverall System Order (Net Grand Totals)\n\n                 OTC                                 64,270.58\n\n\n\n______________________________________________________________________\n\nNon-discountable Shipping and Handling Charge:          232.12\n______________________________________________________________________\n\n\n04/22/2026                                  44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA \n15:40:17\nSystem 2 - Initial Hardware\n                                                                                                                          \n                                                                                              Extended           \nProduct                      Description                       Qty     Extended Purchase       Maint       Term  \n________  ___________________________________________________  _____  ____________________  _____________  _____________  \n                                                                                                                          \n8969-P24  IBM Storage Networking SAN24B-7                          1                183.69                                                     \n    2627  SFP+,LWL,32G,10KM,1-PK,SECURE                            2             27,196.22                                                     \n    2680  SAN24B-7 8 x 32Gbps SW SFP Bundle                        1             18,093.08                                                     \n    5810  OM3 Cable LC/LC 10 m                                    10                850.00                                                     \n    7521  SAN24B-7 8 Port 32Gbps SW Upgrade                        1             12,858.02                                                     \n    AKCH  Standard S&H Indicator                                   1             See notes                                                     \n    ALH0  Expert Care Indicator                                    1                   N/C                                                     \n    ALK3  EC Advanced 3 Year                                       1                   N/C                                                     \n                                                                      ____________________  _____________  _____________  \n          Serial: N/A                                          Total         GBP 59,181.01       GBP 0.00                                         \n                                                                                                                          \n          Non-discountable Shipping and Handling Charge:                     GBP    232.12\n                                                                                                                          \n9474-A03  3 year IBM Storage Expert Care Advanced                  1              5,089.57                                                     \n                                                                      ____________________  _____________  _____________  \n          Serial: N/A                                          Total          GBP 5,089.57       GBP 0.00                                         \n                                                                                                                          \n04/22/2026                                  44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA \n15:40:17\nSystem 2 - Initial Software\n                                                                                                                          \n                                                                                           Lic   \nProduct                   Description                   Qty       Extended Price     Term  Type  \n________  ____________________________________________  _____  ____________________  ____  ____  \n                                                                                                 \n5773-STG  Support Line for Storage - 3 Year                 1                   N/C              \n  M1TVX4  Support per Server (N/C)                          1                   N/C              \n                                                               ____________________  \n          Serial: N/A                                   Total              GBP 0.00              \n                                                                                                 \n04/22/2026    "
+    },
+    {
+      "type": "csv",
+      "name": "44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.csv",
+      "rows": [
+        [
+          "\ufeff\"Output File Name: 44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.csv\""
+        ],
+        [
+          "No CPUSIU for the following products"
+        ],
+        [
+          "Date : 04/22/2026",
+          "ECMSSD Version : 31"
+        ],
+        [
+          "Time : 15:34:23",
+          "Last Build : April 22, 2026"
+        ],
+        [
+          "CFREPORT :  44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.cfr"
+        ],
+        [
+          "Currency : GBP"
+        ],
+        [
+          "Hardware Price File : GB GBP British pounds sterling Commercial--Storage 04/22/2026"
+        ],
+        [
+          "Software Price File : GB GBP British pounds sterling Commercial--Storage 04//22/2026"
+        ],
+        [
+          "This configurator is classified for proposal usage for IBM personnel"
+        ],
+        [
+          "and Business Partners only.  The configurator USER must provide"
+        ],
+        [
+          "complete and accurate information in order to produce a valid"
+        ],
+        [
+          "upgrade system order or proposal.  The user will be held responsible"
+        ],
+        [
+          "for verifying that the price, terms, and conditions are consistent"
+        ],
+        [
+          "with the current sales manual.  Commitments on prices should not be"
+        ],
+        [
+          "made without complete verification with the sales manuals. Prices"
+        ],
+        [
+          "are for your information only and are subject to change. Applicable"
+        ],
+        [
+          "taxes are not shown."
+        ],
+        [
+          "********************  USER SELECTED/CRITICAL MESSAGES  ********************"
+        ],
+        [
+          " CEID: 18z7gnvm                                                            "
+        ],
+        [
+          "Created on We Apr 22 2026 15:34:23 GMT+0100 (UTC) by SYSTEM                "
+        ],
+        [
+          "ServicePacs option has been selected and cannot be combined                "
+        ],
+        [
+          "with any additional Services Offerings.                                    "
+        ],
+        [
+          "*******************************  HARDWARE  *******************************"
+        ],
+        [
+          "Product",
+          "Description",
+          "Qty",
+          "Purchase",
+          "Maint"
+        ],
+        [
+          "3589-554",
+          "IBM 30 TB Ultrium 10 Tape Cartridge 20-pack Labeled",
+          "1",
+          "0.00"
+        ],
+        [
+          "5504",
+          "30 TB LTO10 Tape Cartridge Labeled 20-pack",
+          "15",
+          "301884.00"
+        ],
+        [
+          "9003",
+          "ALPHA PREFIX BKGRD - RED",
+          "1",
+          "N/C"
+        ],
+        [
+          "9022",
+          "LABEL BKGRD: COLOR/VIBRANT",
+          "1",
+          "N/C"
+        ],
+        [
+          "9113",
+          "1ST CHAR OF VOLSER =D",
+          "1",
+          "N/C"
+        ],
+        [
+          "9230",
+          "2ND CHAR OF VOLSER =U",
+          "1",
+          "N/C"
+        ],
+        [
+          "9322",
+          "3RD CHAR OF VOLSER =M",
+          "1",
+          "N/C"
+        ],
+        [
+          "9400",
+          "4TH CHAR OF VOLSER =0",
+          "1",
+          "N/C"
+        ],
+        [
+          "9500",
+          "5TH CHAR OF VOLSER =0",
+          "1",
+          "N/C"
+        ],
+        [
+          "9600",
+          "6TH CHAR OF VOLSER =0",
+          "1",
+          "N/C"
+        ],
+        [
+          "9910",
+          "Base 10 Count Lbl Sequence",
+          "1",
+          "N/C"
+        ],
+        [
+          "AKNC",
+          "Premium S&H Indicator",
+          "1",
+          "0.00"
+        ],
+        [
+          "========="
+        ],
+        [
+          "3589-554 Price",
+          "301884.00"
+        ],
+        [
+          "Non-discountable Shipping and Handling Charge",
+          "29.82"
+        ],
+        [
+          "3589-554",
+          "IBM 30 TB Ultrium 10 Tape Cartridge 20-pack Labeled",
+          "1",
+          "0.00"
+        ],
+        [
+          "5504",
+          "30 TB LTO10 Tape Cartridge Labeled 20-pack",
+          "15",
+          "301884.00"
+        ],
+        [
+          "9003",
+          "ALPHA PREFIX BKGRD - RED",
+          "1",
+          "N/C"
+        ],
+        [
+          "9022",
+          "LABEL BKGRD: COLOR/VIBRANT",
+          "1",
+          "N/C"
+        ],
+        [
+          "9113",
+          "1ST CHAR OF VOLSER =D",
+          "1",
+          "N/C"
+        ],
+        [
+          "9230",
+          "2ND CHAR OF VOLSER =U",
+          "1",
+          "N/C"
+        ],
+        [
+          "9322",
+          "3RD CHAR OF VOLSER =M",
+          "1",
+          "N/C"
+        ],
+        [
+          "9400",
+          "4TH CHAR OF VOLSER =0",
+          "1",
+          "N/C"
+        ],
+        [
+          "9500",
+          "5TH CHAR OF VOLSER =0",
+          "1",
+          "N/C"
+        ],
+        [
+          "9600",
+          "6TH CHAR OF VOLSER =0",
+          "1",
+          "N/C"
+        ],
+        [
+          "9910",
+          "Base 10 Count Lbl Sequence",
+          "1",
+          "N/C"
+        ],
+        [
+          "AKNC",
+          "Premium S&H Indicator",
+          "1",
+          "0.00"
+        ],
+        [
+          "========="
+        ],
+        [
+          "3589-554 Price",
+          "301884.00"
+        ],
+        [
+          "Non-discountable Shipping and Handling Charge",
+          "29.82"
+        ],
+        [
+          "*****************************  GRAND TOTALS  *****************************"
+        ],
+        [
+          "Hardware Price",
+          "603768.00"
+        ],
+        [
+          "========="
+        ],
+        [
+          "System Total",
+          "603768.00"
+        ],
+        [
+          "Non-discountable Shipping and Handling Charge",
+          "59.64"
+        ],
+        [
+          "N/O  - Not Offered"
+        ],
+        [
+          "N/A  - Price Not Available in Price Database"
+        ],
+        [
+          "N/C  - No Charge"
+        ],
+        [
+          "A    - Annual Maintenance Price"
+        ],
+        [
+          "W/D  - WITHDRAWN"
+        ],
+        [
+          "F    - ESA 24x7 Full Coverage"
+        ],
+        [
+          "P    - ESA 9x5 Prime Coverage"
+        ],
+        [
+          "Parts removed as a result of a model upgrade become the property of IBM."
+        ]
+      ]
+    },
+    {
+      "type": "txt",
+      "name": "44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.txt",
+      "text": "04/22/2026                                  44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER \n15:34:23\nConfiguration Summary\n\nHardware Section Totals\n        Initial orders\n                 Purchase                           603,768.00  \n____________________________________________________\n\nOverall Hardware Order (Net Charges)\n                 Purchase                       GBP 603,768.00  \n\n\n____________________________________________________\n\nOverall System Order (Net Grand Totals)\n\n                 OTC                                603,768.00\n\n\n                                                                                                                          \n______________________________________________________________________\n\nTotal Non-discountable Shipping and Handling Charge: GBP 59.64\n______________________________________________________________________\n\n\n\nNotes:\n1) All list prices are effective as of\n   04/22/2026, and are subject to change without notice.\n   Prices do not include any applicable recycling fees.\n2) Maintenance prices shown are reference prices\n   (ESA - US Only) and are standard level of service.\n3) All removed parts belong to IBM on any\n   upgrade or Return Parts transaction.\n4) Informational totals are calculated based\n   upon current list and/or reference price and do not reflect\n   the prices actually paid by the customer.\n   Base starting-point prices show only the\n   recurring charges.\n5) Shipping & Handling Charges shown in the configuration\n   and system summary section(s) of this output are calculated\n   based on the specific machine(s) configuration, \n   are not eligible for discount, and will automatically be\n   added to any quote, order, and invoice.\n\nConfiguration Comments:\n CEID: 18z7gnvm\nCreated on We Apr 22 2026 15:34:23 GMT+0100 (UTC) by SYSTEM\nServicePacs option has been selected and cannot be combined\nwith any additional Services Offerings.\nCustomer Requested Arrival Date: 2026/05/06\n04/22/2026                                  44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER \n15:34:23\nInitial Hardware - ( No CPUSIU for the following products )\n                                                                                                                          \n                                                                                              Extended           \nProduct                      Description                       Qty     Extended Purchase       Maint       Term  \n________  ___________________________________________________  _____  ____________________  _____________  _____________  \n                                                                                                                          \n3589-554  IBM 30 TB Ultrium 10 Tape Cartridge 20-pack Labeled      1                  0.00                                                     \n    5504  30 TB LTO10 Tape Cartridge Labeled 20-pack              15            301,884.00                                                     \n    9003  ALPHA PREFIX BKGRD - RED                                 1                   N/C                                                     \n    9022  LABEL BKGRD: COLOR/VIBRANT                               1                   N/C                                                     \n    9113  1ST CHAR OF VOLSER =D                                    1                   N/C                                                     \n    9230  2ND CHAR OF VOLSER =U                                    1                   N/C                                                     \n    9322  3RD CHAR OF VOLSER =M                                    1                   N/C                                                     \n    9400  4TH CHAR OF VOLSER =0                                    1                   N/C                                                     \n    9500  5TH CHAR OF VOLSER =0                                    1                   N/C                                                     \n    9600  6TH CHAR OF VOLSER =0                                    1                   N/C                                                     \n    9910  Base 10 Count Lbl Sequence                               1                   N/C                                                     \n    AKNC  Premium S&H Indicator                                    1             See notes                                                     \n                                                                      ____________________  _____________  _____________  \n          Serial: N/A                                          Total        GBP 301,884.00       GBP 0.00                                         \n                                                                                                                          \n          Non-discountable Shipping and Handling Charge:                    GBP      29.82\n                                                                                                                          \n3589-554  IBM 30 TB Ultrium 10 Tape Cartridge 20-pack Labeled      1                  0.00                                                     \n    5504  30 TB LTO10 Tape Cartridge Labeled 20-pack              15            301,884.00                                                     \n    9003  ALPHA PREFIX BKGRD - RED                                 1                   N/C                                                     \n    9022  LABEL BKGRD: COLOR/VIBRANT                               1                   N/C                                                     \n    9113  1ST CHAR OF VOLSER =D                                    1                   N/C                                                     \n    9230  2ND CHAR OF VOLSER =U                                    1                   N/C                                                     \n    9322  3RD CHAR OF VOLSER =M                                    1                   N/C                                                     \n    9400  4TH CHAR OF VOLSER =0                                    1                   N/C                                                     \n    9500  5TH CHAR OF VOLSER =0                                    1                   N/C                                                     \n    9600  6TH CHAR OF VOLSER =0                                    1                   N/C                                                     \n    9910  Base 10 Count Lbl Sequence                               1                   N/C                                                     \n    AKNC  Premium S&H Indicator                                    1             See notes                                                     \n                                                                      ____________________  _____________  _____________  \n          Serial: N/A                                          Total        GBP 301,884.00       GBP 0.00                                         \n                                                                                                                          \n          Non-discountable Shipping and Handling Charge:                    GBP      29.82\n                                                                                                                          \n\nSystem 1 \n\n\nGB GBP British pounds sterling Commercial - Pricing retrieved on April 22, 2026 2:34 PM for pricing country/region code GB\n\nBased on version 31 CFREPORT file 44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER,\ncreated April 22, 2026 by ECMSSD at system level 90501a261100,\nwith '44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER' as the description.\n\nThis configuration was created for ISO country code GB\nOutput was formatted using the 'en_GB' Locale.\nTotal with missing prices is 'Off'"
+    },
+    {
+      "type": "csv",
+      "name": "44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.csv",
+      "rows": [
+        [
+          "\ufeff\"Output File Name: 44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.csv\""
+        ],
+        [
+          "4883-L9A-"
+        ],
+        [
+          "Date : 04/22/2026",
+          "ECMSSD Version : 31"
+        ],
+        [
+          "Time : 15:32:08",
+          "Last Build : April 22, 2026"
+        ],
+        [
+          "CFREPORT :  44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.cfr"
+        ],
+        [
+          "Currency : GBP"
+        ],
+        [
+          "Hardware Price File : GB GBP British pounds sterling Commercial--Storage 04/22/2026"
+        ],
+        [
+          "Software Price File : GB GBP British pounds sterling Commercial--Storage 04//22/2026"
+        ],
+        [
+          "This configurator is classified for proposal usage for IBM personnel"
+        ],
+        [
+          "and Business Partners only.  The configurator USER must provide"
+        ],
+        [
+          "complete and accurate information in order to produce a valid"
+        ],
+        [
+          "upgrade system order or proposal.  The user will be held responsible"
+        ],
+        [
+          "for verifying that the price, terms, and conditions are consistent"
+        ],
+        [
+          "with the current sales manual.  Commitments on prices should not be"
+        ],
+        [
+          "made without complete verification with the sales manuals. Prices"
+        ],
+        [
+          "are for your information only and are subject to change. Applicable"
+        ],
+        [
+          "taxes are not shown."
+        ],
+        [
+          "********************  USER SELECTED/CRITICAL MESSAGES  ********************"
+        ],
+        [
+          " CEID: 18z7gnvm                                                            "
+        ],
+        [
+          "Created on We Apr 22 2026 15:32:08 GMT+0100 (UTC) by SYSTEM                "
+        ],
+        [
+          "ServicePacs option has been selected and cannot be combined                "
+        ],
+        [
+          "with any additional Services Offerings.                                    "
+        ],
+        [
+          "Custom ServicePacs require scoping assistance                              "
+        ],
+        [
+          "Please visit the ServicePac panel and review the recommended               "
+        ],
+        [
+          "ServicePacs.                                                               "
+        ],
+        [
+          "*******************************  HARDWARE  *******************************"
+        ],
+        [
+          "Product",
+          "Description",
+          "Qty",
+          "Purchase",
+          "Maint"
+        ],
+        [
+          "4883-L9A",
+          "Diamondback Tape Library 3yr",
+          "1",
+          "229270.70",
+          "1450.27"
+        ],
+        [
+          "1411",
+          "Fiber Tape Drive Wrap Tool",
+          "1",
+          "732.07"
+        ],
+        [
+          "1414",
+          "Diagnostic Cartridge for LTO10",
+          "1",
+          "2074.06"
+        ],
+        [
+          "1529",
+          "Preloaded Media enablement kit",
+          "1",
+          "2828.45"
+        ],
+        [
+          "1600",
+          "Full Capacity License",
+          "1",
+          "91508.84"
+        ],
+        [
+          "1853",
+          "1x PDU in Frame",
+          "2",
+          "14275.36"
+        ],
+        [
+          "8750",
+          "LTO Cleaning Cartridge",
+          "1",
+          "299.51"
+        ],
+        [
+          "9700",
+          "No Host/SAN Cable from Plant",
+          "1",
+          "N/C"
+        ],
+        [
+          "9956",
+          "IEC 309 Power Cord",
+          "2",
+          "6621.92"
+        ],
+        [
+          "9990",
+          "Dual 2.8m power cord PDU to PSU",
+          "1",
+          "199.64"
+        ],
+        [
+          "AGH4",
+          "LTO10 FH Fibre Channel Drive",
+          "10",
+          "1171893.00"
+        ],
+        [
+          "AGL2",
+          "LTO Service Magazine",
+          "1",
+          "6405.63"
+        ],
+        [
+          "AKNC",
+          "Premium S&H Indicator",
+          "1",
+          "0.00"
+        ],
+        [
+          "B0PC",
+          "SP WSU 3Y 24x7 SD",
+          "1",
+          "N/C"
+        ],
+        [
+          "=========",
+          "========="
+        ],
+        [
+          "4883-L9A Price",
+          "1526109.18"
+        ],
+        [
+          "Monthly Maintenance",
+          "1450.27"
+        ],
+        [
+          "Non-discountable Shipping and Handling Charge",
+          "4542.92"
+        ],
+        [
+          "6661-D10",
+          "4883-L9A SP Warranty and Maintenance 3Y 24x7 Same Day ORT",
+          "1",
+          "12361.86"
+        ],
+        [
+          "========="
+        ],
+        [
+          "6661-D10 Price",
+          "12361.86"
+        ],
+        [
+          "*****************************  GRAND TOTALS  *****************************"
+        ],
+        [
+          "Hardware Price",
+          "1538471.04"
+        ],
+        [
+          "========="
+        ],
+        [
+          "System Total",
+          "1538471.04"
+        ],
+        [
+          "Non-discountable Shipping and Handling Charge",
+          "4542.92"
+        ],
+        [
+          "Monthly Maintenance",
+          "1450.27"
+        ],
+        [
+          "N/O  - Not Offered"
+        ],
+        [
+          "N/A  - Price Not Available in Price Database"
+        ],
+        [
+          "N/C  - No Charge"
+        ],
+        [
+          "A    - Annual Maintenance Price"
+        ],
+        [
+          "W/D  - WITHDRAWN"
+        ],
+        [
+          "F    - ESA 24x7 Full Coverage"
+        ],
+        [
+          "P    - ESA 9x5 Prime Coverage"
+        ],
+        [
+          "Parts removed as a result of a model upgrade become the property of IBM."
+        ],
+        [
+          "Output File Name: 44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.csv"
+        ],
+        [
+          "4883-L9A-"
+        ],
+        [
+          "Date : 04/22/2026",
+          "ECMSSD Version : 31"
+        ],
+        [
+          "Time : 15:32:08",
+          "Last Build : April 22, 2026"
+        ],
+        [
+          "CFREPORT :  44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.cfr"
+        ],
+        [
+          "Currency : GBP"
+        ],
+        [
+          "Hardware Price File : GB GBP British pounds sterling Commercial--Storage 04/22/2026"
+        ],
+        [
+          "Software Price File : GB GBP British pounds sterling Commercial--Storage 04//22/2026"
+        ],
+        [
+          "This configurator is classified for proposal usage for IBM personnel"
+        ],
+        [
+          "and Business Partners only.  The configurator USER must provide"
+        ],
+        [
+          "complete and accurate information in order to produce a valid"
+        ],
+        [
+          "upgrade system order or proposal.  The user will be held responsible"
+        ],
+        [
+          "for verifying that the price, terms, and conditions are consistent"
+        ],
+        [
+          "with the current sales manual.  Commitments on prices should not be"
+        ],
+        [
+          "made without complete verification with the sales manuals. Prices"
+        ],
+        [
+          "are for your information only and are subject to change. Applicable"
+        ],
+        [
+          "taxes are not shown."
+        ],
+        [
+          "*******************************  HARDWARE  *******************************"
+        ],
+        [
+          "Product",
+          "Description",
+          "Qty",
+          "Purchase",
+          "Maint"
+        ],
+        [
+          "4883-L9A",
+          "Diamondback Tape Library 3yr",
+          "1",
+          "229270.70",
+          "1450.27"
+        ],
+        [
+          "1411",
+          "Fiber Tape Drive Wrap Tool",
+          "1",
+          "732.07"
+        ],
+        [
+          "1414",
+          "Diagnostic Cartridge for LTO10",
+          "1",
+          "2074.06"
+        ],
+        [
+          "1529",
+          "Preloaded Media enablement kit",
+          "1",
+          "2828.45"
+        ],
+        [
+          "1600",
+          "Full Capacity License",
+          "1",
+          "91508.84"
+        ],
+        [
+          "1853",
+          "1x PDU in Frame",
+          "2",
+          "14275.36"
+        ],
+        [
+          "8750",
+          "LTO Cleaning Cartridge",
+          "1",
+          "299.51"
+        ],
+        [
+          "9700",
+          "No Host/SAN Cable from Plant",
+          "1",
+          "N/C"
+        ],
+        [
+          "9956",
+          "IEC 309 Power Cord",
+          "2",
+          "6621.92"
+        ],
+        [
+          "9990",
+          "Dual 2.8m power cord PDU to PSU",
+          "1",
+          "199.64"
+        ],
+        [
+          "AGH4",
+          "LTO10 FH Fibre Channel Drive",
+          "10",
+          "1171893.00"
+        ],
+        [
+          "AGL2",
+          "LTO Service Magazine",
+          "1",
+          "6405.63"
+        ]
+      ]
+    },
+    {
+      "type": "txt",
+      "name": "44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.txt",
+      "text": "04/22/2026                                  44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr \n15:32:08\nConfiguration Summary\n\nHardware Section Totals\n        Initial orders\n                 Purchase                         3,076,942.08  \n                 Monthly Maint                        2,900.54  \n____________________________________________________\n\nOverall Hardware Order (Net Charges)\n                 Purchase                     GBP 3,076,942.08  \n                 Monthly Maint                    GBP 2,900.54  \n\n\n____________________________________________________\n\nOverall System Order (Net Grand Totals)\n\n                 OTC                              3,076,942.08\n                 Monthly                              2,900.54\n\n\n                                                                                                                          \n______________________________________________________________________\n\nTotal Non-discountable Shipping and Handling Charge: GBP 9,085.84\n______________________________________________________________________\n\n\n\nNotes:\n1) All list prices are effective as of\n   04/22/2026, and are subject to change without notice.\n   Prices do not include any applicable recycling fees.\n2) Maintenance prices shown are reference prices\n   (ESA - US Only) and are standard level of service.\n3) All removed parts belong to IBM on any\n   upgrade or Return Parts transaction.\n4) Informational totals are calculated based\n   upon current list and/or reference price and do not reflect\n   the prices actually paid by the customer.\n   Base starting-point prices show only the\n   recurring charges.\n5) Shipping & Handling Charges shown in the configuration\n   and system summary section(s) of this output are calculated\n   based on the specific machine(s) configuration, \n   are not eligible for discount, and will automatically be\n   added to any quote, order, and invoice.\n\nConfiguration Comments:\n CEID: 18z7gnvm\nCreated on We Apr 22 2026 15:32:08 GMT+0100 (UTC) by SYSTEM\nServicePacs option has been selected and cannot be combined\nwith any additional Services Offerings.\nCustom ServicePacs require scoping assistance\nPlease visit the ServicePac panel and review the recommended\nServicePacs.\nCustomer Requested Arrival Date: 2026/05/06\n04/22/2026                                  44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr \n14:32:08\nSystem 1 - Summary\n\nHardware Section Totals\n        Initial orders\n                 Purchase                         1,538,471.04  \n                 Monthly Maint                        1,450.27  \n____________________________________________________\n\nOverall Hardware Order (Net Charges)\n                 Purchase                     GBP 1,538,471.04  \n                 Monthly Maint                    GBP 1,450.27  \n\n\n____________________________________________________\n\nOverall System Order (Net Grand Totals)\n\n                 OTC                              1,538,471.04\n                 Monthly                              1,450.27\n\n\n\n______________________________________________________________________\n\nNon-discountable Shipping and Handling Charge:        4,542.92\n______________________________________________________________________\n\n\n04/22/2026                                  44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr \n15:32:08\nSystem 1 - Initial Hardware\n                                                                                                                          \n                                                                                              Extended           \nProduct                      Description                       Qty     Extended Purchase       Maint       Term  \n________  ___________________________________________________  _____  ____________________  _____________  _____________  \n                                                                                                                          \n4883-L9A  Diamondback Tape Library 3yr                             1            229,270.70       1,450.27  Mth (1)                                      \n    1411  Fiber Tape Drive Wrap Tool                               1                732.07                                                     \n    1414  Diagnostic Cartridge for LTO10                           1              2,074.06                                                     \n    1529  Preloaded Media enablement kit                           1              2,828.45                                                     \n    1600  Full Capacity License                                    1             91,508.84                                                     \n    1853  1x PDU in Frame                                          2             14,275.36                                                     \n    8750  LTO Cleaning Cartridge                                   1                299.51                                                     \n    9700  No Host/SAN Cable from Plant                             1                   N/C                                                     \n    9956  IEC 309 Power Cord                                       2              6,621.92                                                     \n    9990  Dual 2.8m power cord PDU to PSU                          1                199.64                                                     \n    AGH4  LTO10 FH Fibre Channel Drive                            10          1,171,893.00                                                     \n    AGL2  LTO Service Magazine                                     1              6,405.63                                                     \n    AKNC  Premium S&H Indicator                                    1             See notes                                                     \n    B0PC  SP WSU 3Y 24x7 SD                                        1                   N/C                                                     \n                                                                      ____________________  _____________  _____________  \n          Serial: N/A                                          Total      GBP 1,526,109.18   GBP 1,450.27   Mth                                      \n                                                                                                                          \n          Non-discountable Shipping and Handling Charge:                  GBP     4,542.92\n                                                                                                                          \n6661-D10  4883-L9A SP Warranty and Maintenance 3Y 24x7 Same        1             12,361.86                                                     \n          Day ORT                                                                                                                              \n                                                                      ____________________  _____________  _____________  \n          Serial: N/A                                          Total         GBP 12,361.86       GBP 0.00                                         \n                                                                                                                          \n04/22/2026                                  44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr \n14:32:08\nSystem 2 - Summary\n\nHardware Section Totals\n        Initial orders\n                 Purchase                         1,538,471.04  \n                 Monthly Maint                        1,450.27  \n____________________________________________________\n\nOverall Hardware Order (Net Charges)\n                 Purchase                     GBP 1,538,471.04  \n                 Monthly Maint                    GBP 1,450.27  \n\n\n____________________________________________________\n\nOverall System Order (Net Grand Totals)\n\n                 OTC                              1,538,471.04\n                 Monthly                              1,450.27\n\n\n\n______________________________________________________________________\n\nNon-discountable Shipping and Handling Charge:        4,542.92\n______________________________________________________________________\n\n\n04/22/2026                                  44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr \n15:32:08\nSystem 2 - Initial Hardware\n                                                                                                                          \n                                                                                              Extended           \nProduct                      Description                       Qty     Extended Purchase       Maint       Term  \n________  ___________________________________________________  _____  ____________________  _____________  _____________  \n                                                                                                                          \n4883-L9A  Diamondback Tape Library 3yr                             1            229,270.70       1,450.27  Mth (1)                                      \n    1411  Fiber Tape Drive Wrap Tool                               1                732.07                                                     \n    1414  Diagnostic Cartridge for LTO10                           1              2,074.06                                                     \n    1529  Preloaded Media enablement kit                           1              2,828.45                                                     \n    1600  Full Capacity License                                    1             91,508.84                                                     \n    1853  1x PDU in Frame                                          2             14,275.36                                                     \n    8750  LTO Cleaning Cartridge                                   1                299.51                                                     \n    9700  No Host/SAN Cable from Plant                             1                   N/C                                                     \n    9956  IEC 309 Power Cord                                       2              6,621.92                                                     \n    9990  Dual 2.8m power cord PDU to PSU                          1                199.64                                                     \n    AGH4  LTO10 FH Fibre Channel Drive                            10          1,171,893.00                                                     \n    AGL2  LTO Service Magazine                                     1              6,405.63                                                     \n    AKNC  Premium S&H Indicator                                    1             See notes                                                     \n    B0PC  SP WSU 3Y 24x7 SD                                        1                   N/C                                                     \n                                                                      ____________________  _____________  _____________  \n          Serial: N/A                                          Total      GBP 1,526,109.18   GBP 1,450.27   Mth                                      \n                                                                                                                          \n          Non-discountable Shipping and Handling Charge:                  GBP     4,542.92\n                                                                                                                          \n6661-D10  4883-L9A SP Warranty and Maintenance 3Y 24x7 Same        1             12,361.86                                                     \n          Day ORT                                                                                                                              \n                                                                      _______"
+    },
+    {
+      "type": "txt",
+      "name": "UEA_tdsyn.txt",
+      "text": "From: Allen, David <david.allen@tdsynnex.com>\nSent: 23 April 2026 09:00\nTo: James Dolby-Glover <James.Dolby-Glover@csiltd.co.uk>\nSubject: RE: Diamondback quote\n \n[EXTERNAL EMAIL \u2013 this email did not come from someone at CSI. Please take extra care if this mail contains links or attachments.]\n\nHi James, please find configs attached along with notes from presales below if you want to check all looks ok:\n\n \n\n\u2018All configs for review by BP prior to quoting.\n\nLTO-10 media requires starting VOLSER for each location.\n\nSwitches have 8-port base bundle + first 8-port uplift bundle\u2019\n\n \n\nIf you\u2019re happy with the configs, once the deal reg is approved and you have the reference please could you send over and I can then quote these for you at best discounts?\n\n \n\nThanks in advance, Dave\n\n \n\n\n\n \n\nDavid Allen\n\nInternal Sales Specialist \u2013 IBM & Red Hat\n\n cidimage001.png@01D8D403.A41A5850\n\n\nTD SYNNEX\n\nWashington House\n\nBirchwood Park Ave,\n\nBirchwood,\n\nWarrington\n\nWA3 6GR\n\n \n\n(+44) 01925 287804\n\ndavid.allen@tdsynnex.com\n\n \n\n*Communication is key to any relationship.\n\nPlease whitelist our new email domain @tdsynnex.com to stay connected.\n\n \n\n \n\n \n\nFrom: James Dolby-Glover <James.Dolby-Glover@csiltd.co.uk>\nSent: 22 April 2026 14:11\nTo: IBM Hardware Sales Team <UK_IBM_Hardware@tdsynnex.com>\nSubject: Diamondback quote\n\n \n\n\n\ue113\n\n\ue113\n\n\ue113\n\n\ue113\nSome people who received this message don't often get email from james.dolby-glover@csiltd.co.uk. Learn why this is important\n\n\n\ue113\n\n\ue113\n\n\ue113\n\n\ue113\n   This email originated outside of TD SYNNEX.  Please help keep our organization and partners safe. It's up to us; think before you click.\n\n \n\nHi,\n\n \n\nCustomer is University of East Anglia.\n\n \n\nPlease could we get pricing for:\n\n \n\n2 lots of:\n\n42U Diamondback, FC connected with 8 x LTO10 drives and 300 LTO 10 carts\n\n \n\n4 lots of:\n\n16 (or 24) port FC switch (Brocade) with 14 ports licensed and populated with 12 x SW SFPs and 2 x LW SFPs\n\n \n\n40 lots of:\n\n10m FC cable \n\n \n\nAny questions, clarifications, details etc needed just hit me up.\n\n \n\nCheers,"
+    }
+  ],
+  "flags": [],
+  "model": "gpt-5.4",
+  "agent_prompt_path": "/root/.openclaw/workspace/processed/uea-diamondback-tape-analysis-20260423-175117/agent_prompt.txt"
+}

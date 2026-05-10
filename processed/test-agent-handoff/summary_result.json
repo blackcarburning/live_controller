@@ -1,0 +1,72 @@
+{
+  "project": "University of East Anglia (UEA) Diamondback and SAN configs",
+  "vendor": {
+    "value": "IBM",
+    "certainty": "inferred",
+    "note": "The review refers to IBM configuration outputs and IBM-branded line items, but does not explicitly name the contracting supplier."
+  },
+  "quote_source": {
+    "value": "Diamondback TXT output and SAN switch TXT output",
+    "certainty": "inferred",
+    "note": "Appendix B and Appendix C describe the TXT output as the canonical human-readable config reference. The raw TXT files were not directly included in the prepared bundle."
+  },
+  "revision_or_date": {
+    "value": "v6 / 23 April 2026",
+    "certainty": "high",
+    "note": "The supplied review file name includes v6 and the document title includes 23 April 2026."
+  },
+  "subtotal": {
+    "value_gbp": 3344038.72,
+    "certainty": "inferred",
+    "note": "Calculated as combined hardware purchase GBP 3,334,024.40 plus shipping and handling GBP 10,014.32 across Diamondback and SAN. No explicit formal subtotal is shown in the bundle."
+  },
+  "vat": {
+    "value_gbp": null,
+    "certainty": "unknown",
+    "note": "No VAT figure is shown in the prepared bundle."
+  },
+  "total": {
+    "value_gbp": null,
+    "certainty": "unknown",
+    "note": "No explicit grand total is shown. The strongest defensible inferred pre-VAT one-time total is the same as the subtotal above: GBP 3,344,038.72 including shipping."
+  },
+  "lead_time": {
+    "value": null,
+    "certainty": "unknown",
+    "note": "No lead time is shown in the prepared bundle."
+  },
+  "inclusions": [
+    "Two Diamondback systems with identical structure, including Diamondback Tape Library 3yr, 10 x LTO10 FH Fibre Channel Drive per system, Full Capacity License, power/PDU items, diagnostic cartridge, cleaning cartridge, preloaded media enablement kit, LTO Service Magazine, warranty/maintenance items, and shipping/handling.",
+    "Four SAN switch systems with the same structure, including IBM Storage Networking SAN24B-7, 2 x long-wave optics, 1 x 8-port 32Gbps short-wave SFP bundle, 1 x 8-port 32Gbps short-wave upgrade, 10 x OM3 LC/LC 10m cables, support items, and shipping/handling.",
+    "Diamondback overall monthly maintenance evidenced at GBP 2,900.54."
+  ],
+  "exclusions": [
+    "300 LTO-10 cartridges are requested in the email trail but are not visibly evidenced in the reviewed Diamondback config output.",
+    "VAT is not shown.",
+    "Lead time is not shown.",
+    "A single formal quoted subtotal or grand total is not shown.",
+    "The prepared bundle does not include a spreadsheet or the raw TXT pricing/config files themselves."
+  ],
+  "assumptions": [
+    "The supplied review document is treated as the controlling evidence because it is the only directly supplied source file in the prepared bundle.",
+    "The Diamondback TXT and SAN switch TXT outputs are treated as the most likely source-of-truth pricing references because the review explicitly describes TXT as the canonical human-readable config reference.",
+    "IBM is treated as the likely vendor/manufacturer, not a confirmed contracting supplier.",
+    "The subtotal is inferred from appendix totals and is not explicitly stated as a formal commercial subtotal in the bundle."
+  ],
+  "risks": [
+    "The email trail asks for 8 LTO10 drives per library, but the reviewed Diamondback config shows 10 drives per library.",
+    "The requested 300 LTO-10 cartridges are not visibly evidenced in the supplied Diamondback config output.",
+    "The Diamondback package naming says 8xLTO10-FC while the visible config content shows 10 drives per system.",
+    "The SAN switch side is broadly plausible, but the visible lines do not conclusively prove the requested 12 x short-wave optics populated state.",
+    "The email trail states all configs were for BP review prior to quoting, so the material may have been pre-quote rather than final.",
+    "No spreadsheet found in batch."
+  ],
+  "flags": [
+    "No spreadsheet found in batch",
+    "Only the review DOCX was directly supplied in the prepared bundle; underlying TXT/CSV/CFR/XML outputs were referenced but not directly provided.",
+    "Lead time, VAT, and explicit grand total were not evidenced."
+  ],
+  "source_files_used": [
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/UEA Diamondback Config Sanity Check Review v6.docx"
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "status": "failed",
+  "requested_at": "2026-04-23T16:25:15.648450+01:00",
+  "requested_model": "gpt-5.4",
+  "session_id": "uea-diamondback-44422669russ-220426-csi-uea-2x-2xsan24b-7-3yreca-20260423-162515",
+  "input_json": "/root/.openclaw/workspace/processed/44422669russ-220426-csi-uea-2x-2xsan24b-7-3yreca-20260423-162515/summary_input.json",
+  "prompt_path": "/root/.openclaw/workspace/processed/44422669russ-220426-csi-uea-2x-2xsan24b-7-3yreca-20260423-162515/agent_prompt.txt",
+  "output_dir": "/root/.openclaw/workspace/processed/44422669russ-220426-csi-uea-2x-2xsan24b-7-3yreca-20260423-162515",
+  "required_outputs": [
+    "/root/.openclaw/workspace/processed/44422669russ-220426-csi-uea-2x-2xsan24b-7-3yreca-20260423-162515/summary.md",
+    "/root/.openclaw/workspace/processed/44422669russ-220426-csi-uea-2x-2xsan24b-7-3yreca-20260423-162515/summary_result.json",
+    "/root/.openclaw/workspace/processed/44422669russ-220426-csi-uea-2x-2xsan24b-7-3yreca-20260423-162515/summary.docx"
+  ],
+  "finished_at": "2026-04-23T16:28:09.661129+01:00",
+  "returncode": 0,
+  "dispatch_log": "/root/.openclaw/workspace/processed/44422669russ-220426-csi-uea-2x-2xsan24b-7-3yreca-20260423-162515/quote_summary_dispatch.json",
+  "outputs": {
+    "/root/.openclaw/workspace/processed/44422669russ-220426-csi-uea-2x-2xsan24b-7-3yreca-20260423-162515/summary.md": false,
+    "/root/.openclaw/workspace/processed/44422669russ-220426-csi-uea-2x-2xsan24b-7-3yreca-20260423-162515/summary_result.json": false,
+    "/root/.openclaw/workspace/processed/44422669russ-220426-csi-uea-2x-2xsan24b-7-3yreca-20260423-162515/summary.docx": false
+  },
+  "agent_reply_text": [],
+  "parse_error": null,
+  "remote_upload": null
+}

@@ -1,0 +1,100 @@
+{
+  "version": "v7",
+  "date": "2026-04-23",
+  "scope": "UEA Diamondback batch only; old quotes excluded",
+  "sources": [
+    "UEA_tdsyn.txt",
+    "230427CSI UEA deal reg Quotes.xlsx",
+    "UEA Diamondback Config Sanity Check Review v6.docx",
+    "44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr/",
+    "44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA/",
+    "44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER/"
+  ],
+  "findings": {
+    "diamondback_library_config_matches_emailed_requirement": {
+      "status": false,
+      "summary": "The email asks for 8 LTO-10 drives per library, but the Diamondback config shows 10 drives per library.",
+      "evidence": [
+        "UEA_tdsyn.txt lines 110-112",
+        "44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.txt lines 98-108"
+      ]
+    },
+    "cartridge_requirement_evidenced": {
+      "status": true,
+      "summary": "A separate tape-media quote now evidences 2 x 300 LTO-10 cartridges across the batch.",
+      "detail": "The media quote contains two repeated blocks of 15 x labeled 20-packs, i.e. 300 cartridges per block and 600 total, which is consistent with 2 lots each needing 300 carts.",
+      "evidence": [
+        "UEA_tdsyn.txt lines 110-112 and 14",
+        "44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.txt lines 62-90"
+      ],
+      "caveats": [
+        "The cartridges are evidenced in a separate media quote, not inside the Diamondback library config itself.",
+        "The exact one-to-one mapping of one 300-cart set to each library is inferred from the repeated structure and naming, not explicitly labelled by library.",
+        "The media folder/file name says NO-VOLSER, but the content clearly includes VOLSER characters DUM000."
+      ]
+    },
+    "san_switch_config_match": {
+      "status": "credible_but_not_fully_proven",
+      "summary": "The switch build credibly aligns with the stated optics/cable requirement, especially on cable count and 2 x LW optics per switch, but the exact 12 SW populated / 14 licensed state is not explicitly enumerated in the visible lines.",
+      "evidence": [
+        "UEA_tdsyn.txt lines 116-124 and 16",
+        "44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.txt lines 94-99"
+      ]
+    },
+    "tension_with_v6": [
+      "v6 was right that the Diamondback library config itself did not visibly show the 300 cartridges.",
+      "v7 changes the batch-level conclusion because the newly synced separate media quote now evidences the cartridges and VOLSER handling.",
+      "v6's drive-count mismatch remains valid.",
+      "v6's SAN optics caveat remains substantially valid."
+    ],
+    "key_discrepancies": [
+      "Diamondback folder name says 8xLTO10-FC, but the config shows 10 drives per system.",
+      "Tape-media folder name says NO-VOLSER, but the config content explicitly includes VOLSER characters DUM000."
+    ]
+  },
+  "financial_summary": {
+    "ibm_direct_totals": {
+      "diamondback": {
+        "purchase_gbp": "3076942.08",
+        "monthly_maintenance_gbp": "2900.54",
+        "shipping_gbp": "9085.84",
+        "basis": "directly stated in IBM TXT output"
+      },
+      "san": {
+        "purchase_gbp": "257082.32",
+        "shipping_gbp": "928.48",
+        "basis": "directly stated in IBM TXT output"
+      },
+      "media": {
+        "purchase_gbp": "603768.00",
+        "shipping_gbp": "59.64",
+        "basis": "directly stated in IBM TXT output"
+      }
+    },
+    "cross_document_inferred_totals": {
+      "combined_one_time_purchase_ex_shipping_gbp": "3937792.40",
+      "combined_one_time_purchase_including_shipping_gbp": "3947866.36",
+      "combined_monthly_maintenance_gbp": "2900.54",
+      "basis": "combined across separate IBM config outputs"
+    },
+    "spreadsheet_direct_totals": {
+      "san_customer_subtotal_gbp": "83532.36",
+      "media_customer_subtotal_gbp": "194057.34",
+      "diamondback_customer_subtotal_gbp": "709187.14",
+      "total_list_price_gbp": "3947866.36",
+      "total_lp_discount_percent": "75",
+      "total_customer_price_gbp": "986776.84",
+      "total_customer_price_including_freight_gbp": "986776.84",
+      "basis": "directly stated in spreadsheet"
+    },
+    "vat": {
+      "included": false,
+      "summary": "No VAT amount is evidenced. The spreadsheet states all prices are without taxes, such as VAT."
+    },
+    "notes": [
+      "IBM TXT note 4 says the informational totals do not reflect the prices actually paid by the customer.",
+      "The spreadsheet freight row is 0, but shipping is still represented within the section line items/subtotals.",
+      "The spreadsheet total customer price appears to be a one-time total and does not visibly include the IBM Diamondback monthly maintenance figure."
+    ]
+  }
+}

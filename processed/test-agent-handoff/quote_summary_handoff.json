@@ -1,0 +1,24 @@
+{
+  "status": "completed",
+  "requested_at": "2026-04-23T15:53:23.031495+01:00",
+  "requested_model": "gpt-5.4",
+  "session_id": "uea-diamondback-test-agent-handoff",
+  "input_json": "/root/.openclaw/workspace/processed/test-agent-handoff/summary_input.json",
+  "prompt_path": "/root/.openclaw/workspace/processed/test-agent-handoff/agent_prompt.txt",
+  "output_dir": "/root/.openclaw/workspace/processed/test-agent-handoff",
+  "required_outputs": [
+    "/root/.openclaw/workspace/processed/test-agent-handoff/summary.md",
+    "/root/.openclaw/workspace/processed/test-agent-handoff/summary_result.json",
+    "/root/.openclaw/workspace/processed/test-agent-handoff/summary.docx"
+  ],
+  "finished_at": "2026-04-23T15:54:28.023919+01:00",
+  "returncode": 0,
+  "dispatch_log": "/root/.openclaw/workspace/processed/test-agent-handoff/quote_summary_dispatch.json",
+  "outputs": {
+    "/root/.openclaw/workspace/processed/test-agent-handoff/summary.md": true,
+    "/root/.openclaw/workspace/processed/test-agent-handoff/summary_result.json": true,
+    "/root/.openclaw/workspace/processed/test-agent-handoff/summary.docx": true
+  },
+  "agent_reply_text": [],
+  "parse_error": null
+}

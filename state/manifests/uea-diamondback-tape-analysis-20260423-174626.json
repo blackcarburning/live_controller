@@ -1,0 +1,21 @@
+{
+  "batch_id": "uea-diamondback-tape-analysis-20260423-174626",
+  "created_at": "2026-04-23T17:46:26.971113+01:00",
+  "files": [
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/230427CSI UEA deal reg Quotes.xlsx",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.cfr",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.csv",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.txt",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.xml",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.cfr",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.csv",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.txt",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.xml",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.cfr",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.csv",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.txt",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.xml",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/UEA_tdsyn.txt"
+  ],
+  "output_dir": "/root/.openclaw/workspace/processed/uea-diamondback-tape-analysis-20260423-174626"
+}

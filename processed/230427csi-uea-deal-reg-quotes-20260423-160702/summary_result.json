@@ -1,0 +1,57 @@
+{
+  "project": "UEA Diamondback deal registration quote batch",
+  "vendor": "IBM (inferred from IBM configurator outputs and IBM-branded line items; no separate reseller/supplier name visible in the extracted bundle)",
+  "quote_source": "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.csv",
+  "revision_or_date": "2026-04-22 (CSV build times 15:32:08 to 15:40:17 BST)",
+  "subtotal": "GBP 2,206,509.62 inferred by summing the three extracted CSV System Totals; main Diamondback system total is GBP 1,538,471.04",
+  "vat": "Not shown in the extracted source files; IBM configurator text states that taxes are not shown",
+  "total": "No VAT-inclusive grand total is available in the extracted bundle. Inferred pre-VAT amount including separately stated shipping is GBP 2,211,344.30 (System Totals GBP 2,206,509.62 + shipping GBP 4,834.68). Diamondback monthly maintenance GBP 1,450.27 is separate.",
+  "lead_time": "Not stated in the extracted bundle",
+  "inclusions": [
+    "4883-L9A Diamondback Tape Library 3yr base system",
+    "AGH4 LTO10 FH Fibre Channel Drive, qty 10",
+    "1600 Full Capacity License",
+    "1529 Preloaded Media enablement kit",
+    "1414 Diagnostic Cartridge for LTO10",
+    "8750 LTO Cleaning Cartridge",
+    "1853 1x PDU in Frame, qty 2",
+    "9956 IEC 309 Power Cord, qty 2",
+    "9990 Dual 2.8m power cord PDU to PSU",
+    "AGL2 LTO Service Magazine",
+    "6661-D10 4883-L9A SP Warranty and Maintenance 3Y 24x7 Same Day ORT",
+    "SAN24B-7 supporting quote with 32G LWL SFPs, 8-port SFP bundle, 8-port upgrade, 10x OM3 LC/LC 10m cables, and 3-year IBM Storage Expert Care Advanced",
+    "Media supporting quote for labeled 30 TB LTO10 tape cartridges; duplicated 15x20-pack block implies two 300-cartridge lots in the batch"
+  ],
+  "exclusions": [
+    "VAT / taxes",
+    "Lead time / delivery schedule",
+    "Host/SAN cable from plant (explicitly shown as '9700 No Host/SAN Cable from Plant')",
+    "Readable combined workbook summary or cover sheet for the whole batch"
+  ],
+  "assumptions": [
+    "Batch values are inferred from the three CSV System Totals because the original workbook could not be read",
+    "System Total is treated as excluding shipping and VAT because shipping is listed separately and taxes are explicitly stated as not shown",
+    "Diamondback monthly maintenance is treated as a separate recurring charge rather than part of the one-off system total",
+    "IBM is treated as the vendor because all extracted files are IBM configurator outputs with IBM-branded product descriptions"
+  ],
+  "risks": [
+    "Original workbook 230427CSI UEA deal reg Quotes.xlsx is unreadable due to invalid XML, so the intended master summary cannot be checked directly",
+    "Media filename says NO-VOLSER, but the line items show labeled cartridges with explicit VOLSER characters D/U/M/0/0/0 and a base-10 sequence",
+    "SAN filename includes '2x 2xSAN24B-7', but the extracted rows show one 8969-P24 base system; intended SAN quantity/design should be confirmed",
+    "Diamondback and media files warn that ServicePacs cannot be combined with additional services; Diamondback also says custom ServicePacs require scoping assistance",
+    "IBM configurator text says prices are for proposal usage only, subject to change, and should not be committed without sales manual verification",
+    "Lead time is missing from all extracted sources"
+  ],
+  "flags": [
+    "Most likely source-of-truth pricing file selected from CSVs because the original workbook is unreadable",
+    "Batch subtotal and total are inferred rather than directly extracted from a single master quote",
+    "Potential media VOLSER mismatch",
+    "Potential SAN quantity/design ambiguity"
+  ],
+  "source_files_used": [
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/230427CSI UEA deal reg Quotes.xlsx",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr/44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.csv",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER/44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.csv",
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA/44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.csv"
+  ]
+}

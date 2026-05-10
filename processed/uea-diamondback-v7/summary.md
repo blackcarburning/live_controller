@@ -1,0 +1,119 @@
+# UEA Diamondback Config Sanity Check Review v7
+
+Date: 23 April 2026  
+Scope: Only the files in the UEA/Diamondback batch that were supplied for this review. `old quotes - do not use/` was excluded.
+
+## Executive conclusion
+
+- **Diamondback library config vs emailed requirement:** **Does not match.** The email asks for **2 lots** of a 42U Diamondback with **8 x LTO-10 drives and 300 LTO-10 carts** (`UEA_tdsyn.txt`, lines 110-112), but the IBM Diamondback config shows **10** `AGH4 LTO10 FH Fibre Channel Drive` per library (`44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr.txt`, lines 98-108). The two library systems are configured identically.
+- **300 LTO-10 cartridges:** **Now evidenced, but in a separate media quote rather than inside the Diamondback library config.** The media quote contains **two repeated blocks** of `15` x `30 TB LTO10 Tape Cartridge Labeled 20-pack` (`44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER.txt`, lines 62-90). That is **300 cartridges per block** and **600 total across the batch**, which is consistent with the email asking for **2 lots** each with 300 carts.
+- **VOLSER handling:** The newly synced media quote also shows starting VOLSER characters `D`, `U`, `M`, `0`, `0`, `0` plus `Base 10 Count Lbl Sequence` (`...2x300 LTO-10 30TB NO-VOLSER.txt`, lines 66-72 and 83-89). That fits the presales note that **LTO-10 media requires starting VOLSER for each location** (`UEA_tdsyn.txt`, line 14).
+- **SAN switch requirement:** **Credible but not fully proven from the visible lines alone.** Each of the four switch systems shows `2` x LW SFPs, `1` x `8 x 32Gbps SW SFP Bundle`, `1` x `8 Port 32Gbps SW Upgrade`, and `10` x `OM3 Cable LC/LC 10 m` (`44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA.txt`, lines 94-99). That lines up well with the presales note about **8-port base bundle + first 8-port uplift bundle** (`UEA_tdsyn.txt`, line 16) and exactly supports **40 x 10m cables** across four switches. However, the supplied lines still do not literally enumerate **"12 x SW populated"** or **"14 ports licensed"**, so that point remains plausible rather than fully proved from the batch alone.
+- **Financial summary:** The spreadsheet directly states **Total Customer Price GBP 986,776.84** and says **all prices are without taxes, such as VAT** (`230427CSI UEA deal reg Quotes.xlsx`, extracted sheet rows 165, 167, 169, 186). The IBM TXT outputs directly state the configuration/list totals and Diamondback monthly maintenance, but IBM note 4 also says those informational totals **do not reflect the prices actually paid by the customer**.
+
+## Source material reviewed
+
+- `UEA_tdsyn.txt`
+- `230427CSI UEA deal reg Quotes.xlsx`
+- `UEA Diamondback Config Sanity Check Review v6.docx`
+- `44422669Russ 220426 CSI-UEA Diamondback 8xLTO10-FC 3yr/` (TXT/CSV/CFR/XML, with TXT used as the main human-readable reference)
+- `44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yrECA/` (TXT/CSV/CFR/XML, with TXT used as the main human-readable reference)
+- `44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB NO-VOLSER/` (TXT/CSV/CFR/XML, with TXT used as the main human-readable reference)
+
+## Requirement baseline from the email trail
+
+- `UEA_tdsyn.txt`, lines 110-112: `2 lots of:` / `42U Diamondback, FC connected with 8 x LTO10 drives and 300 LTO 10 carts`
+- `UEA_tdsyn.txt`, lines 116-118: `4 lots of:` / `16 (or 24) port FC switch (Brocade) with 14 ports licensed and populated with 12 x SW SFPs and 2 x LW SFPs`
+- `UEA_tdsyn.txt`, lines 122-124: `40 lots of:` / `10m FC cable`
+- `UEA_tdsyn.txt`, lines 12-16: `All configs for review by BP prior to quoting.` / `LTO-10 media requires starting VOLSER for each location.` / `Switches have 8-port base bundle + first 8-port uplift bundle`
+
+## Findings
+
+### 1) Diamondback library config does not match the emailed drive requirement
+
+- The Diamondback config file/folder is named `8xLTO10-FC`, but the actual line item inside the config shows `AGH4  LTO10 FH Fibre Channel Drive` with quantity `10` per system (`...Diamondback 8xLTO10-FC 3yr.txt`, line 108).
+- System 2 is the same structure as System 1, so the batch evidence is **10 drives per library for 2 libraries**, not 8 drives per library.
+- This is a direct mismatch against the email requirement for **8 drives per library**.
+
+### 2) The 300-cartridge requirement is now evidenced in the batch, but separately from the library config
+
+- v6 was correct that the **Diamondback library config itself** did not visibly contain a 300-cartridge line.
+- The newly synced media quote changes the wider batch-level picture. The media quote shows:
+  - first block: `15` x `30 TB LTO10 Tape Cartridge Labeled 20-pack` (`...2x300...txt`, line 63)
+  - second block: `15` x `30 TB LTO10 Tape Cartridge Labeled 20-pack` (`...2x300...txt`, line 80)
+- That is `15 x 20 = 300` cartridges in each block, so **600 total** across the media quote.
+- Because the email asks for **2 lots** each with 300 carts, the separate media quote is credible evidence that the requested media has been quoted at the batch level.
+- The media quote also includes VOLSER starting characters `DUM000` and `Base 10 Count Lbl Sequence`, which supports the presales note about starting VOLSER.
+- **Important discrepancy:** the media folder/file name says `NO-VOLSER`, but the actual quoted content clearly includes VOLSER character selections. The content is more trustworthy than the folder name, but the naming is inconsistent and should be cleaned up.
+- **Residual uncertainty:** the evidence supports **2 x 300** media sets in the batch, but the exact one-to-one mapping of one 300-cart set to each physical library is inferred from the repeated structure and folder naming rather than explicitly labelled as `Library 1` and `Library 2`.
+
+### 3) SAN switch config is credible against the stated requirement, but exact optics/licensing still are not fully explicit
+
+- The SAN TXT output contains **4 systems**, which matches the email asking for **4 lots**.
+- Per switch, the visible lines show:
+  - `2627  SFP+,LWL,32G,10KM,1-PK,SECURE` qty `2`
+  - `2680  SAN24B-7 8 x 32Gbps SW SFP Bundle` qty `1`
+  - `5810  OM3 Cable LC/LC 10 m` qty `10`
+  - `7521  SAN24B-7 8 Port 32Gbps SW Upgrade` qty `1`
+- Across four switches, the cable count is **4 x 10 = 40**, which directly matches the email request for **40 lots of 10m FC cable**.
+- The presence of `2` LW SFPs per switch directly supports the **2 x LW** part of the requirement.
+- The combination of one `8 x SW SFP Bundle` plus one `8 Port SW Upgrade`, together with the presales note about the base bundle plus first uplift bundle, makes the switch build **credible** for the requested populated-port intent.
+- Even so, the supplied files do **not** give a plain-English line that literally says **12 SW optics populated** or **14 ports licensed**, so I cannot elevate this from **credible** to **fully proved** on the supplied evidence alone.
+
+### 4) Financial summary
+
+#### 4.1 IBM configuration outputs (directly stated in the TXT outputs)
+
+- Diamondback config (`...Diamondback 8xLTO10-FC 3yr.txt`):
+  - purchase: **GBP 3,076,942.08**
+  - monthly maintenance: **GBP 2,900.54**
+  - shipping and handling: **GBP 9,085.84**
+- SAN config (`...2x 2xSAN24B-7 3yrECA.txt`):
+  - purchase: **GBP 257,082.32**
+  - shipping and handling: **GBP 928.48**
+- LTO-10 media config (`...2x300 LTO-10 30TB NO-VOLSER.txt`):
+  - purchase: **GBP 603,768.00**
+  - shipping and handling: **GBP 59.64**
+- IBM note 4 in the TXT outputs says the informational totals **do not reflect the prices actually paid by the customer**, so these should be treated as configuration/list outputs rather than end-customer commercial totals.
+
+#### 4.2 Cross-document totals (inferred by combining the three IBM config outputs)
+
+- Combined IBM one-time purchase excluding shipping: **GBP 3,937,792.40** (**inferred** across the three separate IBM config outputs)
+- Combined IBM one-time purchase including shipping: **GBP 3,947,866.36** (**inferred** across the three separate IBM config outputs)
+- Combined monthly maintenance directly evidenced in the IBM outputs: **GBP 2,900.54 per month** (Diamondback only)
+
+#### 4.3 Spreadsheet totals (directly stated in `230427CSI UEA deal reg Quotes.xlsx`)
+
+- SAN subtotal list: **GBP 258,010.80**; SAN customer subtotal: **GBP 83,532.36**
+- LTO-10 media subtotal list: **GBP 603,827.64**; media customer subtotal: **GBP 194,057.34**
+- Diamondback subtotal list: **GBP 3,086,027.92**; Diamondback customer subtotal: **GBP 709,187.14**
+- `Total List Price`: **GBP 3,947,866.36** (**directly stated**)
+- `Total LP Discount %`: **75** (**directly stated**)
+- `Total Customer Price`: **GBP 986,776.84** (**directly stated**)
+- `Total Customer price incl. freight charges`: **GBP 986,776.84** (**directly stated**)
+- The spreadsheet's total list price exactly matches the inferred IBM combined purchase-plus-shipping figure, which is a good internal cross-check.
+- The spreadsheet row `Freight charge` shows `0`, but the section subtotals already contain explicit shipping indicator line items, so that row should not be read as meaning there is no shipping content anywhere in the quote.
+- The spreadsheet does **not** visibly carry the IBM Diamondback monthly maintenance figure into the stated total customer price; the stated customer total reads as a **one-time total**.
+
+#### 4.4 VAT
+
+- A VAT amount is **not evidenced** anywhere in the supplied batch.
+- The spreadsheet explicitly says: **`All prices are without taxes, such as VAT.`**
+- So any total quoted here should be read as **excluding VAT**, not as VAT-inclusive.
+
+## Tension between v6 and the newly synced tape-quote evidence
+
+- v6 said the requested 300 cartridges were **not visibly evidenced in the supplied Diamondback config output**. That remains true if the view is restricted to the Diamondback library config alone.
+- v7 changes the batch-level conclusion because the newly synced **separate tape quote** now does evidence the media: two blocks of 15 x 20-packs, plus VOLSER selections.
+- So the correct updated position is: **the media is evidenced in the batch, but separately from the library config**.
+- v6's concern about the **drive-count mismatch** remains valid and unchanged.
+- v6's caution on the SAN optics proof point also remains substantially valid: the switch build looks reasonable, but the exact `12 SW / 14 licensed` state still is not explicitly spelt out in the visible lines.
+
+## Remaining attention points
+
+- Resolve whether the Diamondback libraries should be **8-drive** or **10-drive** systems before any customer-facing quote is treated as clean.
+- Keep the **separate media quote** associated with the library quote, because that is now where the 300-cart evidence sits.
+- Confirm whether the switch build is the intended commercial/technical way to satisfy the **14 licensed / 12 SW populated / 2 LW populated** requirement, or add an explicit explanatory note before quoting.
+- Clean up inconsistent package naming:
+  - `8xLTO10-FC` folder name versus `10` drives in the actual Diamondback config
+  - `NO-VOLSER` folder name versus explicit VOLSER characters in the tape-media config

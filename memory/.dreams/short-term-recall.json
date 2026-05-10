@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "updatedAt": "2026-05-09T09:58:53.687Z",
+  "entries": {
+    "memory:memory/2026-04-22.md:1:9": {
+      "key": "memory:memory/2026-04-22.md:1:9",
+      "path": "memory/2026-04-22.md",
+      "startLine": 1,
+      "endLine": 9,
+      "source": "memory",
+      "snippet": "- Bootstrapped identity: name 1nv0lv3d, nature/helper, vibe easy-going/humorous/obsessive, emoji 🛠️. - User is Mark in UK timezone; prefers blunt, detailed responses with accuracy over speed, facts over guesswork, accurate references, and no file changes unless explicitly requested. - Telegram BotFather integration was configured and verified working on this OpenClaw instance; bot is @frag1lebot. - GitHub integration was set up on this host: gh installed/authenticated for account blackcarburning, and git identity configured by user. - live_controller repo was cloned into the workspace and identified as a live show control toolkit combining playback control, show-sync server, and timeline/ed",
+      "recallCount": 2,
+      "dailyCount": 0,
+      "groundedCount": 0,
+      "totalScore": 0.6800988435745239,
+      "maxScore": 0.4147843599319458,
+      "firstRecalledAt": "2026-04-22T20:51:26.485Z",
+      "lastRecalledAt": "2026-04-23T08:37:59.071Z",
+      "queryHashes": [
+        "abb720f35bd8",
+        "f048756a3e22"
+      ],
+      "recallDays": [
+        "2026-04-22",
+        "2026-04-23"
+      ],
+      "conceptTags": [
+        "nature/helper",
+        "easy-going/humorous/obsessive",
+        "installed/authenticated",
+        "live-controller",
+        "show-sync",
+        "timeline/ed",
+        "bootstrapped",
+        "identity"
+      ]
+    },
+    "memory:memory/2026-04-25.md:1:24": {
+      "key": "memory:memory/2026-04-25.md:1:24",
+      "path": "memory/2026-04-25.md",
+      "startLine": 1,
+      "endLine": 24,
+      "source": "memory",
+      "snippet": "### 2026-04-25 - Session compaction summary - Gateway / models - Added \"openai/gpt-5.5\" (alias \"gpt-5.5\") to /root/.openclaw/openclaw.json. - Started OpenClaw gateway in foreground; gateway listening on 127.0.0.1:18789. systemd user service not enabled on host; instructions recorded for persistent install. - live_controller / show-sync - Repository: /root/.openclaw/workspace/live_controller - Created virtualenv and installed fastapi / uvicorn / websockets; fixed missing Jinja2 and started uvicorn on 127.0.0.1:8000. - Configured Caddy to reverse-proxy meshlive.blackcarburning.com → 127.0.0.1:8000 and reloaded Caddy; TLS certificate issued (Let's Encrypt). - Verified API endpoint",
+      "recallCount": 1,
+      "dailyCount": 0,
+      "groundedCount": 0,
+      "totalScore": 0.4068587759260065,
+      "maxScore": 0.4068587759260065,
+      "firstRecalledAt": "2026-05-09T09:58:53.687Z",
+      "lastRecalledAt": "2026-05-09T09:58:53.687Z",
+      "queryHashes": [
+        "5c9dc0a53c49"
+      ],
+      "recallDays": [
+        "2026-05-09"
+      ],
+      "conceptTags": [
+        "gateway",
+        "gpt",
+        "openai",
+        "openai/gpt-5.5",
+        "gpt-5.5",
+        "openclaw/openclaw.json",
+        "127.0.0.1",
+        "live-controller"
+      ]
+    }
+  }
+}

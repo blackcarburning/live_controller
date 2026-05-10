@@ -1,0 +1,978 @@
+{
+  "project": "xlsx-fallback-test",
+  "output_dir": "/root/.openclaw/workspace/processed/xlsx-fallback-test",
+  "quote_source": "/root/.openclaw/dropbox/inbox/UEA/Diamondback/230427CSI UEA deal reg Quotes.xlsx",
+  "source_files": [
+    "/root/.openclaw/dropbox/inbox/UEA/Diamondback/230427CSI UEA deal reg Quotes.xlsx"
+  ],
+  "source_bundle": [
+    {
+      "type": "xlsx",
+      "name": "230427CSI UEA deal reg Quotes.xlsx",
+      "sheets": [
+        {
+          "sheet": "20260423_ComputerSystemsIntegr",
+          "rows": [
+            [
+              "TD SYNNEX Quotation"
+            ],
+            [
+              "TD SYNNEX UK",
+              "Company name:",
+              "Computer Systems Integration"
+            ],
+            [
+              "Maplewood, Crockford Lane, Chineham Park",
+              "Company number:",
+              "357899 "
+            ],
+            [
+              "RG24 8YB | Basingstoke",
+              "Contact name: ",
+              "James Dolby-Glover"
+            ],
+            [
+              "UK",
+              "Contact email:",
+              "James.Dolby-Glover@csiltd.co.uk"
+            ],
+            [
+              "uk.tdsynnex.com",
+              "Contact phone:",
+              "07920 422 731 "
+            ],
+            [
+              "End user:",
+              "UEA"
+            ],
+            [
+              "Quotation Number",
+              "1005994723 Version - 1"
+            ],
+            [
+              "Created by:",
+              "David Allen"
+            ],
+            [
+              "Phone:",
+              "01925 287804  "
+            ],
+            [
+              "TD SYNNEX Email:",
+              "david.allen@tdsynnex.com"
+            ],
+            [
+              "Quotation description:",
+              "230427CSI UEA deal reg Quotes"
+            ],
+            [
+              "Quote made on:",
+              "23/04/2026",
+              "Reseller quote reference:"
+            ],
+            [
+              "Quote Valid Until:",
+              "30/04/2026",
+              "End User EA Number:"
+            ],
+            [
+              "Quotation Currency:",
+              "GBP"
+            ],
+            [
+              "44422669Russ 220426 CSI-UEA 2x 2xSAN24B-7 3yr..."
+            ],
+            [
+              "PART NUMBER",
+              "TD SYNNEX SKU",
+              "DESCRIPTION",
+              "UNIT LIST PRICE GBP",
+              "Total List Price GBP",
+              "LP discount %",
+              "UNIT CUSTOMER PRICE GBP",
+              "QTY",
+              "CUSTOMER PRICE * QTY GBP",
+              "AVAILABILITY",
+              "COMMENT"
+            ],
+            [
+              "Hardware"
+            ],
+            [
+              "8969-P24",
+              "11845044",
+              "IBM Storage Networking SAN24B-7",
+              "183.69",
+              "183.69",
+              "67.87",
+              "59.03",
+              "1",
+              "59.03",
+              "0"
+            ],
+            [
+              "89692627",
+              "11114207",
+              "SFP+,LWL,32G,10KM,1-PK,SECURE",
+              "13598.11",
+              "27196.22",
+              "67.87",
+              "4369.23",
+              "2",
+              "8738.46",
+              "0"
+            ],
+            [
+              "89692680",
+              "11845162",
+              "SAN24B-7 8 x 32Gbps SW SFP Bundle",
+              "18093.08",
+              "18093.08",
+              "67.87",
+              "5813.51",
+              "1",
+              "5813.51",
+              "0"
+            ],
+            [
+              "89695810",
+              "7469043",
+              "OM3 Cable LC/LC 10 m",
+              "85",
+              "850",
+              "67.86",
+              "27.32",
+              "10",
+              "273.2",
+              "0"
+            ],
+            [
+              "89697521",
+              "11845161",
+              "SAN24B-7 8 Port 32Gbps SW Upgrade",
+              "12858.02",
+              "12858.02",
+              "67.87",
+              "4131.43",
+              "1",
+              "4131.43",
+              "0"
+            ],
+            [
+              "8969AKCH",
+              "8664571",
+              "Standard S&H Indicator",
+              "232.12",
+              "232.12",
+              "0",
+              "232.12",
+              "1",
+              "232.12",
+              "0"
+            ],
+            [
+              "8969ALH0",
+              "7469898",
+              "Expert Care Indicator",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "8969ALK3",
+              "7469897",
+              "EC Advanced 3 Year",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "9474-A03",
+              "11883560",
+              "3 year IBM Storage Expert Care Advanced",
+              "5089.57",
+              "5089.57",
+              "67.87",
+              "1635.34",
+              "1",
+              "1635.34",
+              "0"
+            ],
+            [
+              "Software"
+            ],
+            [
+              "5773-STG",
+              "5605911",
+              "Support Line for Storage - 3 Year",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "5773M1TVX4",
+              "6354296",
+              "Support per Server (N/C)",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "Hardware"
+            ],
+            [
+              "8969-P24",
+              "11845044",
+              "IBM Storage Networking SAN24B-7",
+              "183.69",
+              "183.69",
+              "67.87",
+              "59.03",
+              "1",
+              "59.03",
+              "0"
+            ],
+            [
+              "89692627",
+              "11114207",
+              "SFP+,LWL,32G,10KM,1-PK,SECURE",
+              "13598.11",
+              "27196.22",
+              "67.87",
+              "4369.23",
+              "2",
+              "8738.46",
+              "0"
+            ],
+            [
+              "89692680",
+              "11845162",
+              "SAN24B-7 8 x 32Gbps SW SFP Bundle",
+              "18093.08",
+              "18093.08",
+              "67.87",
+              "5813.51",
+              "1",
+              "5813.51",
+              "0"
+            ],
+            [
+              "89695810",
+              "7469043",
+              "OM3 Cable LC/LC 10 m",
+              "85",
+              "850",
+              "67.86",
+              "27.32",
+              "10",
+              "273.2",
+              "0"
+            ],
+            [
+              "89697521",
+              "11845161",
+              "SAN24B-7 8 Port 32Gbps SW Upgrade",
+              "12858.02",
+              "12858.02",
+              "67.87",
+              "4131.43",
+              "1",
+              "4131.43",
+              "0"
+            ],
+            [
+              "8969AKCH",
+              "8664571",
+              "Standard S&H Indicator",
+              "232.12",
+              "232.12",
+              "0",
+              "232.12",
+              "1",
+              "232.12",
+              "0"
+            ],
+            [
+              "8969ALH0",
+              "7469898",
+              "Expert Care Indicator",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "8969ALK3",
+              "7469897",
+              "EC Advanced 3 Year",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "9474-A03",
+              "11883560",
+              "3 year IBM Storage Expert Care Advanced",
+              "5089.57",
+              "5089.57",
+              "67.87",
+              "1635.34",
+              "1",
+              "1635.34",
+              "0"
+            ],
+            [
+              "Software"
+            ],
+            [
+              "5773-STG",
+              "5605911",
+              "Support Line for Storage - 3 Year",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "5773M1TVX4",
+              "6354296",
+              "Support per Server (N/C)",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "Hardware"
+            ],
+            [
+              "8969-P24",
+              "11845044",
+              "copy 1:IBM Storage Networking SAN24B-7",
+              "183.69",
+              "183.69",
+              "67.87",
+              "59.03",
+              "1",
+              "59.03",
+              "0"
+            ],
+            [
+              "89692627",
+              "11114207",
+              "SFP+,LWL,32G,10KM,1-PK,SECURE",
+              "13598.11",
+              "27196.22",
+              "67.87",
+              "4369.23",
+              "2",
+              "8738.46",
+              "0"
+            ],
+            [
+              "89692680",
+              "11845162",
+              "SAN24B-7 8 x 32Gbps SW SFP Bundle",
+              "18093.08",
+              "18093.08",
+              "67.87",
+              "5813.51",
+              "1",
+              "5813.51",
+              "0"
+            ],
+            [
+              "89695810",
+              "7469043",
+              "OM3 Cable LC/LC 10 m",
+              "85",
+              "850",
+              "67.86",
+              "27.32",
+              "10",
+              "273.2",
+              "0"
+            ],
+            [
+              "89697521",
+              "11845161",
+              "SAN24B-7 8 Port 32Gbps SW Upgrade",
+              "12858.02",
+              "12858.02",
+              "67.87",
+              "4131.43",
+              "1",
+              "4131.43",
+              "0"
+            ],
+            [
+              "8969AKCH",
+              "8664571",
+              "Standard S&H Indicator",
+              "232.12",
+              "232.12",
+              "0",
+              "232.12",
+              "1",
+              "232.12",
+              "0"
+            ],
+            [
+              "8969ALH0",
+              "7469898",
+              "Expert Care Indicator",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "8969ALK3",
+              "7469897",
+              "EC Advanced 3 Year",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "9474-A03",
+              "11883560",
+              "copy 1:3 year IBM Storage Expert Care Advanced",
+              "5089.57",
+              "5089.57",
+              "67.87",
+              "1635.34",
+              "1",
+              "1635.34",
+              "0"
+            ],
+            [
+              "Software"
+            ],
+            [
+              "5773-STG",
+              "5605911",
+              "Support Line for Storage - 3 Year",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "5773M1TVX4",
+              "6354296",
+              "Support per Server (N/C)",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "Hardware"
+            ],
+            [
+              "8969-P24",
+              "11845044",
+              "copy 1:IBM Storage Networking SAN24B-7",
+              "183.69",
+              "183.69",
+              "67.87",
+              "59.03",
+              "1",
+              "59.03",
+              "0"
+            ],
+            [
+              "89692627",
+              "11114207",
+              "SFP+,LWL,32G,10KM,1-PK,SECURE",
+              "13598.11",
+              "27196.22",
+              "67.87",
+              "4369.23",
+              "2",
+              "8738.46",
+              "0"
+            ],
+            [
+              "89692680",
+              "11845162",
+              "SAN24B-7 8 x 32Gbps SW SFP Bundle",
+              "18093.08",
+              "18093.08",
+              "67.87",
+              "5813.51",
+              "1",
+              "5813.51",
+              "0"
+            ],
+            [
+              "89695810",
+              "7469043",
+              "OM3 Cable LC/LC 10 m",
+              "85",
+              "850",
+              "67.86",
+              "27.32",
+              "10",
+              "273.2",
+              "0"
+            ],
+            [
+              "89697521",
+              "11845161",
+              "SAN24B-7 8 Port 32Gbps SW Upgrade",
+              "12858.02",
+              "12858.02",
+              "67.87",
+              "4131.43",
+              "1",
+              "4131.43",
+              "0"
+            ],
+            [
+              "8969AKCH",
+              "8664571",
+              "Standard S&H Indicator",
+              "232.12",
+              "232.12",
+              "0",
+              "232.12",
+              "1",
+              "232.12",
+              "0"
+            ],
+            [
+              "8969ALH0",
+              "7469898",
+              "Expert Care Indicator",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "8969ALK3",
+              "7469897",
+              "EC Advanced 3 Year",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "9474-A03",
+              "11883560",
+              "copy 1:3 year IBM Storage Expert Care Advanced",
+              "5089.57",
+              "5089.57",
+              "67.87",
+              "1635.34",
+              "1",
+              "1635.34",
+              "0"
+            ],
+            [
+              "Software"
+            ],
+            [
+              "5773-STG",
+              "5605911",
+              "Support Line for Storage - 3 Year",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "5773M1TVX4",
+              "6354296",
+              "Support per Server (N/C)",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "Sub total",
+              "258010.8",
+              "67.62",
+              "83532.36"
+            ],
+            [
+              "44422669Russ 220426 CSI-UEA 2x300 LTO-10 30TB..."
+            ],
+            [
+              "PART NUMBER",
+              "TD SYNNEX SKU",
+              "DESCRIPTION",
+              "UNIT LIST PRICE GBP",
+              "Total List Price GBP",
+              "LP discount %",
+              "UNIT CUSTOMER PRICE GBP",
+              "QTY",
+              "CUSTOMER PRICE * QTY GBP",
+              "AVAILABILITY",
+              "COMMENT"
+            ],
+            [
+              "Hardware"
+            ],
+            [
+              "3589-554",
+              "11848536",
+              "No CPUSIU for the following products:IBM 30 TB Ultrium 10 Tape Cartridge 20-pack Labeled",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35895504",
+              "11848540",
+              "30 TB LTO10 Tape Cartridge Labeled 20-pack",
+              "20125.6",
+              "301884",
+              "67.87",
+              "6466.59",
+              "15",
+              "96998.85",
+              "0"
+            ],
+            [
+              "35899003",
+              "3004276",
+              "ALPHA PREFIX BKGRD - RED",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35899022",
+              "3004179",
+              "LABEL BKGRD: COLOR/VIBRANT",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35899113",
+              "7762813",
+              "1ST CHAR OF VOLSER =D",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35899230",
+              "7762812",
+              "2ND CHAR OF VOLSER =U",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35899322",
+              "7762811",
+              "3RD CHAR OF VOLSER =M",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35899400",
+              "602773",
+              "4TH CHAR OF VOLSER =0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35899500",
+              "602774",
+              "5TH CHAR OF VOLSER =0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35899600",
+              "4401314",
+              "6TH CHAR OF VOLSER =0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35899910",
+              "4590875",
+              "Base 10 Count Lbl Sequence",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "3589AKNC",
+              "8664541",
+              "Premium S&H Indicator",
+              "29.82",
+              "29.82",
+              "0",
+              "29.82",
+              "1",
+              "29.82",
+              "0"
+            ],
+            [
+              "3589-554",
+              "11848536",
+              "No CPUSIU for the following products:IBM 30 TB Ultrium 10 Tape Cartridge 20-pack Labeled",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35895504",
+              "11848540",
+              "30 TB LTO10 Tape Cartridge Labeled 20-pack",
+              "20125.6",
+              "301884",
+              "67.87",
+              "6466.59",
+              "15",
+              "96998.85",
+              "0"
+            ],
+            [
+              "35899003",
+              "3004276",
+              "ALPHA PREFIX BKGRD - RED",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35899022",
+              "3004179",
+              "LABEL BKGRD: COLOR/VIBRANT",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35899113",
+              "7762813",
+              "1ST CHAR OF VOLSER =D",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35899230",
+              "7762812",
+              "2ND CHAR OF VOLSER =U",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35899322",
+              "7762811",
+              "3RD CHAR OF VOLSER =M",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35899400",
+              "602773",
+              "4TH CHAR OF VOLSER =0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35899500",
+              "602774",
+              "5TH CHAR OF VOLSER =0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35899600",
+              "4401314",
+              "6TH CHAR OF VOLSER =0",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "35899910",
+              "4590875",
+              "Base 10 Count Lbl Sequence",
+              "0",
+              "0",
+              "0",
+              "0",
+              "1",
+              "0",
+              "0"
+            ],
+            [
+              "3589AKNC",
+              "8664541",
+              "Premium S&H Indicator",
+              "29.82",
+              "29.82",
+              "0",
+              "29.82",
+              "1",
+              "29.82",
+              "0"
+            ],
+            [
+              "Sub total",
+              "603827.64",
+              "67.86",
+              "194057.34"
+            ]
+          ]
+        }
+      ],
+      "note": "Workbook required LibreOffice round-trip before preview extraction because the original XLSX was not readable by openpyxl."
+    }
+  ],
+  "flags": [],
+  "model": "gpt-5.4",
+  "agent_prompt_path": "/root/.openclaw/workspace/processed/xlsx-fallback-test/agent_prompt.txt"
+}

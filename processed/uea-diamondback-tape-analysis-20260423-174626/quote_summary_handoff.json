@@ -1,0 +1,25 @@
+{
+  "status": "failed",
+  "requested_at": "2026-04-23T17:46:27.225353+01:00",
+  "requested_model": "gpt-5.4",
+  "session_id": "uea-diamondback-uea-diamondback-tape-analysis-20260423-174626",
+  "input_json": "/root/.openclaw/workspace/processed/uea-diamondback-tape-analysis-20260423-174626/summary_input.json",
+  "prompt_path": "/root/.openclaw/workspace/processed/uea-diamondback-tape-analysis-20260423-174626/agent_prompt.txt",
+  "output_dir": "/root/.openclaw/workspace/processed/uea-diamondback-tape-analysis-20260423-174626",
+  "required_outputs": [
+    "/root/.openclaw/workspace/processed/uea-diamondback-tape-analysis-20260423-174626/summary.md",
+    "/root/.openclaw/workspace/processed/uea-diamondback-tape-analysis-20260423-174626/summary_result.json",
+    "/root/.openclaw/workspace/processed/uea-diamondback-tape-analysis-20260423-174626/summary.docx"
+  ],
+  "finished_at": "2026-04-23T17:47:04.266535+01:00",
+  "returncode": 0,
+  "dispatch_log": "/root/.openclaw/workspace/processed/uea-diamondback-tape-analysis-20260423-174626/quote_summary_dispatch.json",
+  "outputs": {
+    "/root/.openclaw/workspace/processed/uea-diamondback-tape-analysis-20260423-174626/summary.md": false,
+    "/root/.openclaw/workspace/processed/uea-diamondback-tape-analysis-20260423-174626/summary_result.json": false,
+    "/root/.openclaw/workspace/processed/uea-diamondback-tape-analysis-20260423-174626/summary.docx": false
+  },
+  "agent_reply_text": [],
+  "parse_error": null,
+  "remote_upload": null
+}
