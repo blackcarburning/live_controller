@@ -508,6 +508,8 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   <button onclick="addClip('zoom_pulse')" title="Zoom Pulse: scale in/out">+ Zoom</button>
   <button onclick="addClip('hue_rotate')" title="Hue Rotate: continuous colour-hue cycling">+ HueRot</button>
   <button onclick="addClip('neon_glow')"  title="Neon Glow: pulsing drop-shadow glow">+ Glow</button>
+  <button onclick="copySelected()" title="Copy selected clip (Ctrl+C)">Copy</button>
+  <button onclick="pasteClip()" title="Paste at playhead (Ctrl+V)">Paste</button>
   <div class="zoom-group">
     <span style="font-size:11px;color:var(--muted)">Zoom:</span>
     <button onclick="zoom(-1)">−</button>
@@ -979,12 +981,17 @@ function renderTracks() {
       lane.appendChild(makeClipEl(clip, track.id));
     }
 
-    // Click on empty area → deselect
+    // Click on empty area → deselect and seek playhead to clicked position
     lane.addEventListener('mousedown', (e) => {
       if (e.target === lane || e.target === lph) {
+        // Compute timeline X using same origin as the ruler and seek there
+        const tlX = rulerX(e.clientX);
+        const t   = x2t(tlX);
         selId = null;
         refreshSelection();
         renderPropsBar();
+        // Seek to clicked time so a simple click in the lane moves the playhead
+        seekTo(t);
       }
     });
 
