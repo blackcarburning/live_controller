@@ -94,6 +94,7 @@ import sys
 import threading
 import urllib.parse
 import webbrowser
+import signal
 
 PORT = 5556
 
@@ -373,11 +374,43 @@ def main():
             print(f"Loading show:      {_INITIAL}")
         print("Press Ctrl+C to quit.\n")
         webbrowser.open(url)
+
+        # Ensure SIGINT (Ctrl+C) and SIGTERM both cause a clean shutdown.
+        def _shutdown_signal(signum, frame):
+            print("\nStopping.")
+            try:
+                httpd.shutdown()
+            except Exception:
+                pass
+        # Register handlers (save old ones so we can restore later if needed)
+        old_sigint = signal.getsignal(signal.SIGINT)
+        try:
+            old_sigterm = signal.getsignal(signal.SIGTERM)
+        except Exception:
+            old_sigterm = None
+        signal.signal(signal.SIGINT, _shutdown_signal)
+        try:
+            signal.signal(signal.SIGTERM, _shutdown_signal)
+        except Exception:
+            pass
+
         try:
             t.join()
         except KeyboardInterrupt:
+            # Fallback: ensure shutdown if signal didn't arrive in the main loop
             print("\nStopping.")
             httpd.shutdown()
+        finally:
+            # restore original handlers
+            try:
+                signal.signal(signal.SIGINT, old_sigint)
+            except Exception:
+                pass
+            if old_sigterm is not None:
+                try:
+                    signal.signal(signal.SIGTERM, old_sigterm)
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":
