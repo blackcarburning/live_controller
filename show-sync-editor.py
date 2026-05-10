@@ -134,6 +134,11 @@ def _save_recent_entry(entry):
         fingerprint = entry.get('path') or entry.get('filename')
         if fingerprint:
             recents = [r for r in recents if (r.get('path') or r.get('filename')) != fingerprint]
+        # Preserve last_video if provided; otherwise try to reuse existing value
+        if not entry.get('last_video') and recents:
+            # If the existing top entry had last_video, keep it when updating
+            if recents and isinstance(recents[0], dict) and recents[0].get('last_video'):
+                entry['last_video'] = recents[0].get('last_video')
         entry['timestamp'] = time.time()
         recents.insert(0, entry)
         recents = recents[:_RECENT_MAX]
@@ -393,6 +398,24 @@ def main():
             signal.signal(signal.SIGTERM, _shutdown_signal)
         except Exception:
             pass
+
+        # Start a simple stdin listener thread so the user can press 'q' + Enter to quit
+        def _stdin_listener():
+            try:
+                sys.stdout.write("Type 'q' then Enter to quit\n")
+                sys.stdout.flush()
+                for line in sys.stdin:
+                    if line.strip().lower() == 'q':
+                        print("Stopping (user requested)\n")
+                        try:
+                            httpd.shutdown()
+                        except Exception:
+                            pass
+                        break
+            except Exception:
+                pass
+        th_input = threading.Thread(target=_stdin_listener, daemon=True)
+        th_input.start()
 
         try:
             # Wait in a loop so KeyboardInterrupt is reliably delivered on all platforms

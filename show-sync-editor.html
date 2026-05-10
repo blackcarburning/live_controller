@@ -2035,8 +2035,34 @@ function zoom(dir) {
 
 // ── File I/O ──────────────────────────────────────────────────────────────────
 
-function movInput() { document.getElementById('mov-input').click(); }
+function movInput() {
+  // Prompt for a filesystem path first (when running via the bundled server you can enter an absolute
+  // path under your home directory and the server will stream it). Leave blank to pick a local file.
+  const path = prompt('Enter full path to a media file under your home directory, or Cancel to choose a local file');
+  if (path && path.trim()) {
+    loadMovPath(path.trim());
+  } else {
+    document.getElementById('mov-input').click();
+  }
+}
 function showInput() { document.getElementById('show-input').click(); }
+
+function loadMovPath(path) {
+  const vid = document.getElementById('video-player');
+  const encoded = encodeURIComponent(path);
+  vid.src = '/video?path=' + encoded;
+  vid.load();
+  vid.addEventListener('loadedmetadata', () => {
+    show.media.src      = path;
+    show.media.duration = vid.duration;
+    document.getElementById('video-label').textContent = 'Reference Video: ' + path;
+    render();
+    // Tell server this is the last used video so recents can remember it
+    try {
+      fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curFile || '', data: show, last_video: path }) }).catch(()=>{});
+    } catch(e){}
+  }, { once: true });
+}
 
 document.getElementById('mov-input').addEventListener('change', (e) => {
   const file = e.target.files[0];
@@ -2061,6 +2087,10 @@ function loadMovFile(file) {
     show.media.duration = vid.duration;
     document.getElementById('video-label').textContent = 'Reference Video: ' + file.name;
     render();
+    // Inform server of last used video (filename only; absolute path not available when using file picker)
+    try {
+      fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curFile || '', data: show, last_video: file.name }) }).catch(()=>{});
+    } catch(e){}
   }, { once: true });
 }
 
