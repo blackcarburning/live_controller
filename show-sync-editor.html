@@ -401,17 +401,21 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .clip-fade-handle {
   position: absolute;
   top: 50%;
-  width: 10px;
-  height: 12px;
-  margin-top: -6px;
-  background: rgba(0,0,0,0.2);
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 2px;
+  width: 14px;
+  height: 16px;
+  margin-top: -8px;
+  background: rgba(0,0,0,0.28);
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 3px;
   cursor: ew-resize;
-  z-index: 6;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.clip-fade-left { left: 4px; }
-.clip-fade-right { right: 4px; }
+.clip-fade-left { left: 6px; }
+.clip-fade-right { right: 6px; }
+.clip-fade-handle::after { content: ''; width: 8px; height: 2px; background: rgba(255,255,255,0.6); border-radius:1px; }
 
 .clip-body {
   flex: 1;
@@ -1046,11 +1050,11 @@ function makeClipEl(clip, trackId) {
     const fl = document.createElement('div');
     fl.className = 'clip-fade-handle clip-fade-left';
     fl.title = 'Adjust fade in';
-    fl.addEventListener('mousedown', (e) => startDrag(e, 'fade-left', clip.id));
+    fl.addEventListener('mousedown', (e) => { e.stopPropagation(); e.preventDefault(); startDrag(e, 'fade-left', clip.id); });
     const fr = document.createElement('div');
     fr.className = 'clip-fade-handle clip-fade-right';
     fr.title = 'Adjust fade out';
-    fr.addEventListener('mousedown', (e) => startDrag(e, 'fade-right', clip.id));
+    fr.addEventListener('mousedown', (e) => { e.stopPropagation(); e.preventDefault(); startDrag(e, 'fade-right', clip.id); });
     el.appendChild(fl);
     el.appendChild(fr);
   }
@@ -1398,6 +1402,9 @@ function startDrag(e, type, clipId) {
   refreshSelection();
   renderPropsBar();
 
+  // Disable text selection while dragging for a smoother UX
+  try { document.body.style.userSelect = 'none'; } catch (err) {}
+
   drag = {
     type,
     clipId,
@@ -1460,6 +1467,8 @@ document.addEventListener('mousemove', (e) => {
 
 document.addEventListener('mouseup', () => {
   phDrag = false;
+  // Restore text selection
+  try { document.body.style.userSelect = ''; } catch (err) {}
   if (drag) {
     drag = null;
     render();
@@ -2368,7 +2377,7 @@ function removeRecent(idx) {
 
 function saveRecent() {
   try {
-    const payload = { filename: curFile || '', path: curFile || '', data: show };
+    const payload = { filename: curFile || '', path: curFile || '', data: show, last_video: show.media?.src || '' };
     fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       .then(r => r.json()).then(res => { if (res && res.ok) { /* noop */ } });
   } catch (e) {}

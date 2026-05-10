@@ -267,6 +267,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if data is None:
                 raise ValueError('Missing data')
             entry = {'filename': filename, 'path': path, 'data': data}
+            if payload.get('last_video'):
+                entry['last_video'] = payload.get('last_video')
             ok = _save_recent_entry(entry)
             self._json({'ok': ok})
         except Exception as exc:
@@ -399,37 +401,60 @@ def main():
         except Exception:
             pass
 
-        # Start a simple stdin listener thread so the user can press 'q' + Enter to quit
-        def _stdin_listener():
-            try:
-                sys.stdout.write("Type 'q' then Enter to quit\n")
-                sys.stdout.flush()
-                for line in sys.stdin:
-                    if line.strip().lower() == 'q':
-                        print("Stopping (user requested)\n")
-                        try:
-                            httpd.shutdown()
-                        except Exception:
-                            pass
-                        break
-            except Exception:
-                pass
-        th_input = threading.Thread(target=_stdin_listener, daemon=True)
-        th_input.start()
-
+        # Interactive command loop on stdin. This runs in the main thread
+        # so Ctrl+C (SIGINT) reliably raises KeyboardInterrupt here.
+        print("Type 'q' or 'quit' to stop the server. Commands: q, r (recents), o (open browser), h (help)")
         try:
-            # Wait in a loop so KeyboardInterrupt is reliably delivered on all platforms
             while t.is_alive():
                 try:
-                    time.sleep(0.5)
+                    cmd = input('editor> ').strip().lower()
+                except EOFError:
+                    # No stdin available (IDE/remote runner). Fall back to sleep loop.
+                    while t.is_alive():
+                        time.sleep(0.5)
+                    break
                 except KeyboardInterrupt:
-                    # User pressed Ctrl+C — shutdown server and break
                     print("\nStopping.")
                     try:
                         httpd.shutdown()
                     except Exception:
                         pass
                     break
+
+                if not cmd:
+                    continue
+                if cmd in ('q', 'quit', 'exit'):
+                    print("Stopping (user requested)")
+                    try:
+                        httpd.shutdown()
+                    except Exception:
+                        pass
+                    break
+                if cmd in ('o', 'open'):
+                    webbrowser.open(url)
+                    continue
+                if cmd in ('r', 'recents'):
+                    rec = _load_recents()
+                    if not rec:
+                        print('No recents')
+                    else:
+                        for i, e in enumerate(rec, 1):
+                            fn = e.get('filename') or e.get('path') or '<unnamed>'
+                            lv = e.get('last_video') or ''
+                            ts = e.get('timestamp') and time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(e.get('timestamp'))) or ''
+                            print(f"{i}. {fn}  {ts}  {lv}")
+                    continue
+                if cmd in ('h', 'help', '?'):
+                    print("Commands: q/quit, r/recents, o/open, h/help")
+                    continue
+                print('Unknown command: ' + cmd)
+        except KeyboardInterrupt:
+            # Final fallback — ensure server shuts down on Ctrl+C
+            print("\nStopping.")
+            try:
+                httpd.shutdown()
+            except Exception:
+                pass
         finally:
             # restore original handlers
             try:
