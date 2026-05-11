@@ -399,7 +399,7 @@ function compositeTimeline(showTime) {
   const sorted = [...tlShow.tracks].sort((a, b) => a.layer - b.layer);
 
   let bg = null, bgOp = 0;
-  let txt = null, txtColor = '#fff', txtOp = 0, txtSz = 5, txtLinkUrl = '';
+  let txt = null, txtColor = '#fff', txtOp = 0, txtSz = 5, txtLinkUrl = '', txtAlign = 'center';
   let effectTransform = '', effectFilter = '', effectClipPath = '';
 
   for (const track of sorted) {
@@ -428,6 +428,7 @@ function compositeTimeline(showTime) {
         txtSz      = params.size     || 5;
         txtOp      = op;
         txtLinkUrl = params.link_url || '';
+        txtAlign   = params.align    || 'center';
       } else if (type === 'strobe') {
         const rate = params.rate || 10;
         if (Math.floor(pos * rate * 2) % 2 === 0) {
@@ -517,19 +518,31 @@ function compositeTimeline(showTime) {
   if (txt !== null && txtOp > 0) {
     while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
     const safeUrl = _safeLinkUrl(txtLinkUrl);
+    const textNode = document.createElement(safeUrl ? 'a' : 'div');
     if (safeUrl) {
-      const a = document.createElement('a');
-      a.href = safeUrl;
-      a.textContent = txt;
-      a.style.cssText = 'color:' + txtColor + ';text-decoration:underline;';
-      textEl.appendChild(a);
-    } else {
-      textEl.textContent = txt;
+      textNode.href = safeUrl;
+      textNode.style.textDecoration = 'underline';
     }
+    textNode.textContent = txt;
+    textNode.style.color = txtColor;
+    textNode.style.whiteSpace = 'pre-wrap';
+    textNode.style.textAlign = txtAlign;
+    textEl.appendChild(textNode);
+
     textEl.style.color    = txtColor;
     textEl.style.fontSize = txtSz + 'vmin';
     textEl.style.opacity  = txtOp;
     textEl.style.display  = 'flex';
+    if (txtAlign === 'left') {
+      textEl.style.justifyContent = 'flex-start';
+      textEl.style.textAlign = 'left';
+    } else if (txtAlign === 'right') {
+      textEl.style.justifyContent = 'flex-end';
+      textEl.style.textAlign = 'right';
+    } else {
+      textEl.style.justifyContent = 'center';
+      textEl.style.textAlign = 'center';
+    }
   } else {
     while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
     textEl.style.display = 'none';

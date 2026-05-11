@@ -19,12 +19,25 @@ templates = Jinja2Templates(directory="app/templates")
 # Directory where exported show JSON files are stored and served from.
 SHOWS_DIR = pathlib.Path("app/static/shows")
 
-sessions: Dict[str, Dict[str, Any]] = {}
+# Fixed public live session used by live_controller and restored on service
+# start/reboot so https://meshlive.blackcarburning.com/live is always joinable.
+DEFAULT_LIVE_SESSION_ID = "0e49315f"
+
+sessions: Dict[str, Dict[str, Any]] = {
+    DEFAULT_LIVE_SESSION_ID: {
+        "name": "live",
+        "clients": [],
+        "last_cue": None,
+        "last_show": None,
+        "last_start": None,
+    }
+}
 
 # ── Active session state (stable /live endpoint) ──────────────────────────────
 # These are updated whenever a show is started so audience members can always
-# open /live without needing a session-specific URL.
-active_session_id: Optional[str] = None
+# open /live without needing a session-specific URL.  Default to the fixed live
+# session so /live survives service restarts even before the next show starts.
+active_session_id: Optional[str] = DEFAULT_LIVE_SESSION_ID
 active_show_name: Optional[str] = None
 
 # ── Helper: broadcast a JSON payload to all live clients in a session ─────────

@@ -101,6 +101,7 @@ PORT = 5556
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _HTML = os.path.join(_HERE, "show-sync-editor.html")
 _INITIAL = sys.argv[1] if len(sys.argv) > 1 else None
+_DEFAULT_SAVE_DIR = os.path.join(_HERE, "show-sync", "app", "static", "shows")
 
 _RECENT_FILE = os.path.join(os.path.expanduser('~'), '.show-sync-editor-recents.json')
 _RECENT_MAX = 10
@@ -232,7 +233,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             try:
                 with open(_INITIAL, encoding="utf-8") as f:
                     data = json.load(f)
-                self._json({"show": data, "filename": os.path.basename(_INITIAL), "recents": recents})
+                self._json({"show": data, "filename": os.path.basename(_INITIAL), "path": os.path.realpath(_INITIAL), "recents": recents})
                 return
             except Exception as exc:
                 # Fall through and still return recents + error
@@ -331,20 +332,46 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         try:
             payload = json.loads(body)
             path = payload.get("path", "")
+            filename = payload.get("filename", "")
             data = payload.get("data")
-            if not path or data is None:
-                raise ValueError("Missing path or data")
-            # Validate path: null bytes, length, .json extension, home directory.
-            if "\x00" in path or len(path) > 4096:
-                raise ValueError("Invalid path")
-            if not path.endswith(".json"):
-                raise ValueError("Path must end with .json")
-            real = os.path.realpath(path)
-            if not (real.startswith(_HOME + os.sep) or real == _HOME):
-                raise ValueError("Cannot save outside of home directory")
+            if data is None:
+                raise ValueError("Missing data")
+
+            # Save accepts either:
+            #   - an absolute/relative path under HOME, or
+            #   - a filename, which is saved into show-sync/app/static/shows.
+            # The filename route is what the browser editor uses for Save As.
+            if filename:
+                if "\x00" in filename or len(filename) > 255:
+                    raise ValueError("Invalid filename")
+                filename = os.path.basename(filename.strip())
+                if not filename:
+                    raise ValueError("Missing filename")
+                if not filename.lower().endswith(".json"):
+                    filename += ".json"
+                if filename in (".", "..") or os.sep in filename or (os.altsep and os.altsep in filename):
+                    raise ValueError("Invalid filename")
+                os.makedirs(_DEFAULT_SAVE_DIR, exist_ok=True)
+                real = os.path.realpath(os.path.join(_DEFAULT_SAVE_DIR, filename))
+                default_dir = os.path.realpath(_DEFAULT_SAVE_DIR)
+                if not (real.startswith(default_dir + os.sep) or real == default_dir):
+                    raise ValueError("Cannot save outside shows directory")
+            else:
+                if not path:
+                    raise ValueError("Missing path or filename")
+                # Validate path: null bytes, length, .json extension, home directory.
+                if "\x00" in path or len(path) > 4096:
+                    raise ValueError("Invalid path")
+                if not path.endswith(".json"):
+                    raise ValueError("Path must end with .json")
+                real = os.path.realpath(path)
+                if not (real.startswith(_HOME + os.sep) or real == _HOME):
+                    raise ValueError("Cannot save outside of home directory")
+
             with open(real, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            self._json({"ok": True, "path": real})
+            _save_recent_entry({"filename": os.path.basename(real), "path": real, "data": data})
+            self._json({"ok": True, "path": real, "filename": os.path.basename(real)})
         except Exception as exc:
             self._json({"ok": False, "error": str(exc)})
 

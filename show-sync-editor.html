@@ -590,7 +590,8 @@ let show = blankShow();
 let pps  = 50;            // pixels per second (zoom level)
 let selId     = null;     // selected clip id
 let selMarkerId = null;   // selected marker id (for keyboard deletion)
-let curFile   = null;     // current filename string
+let curFile   = null;     // current display filename
+let curPath   = null;     // current server-side save path, when known
 let vidUrl    = null;     // object URL for loaded video
 let drag      = null;     // active drag descriptor
 let phDrag    = false;    // true while scrubbing the playhead via ruler drag
@@ -1120,7 +1121,7 @@ function compositeAt(t) {
   const sorted = [...show.tracks].sort((a, b) => a.layer - b.layer);
 
   let bg = null, bgOp = 0;
-  let txt = null, txtColor = '#fff', txtOp = 0, txtSz = 5, txtLinkUrl = '', txtFont = '';
+  let txt = null, txtColor = '#fff', txtOp = 0, txtSz = 5, txtLinkUrl = '', txtFont = '', txtAlign = 'center';
   let imgSrc = null, imgFit = 'contain', imgOp = 0;
   let effectTransform = '', effectFilter = '', effectClipPath = '';
 
@@ -1151,6 +1152,7 @@ function compositeAt(t) {
         txtOp      = op;
         txtLinkUrl = params.link_url   || '';
         txtFont    = params.font_family || '';
+        txtAlign   = params.align       || 'center';
       } else if (type === 'image') {
         imgSrc = validateImageUrl(params.src || '');
         imgFit = params.fit || 'contain';
@@ -1255,26 +1257,29 @@ function compositeAt(t) {
       a.href = txtLinkUrl;
       a.textContent = txt;
       a.style.cssText = 'color:' + txtColor + ';text-decoration:underline;pointer-events:none;white-space:pre-wrap;';
+      a.style.textAlign = txtAlign;
       textEl.appendChild(a);
     } else {
       // Preserve line breaks and spacing
       const div = document.createElement('div');
       div.textContent = txt;
       div.style.whiteSpace = 'pre-wrap';
+      div.style.textAlign = txtAlign;
       textEl.appendChild(div);
     }
     textEl.style.color      = txtColor;
     textEl.style.fontSize   = pxFont + 'px';
     textEl.style.fontFamily = fontCss(txtFont);
-    // Alignment: cl.params.align -> justifyContent and textAlign
-    const align = (clip.params && clip.params.align) || 'center';
-    if (align === 'left') {
+    // Alignment: params.align -> horizontal position and per-line text alignment.
+    if (txtAlign === 'left') {
       textEl.style.justifyContent = 'flex-start';
       textEl.style.textAlign = 'left';
       textEl.style.paddingLeft = '12px';
-    } else if (align === 'right') {
+      textEl.style.paddingRight = '';
+    } else if (txtAlign === 'right') {
       textEl.style.justifyContent = 'flex-end';
       textEl.style.textAlign = 'right';
+      textEl.style.paddingLeft = '';
       textEl.style.paddingRight = '12px';
     } else {
       textEl.style.justifyContent = 'center';
@@ -2134,7 +2139,7 @@ function loadMovPath(path) {
     render();
     // Tell server this is the last used video so recents can remember it
     try {
-      fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curFile || '', data: show, last_video: path }) }).catch(()=>{});
+      fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curPath || '', data: show, last_video: path }) }).catch(()=>{});
     } catch(e){}
   }, { once: true });
 }
@@ -2164,7 +2169,7 @@ function loadMovFile(file) {
     render();
     // Inform server of last used video (filename only; absolute path not available when using file picker)
     try {
-      fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curFile || '', data: show, last_video: file.name }) }).catch(()=>{});
+      fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curPath || '', data: show, last_video: file.name }) }).catch(()=>{});
     } catch(e){}
   }, { once: true });
 }
@@ -2184,7 +2189,7 @@ document.getElementById('show-input').addEventListener('change', (e) => {
   e.target.value = '';
 });
 
-function loadShowData(data, filename) {
+function loadShowData(data, filename, path) {
   if (data.tracks) {
     show = data;
     show.version = 2;
@@ -2204,8 +2209,9 @@ function loadShowData(data, filename) {
   // Ensure markers array exists (older show files may not have it)
   if (!Array.isArray(show.markers)) show.markers = [];
 
-  curFile = filename;
-  document.getElementById('filename-display').textContent = filename;
+  curFile = filename || 'show.json';
+  curPath = path || null;
+  document.getElementById('filename-display').textContent = curFile;
 
   // Sync BPM input with loaded show value (default 120 if absent)
   const bpmInp = document.getElementById('bpm-input');
@@ -2248,6 +2254,7 @@ function newShow() {
       !confirm('Start a new show? Unsaved changes will be lost.')) return;
   show    = blankShow();
   curFile = null;
+  curPath = null;
   selId   = null;
   document.getElementById('filename-display').textContent = 'unsaved';
   const bpmInp = document.getElementById('bpm-input');
@@ -2256,30 +2263,43 @@ function newShow() {
   renderPropsBar();
 }
 
-function saveShow() {
-  const json = JSON.stringify(show, null, 2);
-  const name = curFile || 'show.json';
+function normaliseShowFilename(name) {
+  name = (name || 'show.json').trim();
+  // Keep this as a filename, not a path.  The server saves it into the shows folder.
+  name = name.split(/[\\/]/).pop();
+  if (!name) name = 'show.json';
+  if (!/\.json$/i.test(name)) name += '.json';
+  return name;
+}
 
-  // Try server-side save first (when launched via show-sync-editor.py)
-  if (curFile) {
-    fetch('/api/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: curFile, data: show }),
-    })
-    .then(r => r.json())
-    .then(r => {
-      if (r.ok) {
-        document.getElementById('filename-display').textContent = curFile + ' ✓';
-        setTimeout(() => document.getElementById('filename-display').textContent = curFile, 1500);
-      } else {
-        browserDownload(json, name);
-      }
-    })
-    .catch(() => browserDownload(json, name));
-  } else {
-    browserDownload(json, name);
-  }
+function saveShow() {
+  const suggested = normaliseShowFilename(curFile || 'show.json');
+  const chosen = prompt('Save show as filename:', suggested);
+  if (chosen === null) return;
+  const name = normaliseShowFilename(chosen);
+  const json = JSON.stringify(show, null, 2);
+
+  // Try server-side save first (when launched via show-sync-editor.py).
+  // The server writes filename-only saves into show-sync/app/static/shows.
+  fetch('/api/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename: name, path: curPath || '', data: show }),
+  })
+  .then(r => r.json())
+  .then(r => {
+    if (r.ok) {
+      curFile = r.filename || name;
+      curPath = r.path || null;
+      document.getElementById('filename-display').textContent = curFile + ' ✓';
+      setTimeout(() => document.getElementById('filename-display').textContent = curFile, 1500);
+      saveRecent();
+    } else {
+      alert('Server save failed; downloading instead.\n' + (r.error || 'Unknown error'));
+      browserDownload(json, name);
+    }
+  })
+  .catch(() => browserDownload(json, name));
 }
 
 function browserDownload(json, name) {
@@ -2291,6 +2311,7 @@ function browserDownload(json, name) {
   a.click();
   URL.revokeObjectURL(url);
   curFile = name;
+  curPath = null;
   document.getElementById('filename-display').textContent = name;
 }
 
@@ -2388,7 +2409,7 @@ fetch('/api/initial')
     if (!data) return;
     if (data.recents) _recents = data.recents;
     if (data && data.show) {
-      loadShowData(data.show, data.filename || 'show.json');
+      loadShowData(data.show, data.filename || 'show.json', data.path || null);
     }
   })
   .catch(() => {}); // standalone file:// usage — ignore
@@ -2419,12 +2440,12 @@ function showRecentPicker(list) {
     const right = document.createElement('div');
     const loadBtn = document.createElement('button'); loadBtn.textContent = 'Load';
     loadBtn.style.marginRight = '8px';
-    loadBtn.onclick = () => { loadShowData(it.data, it.filename || fn); document.body.removeChild(overlay); };
+    loadBtn.onclick = () => { loadShowData(it.data, it.filename || fn, it.path || null); document.body.removeChild(overlay); };
     const delBtn = document.createElement('button'); delBtn.textContent = 'Remove'; delBtn.onclick = (e) => { e.stopPropagation(); removeRecent(idx); overlay.remove(); showLoadRecent(); };
     right.appendChild(loadBtn); right.appendChild(delBtn);
 
     row.appendChild(left); row.appendChild(right);
-    row.onclick = () => { loadShowData(it.data, it.filename || fn); document.body.removeChild(overlay); };
+    row.onclick = () => { loadShowData(it.data, it.filename || fn, it.path || null); document.body.removeChild(overlay); };
     box.appendChild(row);
   });
   const close = document.createElement('div');
@@ -2438,12 +2459,12 @@ function showRecentPicker(list) {
 function removeRecent(idx) {
   _recents.splice(idx, 1);
   // Persist current show as an update to recents (server-side trimming keeps size)
-  try { fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curFile || '', data: show }) }).catch(()=>{}); } catch(e){}
+  try { fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curPath || '', data: show }) }).catch(()=>{}); } catch(e){}
 }
 
 function saveRecent() {
   try {
-    const payload = { filename: curFile || '', path: curFile || '', data: show, last_video: show.media?.src || '' };
+    const payload = { filename: curFile || '', path: curPath || '', data: show, last_video: show.media?.src || '' };
     fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       .then(r => r.json()).then(res => { if (res && res.ok) { /* noop */ } });
   } catch (e) {}
