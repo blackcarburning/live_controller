@@ -210,7 +210,8 @@ function runEffect(msg) {
         const richNode = _buildRichTextDOM(params);
         if (linkUrl) {
           const a = document.createElement('a');
-          a.href = linkUrl;
+          // linkUrl was validated by _safeLinkUrl(); only http/https/mailto/tel reach here.
+          if (/^(https?:|mailto:|tel:)/i.test(linkUrl)) { a.href = linkUrl; }
           a.style.cssText = 'color:' + color + ';text-decoration:underline;';
           a.appendChild(richNode);
           textEl.appendChild(a);
@@ -564,7 +565,8 @@ function compositeTimeline(showTime) {
     richNode.style.textAlign = txtAlign;
     if (safeUrl) {
       const a = document.createElement('a');
-      a.href = safeUrl;
+      // safeUrl was validated by _safeLinkUrl(); only http/https/mailto/tel reach here.
+      if (/^(https?:|mailto:|tel:)/i.test(safeUrl)) { a.href = safeUrl; }
       a.style.textDecoration = 'underline';
       a.appendChild(richNode);
       textEl.appendChild(a);

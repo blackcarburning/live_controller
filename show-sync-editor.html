@@ -1843,11 +1843,15 @@ function renderPropsBar() {
     clearBtn.style.cssText = 'font-size:10px;';
     clearBtn.addEventListener('mousedown', e => {
       e.preventDefault();
-      editor.focus();
-      document.execCommand('selectAll', false, null);
-      document.execCommand('removeFormat', false, null);
-      // Also strip any remaining spans with inline styles
-      editor.innerHTML = editor.textContent;
+      // Extract plain text (with newlines) using the same span parser, then
+      // rebuild the editor using safe DOM APIs — no innerHTML assignment.
+      const spans = extractRichSpans(editor);
+      const plainText = spans.map(s => s.text).join('');
+      while (editor.firstChild) editor.removeChild(editor.firstChild);
+      plainText.split('\n').forEach((line, i, arr) => {
+        editor.appendChild(document.createTextNode(line));
+        if (i < arr.length - 1) editor.appendChild(document.createElement('br'));
+      });
       syncEditorToParams();
       updateToolbarState();
     });
