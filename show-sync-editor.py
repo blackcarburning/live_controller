@@ -242,7 +242,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         # No initial file — return the most recent autosave (if any) plus the list
         if recents:
             top = recents[0]
-            self._json({"show": top.get('data'), "filename": top.get('filename'), "recents": recents})
+            self._json({
+                "show": top.get('data'),
+                "filename": top.get('filename'),
+                "path": top.get('path'),
+                "last_video": top.get('last_video', ''),
+                "recents": recents,
+            })
         else:
             self._json({"recents": recents})
 

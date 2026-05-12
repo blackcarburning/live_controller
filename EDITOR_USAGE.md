@@ -49,6 +49,7 @@ range-request support for seeking).
 | Scrub bar | Drag to seek; timeline playhead follows |
 | Click on the timeline ruler | Seek to that position |
 | **Drag on the timeline ruler** | Continuously scrub the playhead — hold mouse button and drag left or right to scrub; the video and preview update in real time |
+| Click on a timeline lane/clip | Move the playhead to the clicked time (while still allowing clip drag/resize handles) |
 
 ---
 
@@ -768,6 +769,11 @@ The editor supports both:
 - **v2 format** (tracks + clips, as above)
 - **v1 legacy format** (flat `"effects"` list from the old Tkinter editor) —
   automatically migrated to v2 on load.
+
+When a show includes `media.src`/`last_video` as a filesystem path, opening the
+show or relaunching the editor from recent projects will try to reload that
+`.mov` automatically. If the file moved or is missing, the editor keeps running
+and shows the video as unavailable.
 
 ---
 
