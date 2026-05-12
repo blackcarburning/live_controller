@@ -2389,27 +2389,26 @@ function showInput() { document.getElementById('show-input').click(); }
 
 function loadMovPath(path) {
   const vid = document.getElementById('video-player');
-  if (typeof path !== 'string' || !path.trim()) {
-    document.getElementById('video-label').textContent = 'Reference Video unavailable: invalid path';
-    return;
-  }
-  const encoded = encodeURIComponent(path);
+  if (typeof path !== 'string') return;
+  const normalizedPath = path.trim();
+  if (!normalizedPath) return;
+  const encoded = encodeURIComponent(normalizedPath);
   vid.src = '/video?path=' + encoded;
   vid.load();
   vid.addEventListener('loadedmetadata', () => {
-    show.media.src      = path;
-    show.last_video     = path;
+    show.media.src      = normalizedPath;
+    show.last_video     = normalizedPath;
     show.media.duration = vid.duration;
-    document.getElementById('video-label').textContent = 'Reference Video: ' + path;
+    document.getElementById('video-label').textContent = 'Reference Video: ' + normalizedPath;
     render();
     // Tell server this is the last used video so recents can remember it
     try {
-      fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curPath || '', data: show, last_video: path }) }).catch(()=>{});
+      fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curPath || '', data: show, last_video: normalizedPath }) }).catch(()=>{});
     } catch(e){}
   }, { once: true });
   vid.addEventListener('error', () => {
-    document.getElementById('video-label').textContent = 'Reference Video unavailable: ' + path;
-    console.warn('[show-sync-editor] automatic video restore failed:', path);
+    document.getElementById('video-label').textContent = 'Reference Video unavailable: ' + normalizedPath;
+    console.warn('[show-sync-editor] automatic video restore failed:', normalizedPath);
   }, { once: true });
 }
 
@@ -2452,8 +2451,8 @@ function isLikelyFilesystemPath(raw) {
   return trimmed.length > 2 && trimmed[1] === ':' && (trimmed[2] === '\\' || trimmed[2] === '/');
 }
 
-function resolveSavedVideoPath(lastVideo) {
-  const candidate = (lastVideo || show.last_video || show.media?.src || '').trim();
+function resolveSavedVideoPath(preferredVideoPath) {
+  const candidate = (preferredVideoPath || show.last_video || show.media?.src || '').trim();
   return isLikelyFilesystemPath(candidate) ? candidate : '';
 }
 
@@ -2472,7 +2471,7 @@ document.getElementById('show-input').addEventListener('change', (e) => {
   e.target.value = '';
 });
 
-function loadShowData(data, filename, path, lastVideo) {
+function loadShowData(data, filename, path, preferredVideoPath) {
   if (data.tracks) {
     show = data;
     show.version = 2;
@@ -2505,7 +2504,7 @@ function loadShowData(data, filename, path, lastVideo) {
   renderPropsBar();
   preloadShowImages();
 
-  const savedVideo = resolveSavedVideoPath(lastVideo);
+  const savedVideo = resolveSavedVideoPath(preferredVideoPath);
   if (savedVideo) {
     loadMovPath(savedVideo);
   }
