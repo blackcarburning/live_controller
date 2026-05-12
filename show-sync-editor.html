@@ -2389,7 +2389,10 @@ function showInput() { document.getElementById('show-input').click(); }
 
 function loadMovPath(path) {
   const vid = document.getElementById('video-player');
-  if (typeof path !== 'string' || !path.trim()) return;
+  if (typeof path !== 'string' || !path.trim()) {
+    document.getElementById('video-label').textContent = 'Reference Video unavailable: invalid path';
+    return;
+  }
   const encoded = encodeURIComponent(path);
   vid.src = '/video?path=' + encoded;
   vid.load();
@@ -2430,7 +2433,7 @@ function loadMovFile(file) {
   vid.load();
   vid.addEventListener('loadedmetadata', () => {
     show.media.src      = file.name;
-    delete show.last_video;
+    show.last_video     = '';
     show.media.duration = vid.duration;
     document.getElementById('video-label').textContent = 'Reference Video: ' + file.name;
     render();
@@ -2443,8 +2446,10 @@ function loadMovFile(file) {
 
 function isLikelyFilesystemPath(raw) {
   if (!raw || typeof raw !== 'string') return false;
-  // Accept Unix absolute (/...), Windows drive paths (C:\ or C:/), and UNC (\\server\share).
-  return /^([A-Za-z]:[\\/]|\\\\|\/)/.test(raw.trim());
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('/')) return true;
+  if (trimmed.startsWith('\\\\')) return true;
+  return trimmed.length > 2 && trimmed[1] === ':' && (trimmed[2] === '\\' || trimmed[2] === '/');
 }
 
 function resolveSavedVideoPath(lastVideo) {
@@ -2563,7 +2568,7 @@ function saveShow() {
   if (show.media && isLikelyFilesystemPath(show.media.src || '')) {
     show.last_video = show.media.src;
   } else {
-    delete show.last_video;
+    show.last_video = '';
   }
   const json = JSON.stringify(show, null, 2);
 

@@ -24,7 +24,7 @@ def save_show_last_video(show: dict) -> None:
     if isinstance(src, str) and is_likely_filesystem_path(src):
         show["last_video"] = src
     else:
-        show.pop("last_video", None)
+        show["last_video"] = ""
 
 
 def test_resolve_saved_video_prefers_explicit_last_video():
@@ -66,17 +66,17 @@ def test_save_show_sets_last_video_from_media_src():
 def test_save_show_does_not_set_last_video_for_blank_src():
     show = {"media": {"src": "   "}}
     save_show_last_video(show)
-    assert "last_video" not in show
+    assert show["last_video"] == ""
 
 
 def test_save_show_does_not_set_last_video_for_bare_filename():
     show = {"media": {"src": "clip.mov"}}
     save_show_last_video(show)
-    assert "last_video" not in show
+    assert show["last_video"] == ""
 
 
 def test_backward_compatible_when_no_video_fields():
     show = {"version": 2, "tracks": []}
     assert resolve_saved_video("", show) == ""
     save_show_last_video(show)
-    assert "last_video" not in show
+    assert show["last_video"] == ""
