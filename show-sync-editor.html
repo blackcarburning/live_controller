@@ -558,7 +558,7 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
 
   <!-- Video player -->
   <div id="video-wrap">
-    <div class="panel-label" id="video-label">Reference Video — drag &amp; drop a .mov or click Load .mov</div>
+    <div class="panel-label" id="video-label" aria-live="polite">Reference Video — drag &amp; drop a .mov or click Load .mov</div>
     <video id="video-player" preload="metadata" crossorigin="anonymous"></video>
     <div id="transport">
       <button id="play-btn" onclick="togglePlay()">▶ Play</button>
@@ -2389,7 +2389,7 @@ function showInput() { document.getElementById('show-input').click(); }
 
 function loadMovPath(path) {
   const vid = document.getElementById('video-player');
-  if (!path) return;
+  if (typeof path !== 'string' || !path.trim()) return;
   const encoded = encodeURIComponent(path);
   vid.src = '/video?path=' + encoded;
   vid.load();
@@ -2406,6 +2406,7 @@ function loadMovPath(path) {
   }, { once: true });
   vid.addEventListener('error', () => {
     document.getElementById('video-label').textContent = 'Reference Video unavailable: ' + path;
+    console.warn('[show-sync-editor] automatic video restore failed:', path);
   }, { once: true });
 }
 
