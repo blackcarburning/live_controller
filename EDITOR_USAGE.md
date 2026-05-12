@@ -103,7 +103,8 @@ When a clip is selected, the **properties bar** at the bottom shows:
 | **Duration (s)** | Length of the clip in seconds |
 | **Beats (N BPM) →** | One-click beat presets: ¼ / ½ / 1 / 2 / 4 beats at the show's current BPM — sets Duration instantly |
 | **Colour** | Background / text colour (colour picker) |
-| **Text** | *(text clips only)* The text string to display |
+| **Rich Text** | *(text clips only)* Formatting toolbar — **B** Bold · **I** Italic · **U** Underline · **S** Strikethrough — applies to selected text; **✕ fmt** removes all per-run formatting |
+| **Text editor** | *(text clips only)* Contenteditable field showing the clip text with live formatting preview |
 | **Size (vmin)** | *(text clips only)* Font size in `vmin` units (1–30) |
 | **Font** | *(text clips only)* Font family — 8 web-safe system stacks; empty = browser default |
 | **Link URL** | *(text clips only)* Optional clickable URL — rendered as `<a href="...">` on client devices; allowed schemes: `http`, `https`, `mailto`, `tel` |
@@ -118,6 +119,84 @@ When a clip is selected, the **properties bar** at the bottom shows:
 | **Glow Size (px)** | *(neon_glow only)* Peak drop-shadow radius in pixels |
 | **Fade In (s)** | Ramp-up time at the start of the clip (0 = instant) |
 | **Fade Out (s)** | Ramp-down time at the end of the clip (0 = instant) |
+
+---
+
+## Rich text formatting in text clips
+
+Individual words, characters, or any arbitrary selection within a text block can
+have independent **bold**, *italic*, underline, and ~~strikethrough~~ styling.
+
+### How to apply formatting
+
+1. Select a **text** clip on the timeline.
+2. In the properties bar, click inside the text editor and select the text you
+   want to style (click-drag or double-click a word).
+3. Click a formatting button:
+
+   | Button | Style | Keyboard shortcut (in editor) |
+   |--------|-------|-------------------------------|
+   | **B** | Bold | `Ctrl+B` / `⌘B` |
+   | *I* | Italic | `Ctrl+I` / `⌘I` |
+   | U̲ | Underline | `Ctrl+U` / `⌘U` |
+   | ~~S~~ | Strikethrough | — |
+   | **✕ fmt** | Remove all formatting | — |
+
+4. Formatting is applied immediately and the preview updates.
+5. Save the show — per-character formatting is preserved in the `.json` file.
+
+### Mixing styles in one block
+
+You can apply different styles to different parts of the same text clip.
+For example, to make the first word bold and the second italic:
+
+1. Select the first word → click **B**.
+2. Select the second word → click **I**.
+
+### Removing formatting
+
+- Select formatted text → click the active button to toggle it off.
+- To remove **all** formatting in the clip at once, click **✕ fmt**.
+
+### Backward compatibility
+
+Existing text clips that contain only plain text (created before this feature)
+continue to render exactly as before.  The new `rich_spans` field is only added
+to a clip's `params` when the user explicitly applies at least one formatting
+style.
+
+### Show file format (rich_spans field)
+
+Per-character formatting is stored as a `rich_spans` array inside
+`params`.  Each entry describes a run of text and the styles to apply:
+
+```json
+{
+  "id": "abc123",
+  "type": "text",
+  "start": 4.0,
+  "duration": 3.0,
+  "params": {
+    "text": "Hello World",
+    "color": "#ffffff",
+    "size": 6,
+    "rich_spans": [
+      { "text": "Hello",  "bold": true,  "italic": false, "underline": false, "strikethrough": false },
+      { "text": " ",      "bold": false, "italic": false, "underline": false, "strikethrough": false },
+      { "text": "World",  "bold": false, "italic": true,  "underline": false, "strikethrough": false }
+    ]
+  },
+  "fade_in": 0,
+  "fade_out": 0
+}
+```
+
+`params.text` is always kept as the plain-text concatenation of all span texts so
+that older renderers that do not understand `rich_spans` still display something
+legible.
+
+Clips without a `rich_spans` key (or with `rich_spans: null`) render as plain
+text — backward compatible with all existing show files.
 
 ---
 
@@ -325,9 +404,10 @@ compatible — older show files without it default to 120 in the editor.
 
 The **Preview** panel (left of the media area) renders an accurate scale-to-fit
 representation of how the show will appear on a real phone screen.  The inner
-canvas is sized to the **logical pixel dimensions** of the selected device and
-then scaled down to fit the available panel space while preserving the aspect
-ratio.
+canvas is sized to the **CSS logical pixel dimensions** of the selected device
+(i.e. the viewport size the device browser reports, not its physical display
+resolution) and then scaled down to fit the available panel space while
+preserving the aspect ratio.
 
 The preview panel is **280 px wide** and the media area is **480 px tall** by
 default, giving a large, easy-to-read view of the phone screen on most desktop
@@ -337,23 +417,33 @@ This means that font sizes, padding, and element proportions in the preview
 match the client device exactly — content that fits on one line on an iPhone 14
 will also fit on one line in the preview.
 
+> **CSS logical pixels vs physical pixels:** modern phones have high-DPI screens
+> with device-pixel ratios (DPR) of 2–3×.  For example, an iPhone 14 has a
+> 1170 × 2532 physical pixel display, but its CSS viewport is 390 × 844 logical
+> pixels (at DPR = 3).  All presets use the CSS logical value, which is what
+> the browser's `window.innerWidth` / `window.innerHeight` and `vmin` units
+> operate with.  Using physical pixel values here would make the preview three
+> times too large.
+
 ### Selecting a device preset
 
 Click the **preset dropdown** in the preview panel header to choose a device:
 
-| Preset | Logical size (portrait) |
-|--------|------------------------|
-| iPhone SE | 375 × 667 |
-| **iPhone 14** *(default)* | 390 × 844 |
-| iPhone 14 Plus | 428 × 926 |
-| iPhone 14 Pro Max | 430 × 932 |
-| iPhone 15 Pro | 393 × 852 |
-| iPhone 16 Pro Max | 440 × 956 |
-| Android S | 360 × 800 |
-| Android M — Pixel 7 | 412 × 915 |
-| Android L — S22 Ultra | 384 × 854 |
+| Preset | CSS logical size (portrait) | Physical DPR |
+|--------|----------------------------|--------------|
+| iPhone SE | 375 × 667 | 2× |
+| **iPhone 14** *(default)* | 390 × 844 | 3× |
+| iPhone 14 Plus | 428 × 926 | 3× |
+| iPhone 14 Pro Max | 430 × 932 | 3× |
+| iPhone 15 Pro | 393 × 852 | 3× |
+| iPhone 16 Pro Max | 440 × 956 | 3× |
+| Android S | 360 × 800 | varies |
+| Android M — Pixel 7 | 412 × 915 | 2.625× |
+| Android L — S22 Ultra | 384 × 854 | 3.75× |
 
 The active dimensions (width × height) are shown to the right of the dropdown.
+These values have been verified against the CSS viewport sizes reported by each
+device's default browser.
 
 ### Orientation toggle
 

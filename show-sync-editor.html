@@ -188,6 +188,48 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   white-space: pre-wrap; /* allow multiline text */
 }
 
+/* Rich text editor in properties panel */
+.rich-toolbar {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 3px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.rich-toolbar > button {
+  padding: 1px 7px;
+  font-size: 12px;
+  min-width: 26px;
+}
+.rich-toolbar > button.rt-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.rich-toolbar > .rt-sep { width: 1px; height: 16px; background: var(--border); margin: 0 2px; }
+.rich-editor {
+  width: 320px;
+  min-height: 56px;
+  max-height: 160px;
+  overflow-y: auto;
+  background: #2a2a2a;
+  border: 1px solid #4a4a4a;
+  border-radius: 3px;
+  color: var(--text);
+  padding: 4px 6px;
+  font-size: 13px;
+  font-family: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  outline: none;
+  line-height: 1.4;
+}
+.rich-editor:focus {
+  outline: 1px solid var(--accent);
+  border-color: var(--accent);
+}
+
 /* Video panel */
 #video-wrap  { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
 #video-player {
@@ -1107,6 +1149,138 @@ function refreshSelection() {
   });
 }
 
+// ── Rich text helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Build the DOM subtree that renders a text clip's content.
+ * If params.rich_spans is present and non-empty, individual <span> elements
+ * carry per-run bold/italic/underline/strikethrough formatting.  Otherwise
+ * falls back to a plain text <div> for backward-compat with clips that have
+ * only params.text.
+ */
+function buildRichTextDOM(params) {
+  const container = document.createElement('div');
+  container.style.whiteSpace = 'pre-wrap';
+
+  const spans = params.rich_spans;
+  if (!spans || !spans.length) {
+    container.textContent = params.text || '';
+    return container;
+  }
+
+  for (const span of spans) {
+    if (span.text === '\n') {
+      container.appendChild(document.createElement('br'));
+      continue;
+    }
+    const el = document.createElement('span');
+    el.textContent = span.text;
+    el.style.fontWeight    = span.bold          ? 'bold'        : 'normal';
+    el.style.fontStyle     = span.italic        ? 'italic'      : 'normal';
+    const deco = [];
+    if (span.underline)     deco.push('underline');
+    if (span.strikethrough) deco.push('line-through');
+    el.style.textDecoration = deco.length ? deco.join(' ') : 'none';
+    container.appendChild(el);
+  }
+  return container;
+}
+
+/**
+ * Walk a contenteditable div's DOM and extract a rich_spans array.
+ * Handles <b>, <strong>, <i>, <em>, <u>, <s>, <del>, <strike>,
+ * inline style properties, <br>, and block elements as line separators.
+ * Adjacent spans with identical formatting are merged.
+ */
+function extractRichSpans(rootEl) {
+  const spans = [];
+  let firstBlock = true;
+
+  function pushText(fmt, text) {
+    if (!text) return;
+    if (spans.length > 0) {
+      const prev = spans[spans.length - 1];
+      if (prev.bold === fmt.bold && prev.italic === fmt.italic &&
+          prev.underline === fmt.underline && prev.strikethrough === fmt.strikethrough) {
+        prev.text += text;
+        return;
+      }
+    }
+    spans.push({ text,
+                 bold: !!fmt.bold, italic: !!fmt.italic,
+                 underline: !!fmt.underline, strikethrough: !!fmt.strikethrough });
+  }
+
+  function walk(node, fmt) {
+    if (node.nodeType === Node.TEXT_NODE) { pushText(fmt, node.textContent); return; }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+    const tag = node.tagName.toLowerCase();
+    const st  = node.style || {};
+    const f   = { ...fmt };
+
+    if      (tag === 'b' || tag === 'strong')              f.bold = true;
+    else if (tag === 'i' || tag === 'em')                  f.italic = true;
+    else if (tag === 'u')                                  f.underline = true;
+    else if (tag === 's' || tag === 'del' || tag === 'strike') f.strikethrough = true;
+
+    if (st.fontWeight === 'bold'   || st.fontWeight === '700') f.bold   = true;
+    if (st.fontWeight === 'normal' || st.fontWeight === '400') f.bold   = false;
+    if (st.fontStyle  === 'italic')  f.italic = true;
+    if (st.fontStyle  === 'normal')  f.italic = false;
+    if (st.textDecoration) {
+      if (st.textDecoration.includes('underline'))    f.underline    = true;
+      if (st.textDecoration.includes('line-through')) f.strikethrough = true;
+    }
+
+    if (tag === 'br') { pushText(f, '\n'); return; }
+    if ((tag === 'div' || tag === 'p') && !firstBlock) pushText(f, '\n');
+    if (tag === 'div' || tag === 'p') firstBlock = false;
+
+    for (const child of node.childNodes) walk(child, f);
+  }
+
+  const baseFmt = { bold: false, italic: false, underline: false, strikethrough: false };
+  firstBlock = true;
+  for (const child of rootEl.childNodes) walk(child, baseFmt);
+
+  // Remove trailing newline produced by contenteditable
+  if (spans.length > 0) {
+    const last = spans[spans.length - 1];
+    if (last.text.endsWith('\n')) {
+      last.text = last.text.slice(0, -1);
+      if (!last.text) spans.pop();
+    }
+  }
+  return spans;
+}
+
+/**
+ * Populate a contenteditable .rich-editor element from a clip's params.
+ * If rich_spans is present, restores the per-run styling; otherwise sets
+ * the element's text to params.text (plain text fallback).
+ */
+function loadRichSpansIntoEditor(editorEl, params) {
+  editorEl.innerHTML = '';
+  const spans = params.rich_spans;
+  if (!spans || !spans.length) {
+    editorEl.textContent = params.text || '';
+    return;
+  }
+  for (const span of spans) {
+    if (span.text === '\n') { editorEl.appendChild(document.createElement('br')); continue; }
+    const el = document.createElement('span');
+    el.textContent = span.text;
+    el.style.fontWeight    = span.bold          ? 'bold'   : 'normal';
+    el.style.fontStyle     = span.italic        ? 'italic' : 'normal';
+    const deco = [];
+    if (span.underline)     deco.push('underline');
+    if (span.strikethrough) deco.push('line-through');
+    if (deco.length) el.style.textDecoration = deco.join(' ');
+    editorEl.appendChild(el);
+  }
+}
+
 // ── WYSIWYG Preview ───────────────────────────────────────────────────────────
 
 function renderPreview() {
@@ -1122,6 +1296,7 @@ function compositeAt(t) {
 
   let bg = null, bgOp = 0;
   let txt = null, txtColor = '#fff', txtOp = 0, txtSz = 5, txtLinkUrl = '', txtFont = '', txtAlign = 'center';
+  let txtRichSpans = null;
   let imgSrc = null, imgFit = 'contain', imgOp = 0;
   let effectTransform = '', effectFilter = '', effectClipPath = '';
 
@@ -1146,13 +1321,14 @@ function compositeAt(t) {
         bg   = params.color || '#ff0000';
         bgOp = op;
       } else if (type === 'text') {
-        txt        = params.text       || null;
-        txtColor   = params.color      || '#ffffff';
-        txtSz      = params.size       || 5;
-        txtOp      = op;
-        txtLinkUrl = params.link_url   || '';
-        txtFont    = params.font_family || '';
-        txtAlign   = params.align       || 'center';
+        txt          = params.text        || null;
+        txtColor     = params.color       || '#ffffff';
+        txtSz        = params.size        || 5;
+        txtOp        = op;
+        txtLinkUrl   = params.link_url    || '';
+        txtFont      = params.font_family || '';
+        txtAlign     = params.align       || 'center';
+        txtRichSpans = params.rich_spans  || null;
       } else if (type === 'image') {
         imgSrc = validateImageUrl(params.src || '');
         imgFit = params.fit || 'contain';
@@ -1252,20 +1428,16 @@ function compositeAt(t) {
     // txtSz is in vmin units (1 vmin = 1 % of min(viewport-w, viewport-h)).
     const pxFont = (txtSz / 100) * Math.min(dw, dh);
     while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
+    const richNode = buildRichTextDOM({ text: txt, rich_spans: txtRichSpans });
+    richNode.style.textAlign = txtAlign;
     if (txtLinkUrl) {
       const a = document.createElement('a');
       a.href = txtLinkUrl;
-      a.textContent = txt;
-      a.style.cssText = 'color:' + txtColor + ';text-decoration:underline;pointer-events:none;white-space:pre-wrap;';
-      a.style.textAlign = txtAlign;
+      a.style.cssText = 'color:' + txtColor + ';text-decoration:underline;pointer-events:none;';
+      a.appendChild(richNode);
       textEl.appendChild(a);
     } else {
-      // Preserve line breaks and spacing
-      const div = document.createElement('div');
-      div.textContent = txt;
-      div.style.whiteSpace = 'pre-wrap';
-      div.style.textAlign = txtAlign;
-      textEl.appendChild(div);
+      textEl.appendChild(richNode);
     }
     textEl.style.color      = txtColor;
     textEl.style.fontSize   = pxFont + 'px';
@@ -1633,19 +1805,92 @@ function renderPropsBar() {
 
   // Text fields (only for text clips)
   if (cl.type === 'text') {
-    const txt = document.createElement('textarea');
-    txt.rows = 3;
-    txt.value        = cl.params.text || '';
-    txt.placeholder  = 'Text content (supports multiple lines)';
-    txt.style.userSelect = 'text';
-    txt.style.width = '320px';
-    txt.addEventListener('input', () => {
-      cl.params.text = txt.value;
+    // Rich text toolbar (B / I / U / S)
+    const toolbar = document.createElement('div');
+    toolbar.className = 'rich-toolbar';
+    const sep = () => { const d = document.createElement('div'); d.className = 'rt-sep'; return d; };
+    [
+      ['bold',          'B', 'Bold',          'fontWeight:bold'],
+      ['italic',        'I', 'Italic',         'fontStyle:italic'],
+      ['underline',     'U', 'Underline',      'textDecoration:underline'],
+      ['strikethrough', 'S', 'Strikethrough',  'textDecoration:line-through'],
+    ].forEach(([cmd, lbl, title], idx) => {
+      if (idx === 2) toolbar.appendChild(sep());
+      const btn = document.createElement('button');
+      btn.textContent = lbl;
+      btn.title       = title;
+      btn.style.cssText = idx < 2
+        ? (idx === 0 ? 'font-weight:bold;' : 'font-style:italic;')
+        : (idx === 2 ? 'text-decoration:underline;' : 'text-decoration:line-through;');
+      btn.addEventListener('mousedown', e => {
+        e.preventDefault();  // keep focus in editor
+        editor.focus();
+        document.execCommand(cmd === 'bold' ? 'bold'
+                           : cmd === 'italic' ? 'italic'
+                           : cmd === 'underline' ? 'underline'
+                           : 'strikeThrough', false, null);
+        syncEditorToParams();
+        updateToolbarState();
+      });
+      toolbar.appendChild(btn);
+    });
+
+    // "Clear all formatting" button
+    toolbar.appendChild(sep());
+    const clearBtn = document.createElement('button');
+    clearBtn.textContent = '✕ fmt';
+    clearBtn.title = 'Clear all rich-text formatting';
+    clearBtn.style.cssText = 'font-size:10px;';
+    clearBtn.addEventListener('mousedown', e => {
+      e.preventDefault();
+      editor.focus();
+      document.execCommand('selectAll', false, null);
+      document.execCommand('removeFormat', false, null);
+      // Also strip any remaining spans with inline styles
+      editor.innerHTML = editor.textContent;
+      syncEditorToParams();
+      updateToolbarState();
+    });
+    toolbar.appendChild(clearBtn);
+
+    panel.appendChild(g('Rich Text', toolbar));
+
+    // Contenteditable rich text editor
+    const editor = document.createElement('div');
+    editor.contentEditable = 'true';
+    editor.className = 'rich-editor';
+    editor.setAttribute('spellcheck', 'false');
+    editor.setAttribute('data-placeholder', 'Text content (supports multiple lines)');
+    loadRichSpansIntoEditor(editor, cl.params);
+
+    function syncEditorToParams() {
+      const newSpans = extractRichSpans(editor);
+      const plainText = newSpans.map(s => s.text).join('');
+      cl.params.text = plainText;
+      const hasFormatting = newSpans.some(s => s.bold || s.italic || s.underline || s.strikethrough);
+      cl.params.rich_spans = hasFormatting ? newSpans : null;
       const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
       if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
       renderPreview();
-    });
-    panel.appendChild(g('Text', txt));
+    }
+
+    function updateToolbarState() {
+      // Reflect current selection's formatting state in the toolbar buttons
+      const btns = toolbar.querySelectorAll('button');
+      try {
+        btns[0].classList.toggle('rt-active', document.queryCommandState('bold'));
+        btns[1].classList.toggle('rt-active', document.queryCommandState('italic'));
+        btns[2].classList.toggle('rt-active', document.queryCommandState('underline'));
+        btns[3].classList.toggle('rt-active', document.queryCommandState('strikeThrough'));
+      } catch (_) {}
+    }
+
+    editor.addEventListener('input', () => { syncEditorToParams(); });
+    editor.addEventListener('keyup', () => { updateToolbarState(); });
+    editor.addEventListener('mouseup', () => { updateToolbarState(); });
+    editor.addEventListener('selectionchange', () => { updateToolbarState(); });
+
+    panel.appendChild(editor);
 
     const alignSel = document.createElement('select');
     [['left','Left'],['center','Center'],['right','Right']].forEach(([v,lbl])=>{
