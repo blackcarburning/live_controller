@@ -1809,26 +1809,33 @@ function renderPropsBar() {
     const toolbar = document.createElement('div');
     toolbar.className = 'rich-toolbar';
     const sep = () => { const d = document.createElement('div'); d.className = 'rt-sep'; return d; };
+    const BTN_CSS = {
+      bold:          'font-weight:bold;',
+      italic:        'font-style:italic;',
+      underline:     'text-decoration:underline;',
+      strikethrough: 'text-decoration:line-through;',
+    };
+    const EXEC_CMD = {
+      bold:          'bold',
+      italic:        'italic',
+      underline:     'underline',
+      strikethrough: 'strikeThrough',
+    };
     [
-      ['bold',          'B', 'Bold',          'fontWeight:bold'],
-      ['italic',        'I', 'Italic',         'fontStyle:italic'],
-      ['underline',     'U', 'Underline',      'textDecoration:underline'],
-      ['strikethrough', 'S', 'Strikethrough',  'textDecoration:line-through'],
+      ['bold',          'B', 'Bold'],
+      ['italic',        'I', 'Italic'],
+      ['underline',     'U', 'Underline'],
+      ['strikethrough', 'S', 'Strikethrough'],
     ].forEach(([cmd, lbl, title], idx) => {
       if (idx === 2) toolbar.appendChild(sep());
       const btn = document.createElement('button');
-      btn.textContent = lbl;
-      btn.title       = title;
-      btn.style.cssText = idx < 2
-        ? (idx === 0 ? 'font-weight:bold;' : 'font-style:italic;')
-        : (idx === 2 ? 'text-decoration:underline;' : 'text-decoration:line-through;');
+      btn.textContent   = lbl;
+      btn.title         = title;
+      btn.style.cssText = BTN_CSS[cmd];
       btn.addEventListener('mousedown', e => {
         e.preventDefault();  // keep focus in editor
         editor.focus();
-        document.execCommand(cmd === 'bold' ? 'bold'
-                           : cmd === 'italic' ? 'italic'
-                           : cmd === 'underline' ? 'underline'
-                           : 'strikeThrough', false, null);
+        document.execCommand(EXEC_CMD[cmd], false, null);
         syncEditorToParams();
         updateToolbarState();
       });
