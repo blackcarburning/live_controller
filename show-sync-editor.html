@@ -1626,6 +1626,10 @@ function startDrag(e, type, clipId) {
   refreshSelection();
   renderPropsBar();
 
+  if (type === 'move') {
+    seekTo(x2t(rulerX(e.clientX)));
+  }
+
   // Disable text selection while dragging for a smoother UX
   try { document.body.style.userSelect = 'none'; } catch (err) {}
 
@@ -2385,11 +2389,14 @@ function showInput() { document.getElementById('show-input').click(); }
 
 function loadMovPath(path) {
   const vid = document.getElementById('video-player');
+  if (!path) return;
   const encoded = encodeURIComponent(path);
+  show.last_video = path;
   vid.src = '/video?path=' + encoded;
   vid.load();
   vid.addEventListener('loadedmetadata', () => {
     show.media.src      = path;
+    show.last_video     = path;
     show.media.duration = vid.duration;
     document.getElementById('video-label').textContent = 'Reference Video: ' + path;
     render();
@@ -2397,6 +2404,9 @@ function loadMovPath(path) {
     try {
       fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curPath || '', data: show, last_video: path }) }).catch(()=>{});
     } catch(e){}
+  }, { once: true });
+  vid.addEventListener('error', () => {
+    document.getElementById('video-label').textContent = 'Reference Video unavailable: ' + path;
   }, { once: true });
 }
 
@@ -2420,6 +2430,7 @@ function loadMovFile(file) {
   vid.load();
   vid.addEventListener('loadedmetadata', () => {
     show.media.src      = file.name;
+    show.last_video     = file.name;
     show.media.duration = vid.duration;
     document.getElementById('video-label').textContent = 'Reference Video: ' + file.name;
     render();
@@ -2428,6 +2439,11 @@ function loadMovFile(file) {
       fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curPath || '', data: show, last_video: file.name }) }).catch(()=>{});
     } catch(e){}
   }, { once: true });
+}
+
+function isLikelyFilesystemPath(raw) {
+  if (!raw || typeof raw !== 'string') return false;
+  return /^([A-Za-z]:[\\/]|\\\\|\/)/.test(raw.trim());
 }
 
 document.getElementById('show-input').addEventListener('change', (e) => {
@@ -2445,7 +2461,7 @@ document.getElementById('show-input').addEventListener('change', (e) => {
   e.target.value = '';
 });
 
-function loadShowData(data, filename, path) {
+function loadShowData(data, filename, path, lastVideo) {
   if (data.tracks) {
     show = data;
     show.version = 2;
@@ -2477,6 +2493,11 @@ function loadShowData(data, filename, path) {
   render();
   renderPropsBar();
   preloadShowImages();
+
+  const savedVideo = (lastVideo || show.last_video || show.media?.src || '').trim();
+  if (isLikelyFilesystemPath(savedVideo)) {
+    loadMovPath(savedVideo);
+  }
 }
 
 function migrateV1(data) {
@@ -2533,6 +2554,9 @@ function saveShow() {
   const chosen = prompt('Save show as filename:', suggested);
   if (chosen === null) return;
   const name = normaliseShowFilename(chosen);
+  if (show.media && typeof show.media.src === 'string' && show.media.src.trim()) {
+    show.last_video = show.media.src;
+  }
   const json = JSON.stringify(show, null, 2);
 
   // Try server-side save first (when launched via show-sync-editor.py).
@@ -2665,7 +2689,7 @@ fetch('/api/initial')
     if (!data) return;
     if (data.recents) _recents = data.recents;
     if (data && data.show) {
-      loadShowData(data.show, data.filename || 'show.json', data.path || null);
+      loadShowData(data.show, data.filename || 'show.json', data.path || null, data.last_video || '');
     }
   })
   .catch(() => {}); // standalone file:// usage — ignore
@@ -2696,12 +2720,12 @@ function showRecentPicker(list) {
     const right = document.createElement('div');
     const loadBtn = document.createElement('button'); loadBtn.textContent = 'Load';
     loadBtn.style.marginRight = '8px';
-    loadBtn.onclick = () => { loadShowData(it.data, it.filename || fn, it.path || null); document.body.removeChild(overlay); };
+    loadBtn.onclick = () => { loadShowData(it.data, it.filename || fn, it.path || null, it.last_video || ''); document.body.removeChild(overlay); };
     const delBtn = document.createElement('button'); delBtn.textContent = 'Remove'; delBtn.onclick = (e) => { e.stopPropagation(); removeRecent(idx); overlay.remove(); showLoadRecent(); };
     right.appendChild(loadBtn); right.appendChild(delBtn);
 
     row.appendChild(left); row.appendChild(right);
-    row.onclick = () => { loadShowData(it.data, it.filename || fn, it.path || null); document.body.removeChild(overlay); };
+    row.onclick = () => { loadShowData(it.data, it.filename || fn, it.path || null, it.last_video || ''); document.body.removeChild(overlay); };
     box.appendChild(row);
   });
   const close = document.createElement('div');
