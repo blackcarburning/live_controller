@@ -2432,6 +2432,7 @@ function loadMovFile(file) {
   vid.load();
   vid.addEventListener('loadedmetadata', () => {
     show.media.src      = file.name;
+    // Blob/file-picker sources are not stable filesystem paths; do not persist as restorable last_video.
     show.last_video     = '';
     show.media.duration = vid.duration;
     document.getElementById('video-label').textContent = 'Reference Video: ' + file.name;
@@ -2564,8 +2565,8 @@ function saveShow() {
   const chosen = prompt('Save show as filename:', suggested);
   if (chosen === null) return;
   const name = normaliseShowFilename(chosen);
-  if (show.media && isLikelyFilesystemPath(show.media.src || '')) {
-    show.last_video = show.media.src;
+  if (show.media && isLikelyFilesystemPath(show.media?.src || '')) {
+    show.last_video = show.media?.src;
   } else {
     show.last_video = '';
   }
