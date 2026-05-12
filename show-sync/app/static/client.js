@@ -109,6 +109,43 @@ function _safeLinkUrl(raw) {
   return '';
 }
 
+// ── Rich text rendering helper ────────────────────────────────────────────────
+
+/**
+ * Build the DOM subtree for a text clip.
+ * If params.rich_spans is present and non-empty, individual <span> elements
+ * carry per-run bold/italic/underline/strikethrough formatting.  Otherwise
+ * falls back to a plain text <div> for backward-compat with clips that only
+ * have params.text (or the legacy cue-mode plain text string).
+ */
+function _buildRichTextDOM(params) {
+  const container = document.createElement('div');
+  container.style.whiteSpace = 'pre-wrap';
+
+  const spans = params.rich_spans;
+  if (!spans || !spans.length) {
+    container.textContent = params.text || '';
+    return container;
+  }
+
+  for (const span of spans) {
+    if (span.text === '\n') {
+      container.appendChild(document.createElement('br'));
+      continue;
+    }
+    const el = document.createElement('span');
+    el.textContent = span.text;
+    el.style.fontWeight    = span.bold          ? 'bold'        : 'normal';
+    el.style.fontStyle     = span.italic        ? 'italic'      : 'normal';
+    const deco = [];
+    if (span.underline)     deco.push('underline');
+    if (span.strikethrough) deco.push('line-through');
+    el.style.textDecoration = deco.length ? deco.join(' ') : 'none';
+    container.appendChild(el);
+  }
+  return container;
+}
+
 // ── Legacy effect rendering (cue mode) ───────────────────────────────────────
 
 function clearEffect() {
@@ -167,17 +204,20 @@ function runEffect(msg) {
       break;
 
     case 'text':
-      if (params.text) {
+      if (params.text || (params.rich_spans && params.rich_spans.length)) {
         while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
         const linkUrl = _safeLinkUrl(params.link_url || '');
+        const richNode = _buildRichTextDOM(params);
         if (linkUrl) {
           const a = document.createElement('a');
-          a.href = linkUrl;
-          a.textContent = params.text;
+          // linkUrl was validated by _safeLinkUrl(); only http/https/mailto/tel reach here.
+          if (/^(https?:|mailto:|tel:)/i.test(linkUrl)) { a.href = linkUrl; }
           a.style.cssText = 'color:' + color + ';text-decoration:underline;';
+          a.appendChild(richNode);
           textEl.appendChild(a);
         } else {
-          textEl.textContent = params.text;
+          richNode.style.color = color;
+          textEl.appendChild(richNode);
         }
         textEl.style.color    = color;
         textEl.style.fontSize = (params.size || 5) + 'vmin';
@@ -400,6 +440,7 @@ function compositeTimeline(showTime) {
 
   let bg = null, bgOp = 0;
   let txt = null, txtColor = '#fff', txtOp = 0, txtSz = 5, txtLinkUrl = '', txtAlign = 'center';
+  let txtRichSpans = null;
   let effectTransform = '', effectFilter = '', effectClipPath = '';
 
   for (const track of sorted) {
@@ -423,12 +464,13 @@ function compositeTimeline(showTime) {
         bg   = params.color || '#ff0000';
         bgOp = op;
       } else if (type === 'text') {
-        txt        = params.text     || null;
-        txtColor   = params.color    || '#ffffff';
-        txtSz      = params.size     || 5;
-        txtOp      = op;
-        txtLinkUrl = params.link_url || '';
-        txtAlign   = params.align    || 'center';
+        txt          = params.text        || null;
+        txtColor     = params.color       || '#ffffff';
+        txtSz        = params.size        || 5;
+        txtOp        = op;
+        txtLinkUrl   = params.link_url    || '';
+        txtAlign     = params.align       || 'center';
+        txtRichSpans = params.rich_spans  || null;
       } else if (type === 'strobe') {
         const rate = params.rate || 10;
         if (Math.floor(pos * rate * 2) % 2 === 0) {
@@ -517,17 +559,20 @@ function compositeTimeline(showTime) {
   // Text layer (rendered on top via z-index in join.html)
   if (txt !== null && txtOp > 0) {
     while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
-    const safeUrl = _safeLinkUrl(txtLinkUrl);
-    const textNode = document.createElement(safeUrl ? 'a' : 'div');
+    const safeUrl  = _safeLinkUrl(txtLinkUrl);
+    const richNode = _buildRichTextDOM({ text: txt, rich_spans: txtRichSpans });
+    richNode.style.color     = txtColor;
+    richNode.style.textAlign = txtAlign;
     if (safeUrl) {
-      textNode.href = safeUrl;
-      textNode.style.textDecoration = 'underline';
+      const a = document.createElement('a');
+      // safeUrl was validated by _safeLinkUrl(); only http/https/mailto/tel reach here.
+      if (/^(https?:|mailto:|tel:)/i.test(safeUrl)) { a.href = safeUrl; }
+      a.style.textDecoration = 'underline';
+      a.appendChild(richNode);
+      textEl.appendChild(a);
+    } else {
+      textEl.appendChild(richNode);
     }
-    textNode.textContent = txt;
-    textNode.style.color = txtColor;
-    textNode.style.whiteSpace = 'pre-wrap';
-    textNode.style.textAlign = txtAlign;
-    textEl.appendChild(textNode);
 
     textEl.style.color    = txtColor;
     textEl.style.fontSize = txtSz + 'vmin';

@@ -171,3 +171,43 @@ def test_scale_never_exceeds_one():
         dw, dh = current_device_dims(p, landscape=False)
         scale = compute_preview_scale(dw, dh, outer_w, outer_h)
         assert scale <= 1.0, f"{p['id']} scale {scale} > 1"
+
+
+# ── CSS logical pixel validation ──────────────────────────────────────────────
+
+def test_preset_widths_are_css_logical_pixels_not_physical():
+    """All preset widths must be consistent with CSS logical pixels.
+
+    CSS logical widths for modern phones range from ~320 px (old small Android)
+    to ~480 px (large flagship).  Physical pixel widths would be 2–4× larger
+    (1080–2160 px) and would make the preview far too large.
+    """
+    for p in DEVICE_PRESETS:
+        assert 300 <= p['w'] <= 500, (
+            f"{p['id']}: width {p['w']} is outside the expected CSS logical "
+            f"pixel range 300–500 px (physical pixel values would be 1000–2000+)"
+        )
+
+
+def test_preset_heights_are_css_logical_pixels_not_physical():
+    """All preset heights must be consistent with CSS logical pixels."""
+    for p in DEVICE_PRESETS:
+        assert 550 <= p['h'] <= 1100, (
+            f"{p['id']}: height {p['h']} is outside the expected CSS logical "
+            f"pixel range 550–1100 px"
+        )
+
+
+def test_iphone_14_css_logical_dims_match_spec():
+    """iPhone 14 CSS viewport is 390 × 844 (DPR 3, physical 1170 × 2532)."""
+    p = next(x for x in DEVICE_PRESETS if x['id'] == 'iphone-14')
+    assert p['w'] == 390, "iPhone 14 CSS logical width should be 390 px"
+    assert p['h'] == 844, "iPhone 14 CSS logical height should be 844 px"
+
+
+def test_iphone_se_css_logical_dims_match_spec():
+    """iPhone SE (2nd/3rd gen) CSS viewport is 375 × 667 (DPR 2)."""
+    p = next(x for x in DEVICE_PRESETS if x['id'] == 'iphone-se')
+    assert p['w'] == 375, "iPhone SE CSS logical width should be 375 px"
+    assert p['h'] == 667, "iPhone SE CSS logical height should be 667 px"
+
