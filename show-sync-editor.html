@@ -2391,7 +2391,6 @@ function loadMovPath(path) {
   const vid = document.getElementById('video-player');
   if (!path) return;
   const encoded = encodeURIComponent(path);
-  show.last_video = path;
   vid.src = '/video?path=' + encoded;
   vid.load();
   vid.addEventListener('loadedmetadata', () => {
@@ -2443,6 +2442,7 @@ function loadMovFile(file) {
 
 function isLikelyFilesystemPath(raw) {
   if (!raw || typeof raw !== 'string') return false;
+  // Accept Unix absolute (/...), Windows drive paths (C:\ or C:/), and UNC (\\server\share).
   return /^([A-Za-z]:[\\/]|\\\\|\/)/.test(raw.trim());
 }
 

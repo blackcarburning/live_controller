@@ -52,6 +52,11 @@ def test_resolve_saved_video_accepts_windows_path():
     assert resolve_saved_video("", show) == "C:\\\\shows\\\\clip.mov"
 
 
+def test_resolve_saved_video_accepts_windows_unc_path():
+    show = {"media": {"src": "\\\\\\\\server\\\\share\\\\clip.mov"}}
+    assert resolve_saved_video("", show) == "\\\\\\\\server\\\\share\\\\clip.mov"
+
+
 def test_save_show_sets_last_video_from_media_src():
     show = {"media": {"src": "/videos/current.mov"}}
     save_show_last_video(show)
