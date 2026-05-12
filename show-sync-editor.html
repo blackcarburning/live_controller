@@ -2430,7 +2430,7 @@ function loadMovFile(file) {
   vid.load();
   vid.addEventListener('loadedmetadata', () => {
     show.media.src      = file.name;
-    show.last_video     = file.name;
+    delete show.last_video;
     show.media.duration = vid.duration;
     document.getElementById('video-label').textContent = 'Reference Video: ' + file.name;
     render();
@@ -2444,6 +2444,11 @@ function loadMovFile(file) {
 function isLikelyFilesystemPath(raw) {
   if (!raw || typeof raw !== 'string') return false;
   return /^([A-Za-z]:[\\/]|\\\\|\/)/.test(raw.trim());
+}
+
+function resolveSavedVideoPath(lastVideo) {
+  const candidate = (lastVideo || show.last_video || show.media?.src || '').trim();
+  return isLikelyFilesystemPath(candidate) ? candidate : '';
 }
 
 document.getElementById('show-input').addEventListener('change', (e) => {
@@ -2494,8 +2499,8 @@ function loadShowData(data, filename, path, lastVideo) {
   renderPropsBar();
   preloadShowImages();
 
-  const savedVideo = (lastVideo || show.last_video || show.media?.src || '').trim();
-  if (isLikelyFilesystemPath(savedVideo)) {
+  const savedVideo = resolveSavedVideoPath(lastVideo);
+  if (savedVideo) {
     loadMovPath(savedVideo);
   }
 }
@@ -2554,8 +2559,10 @@ function saveShow() {
   const chosen = prompt('Save show as filename:', suggested);
   if (chosen === null) return;
   const name = normaliseShowFilename(chosen);
-  if (show.media && typeof show.media.src === 'string' && show.media.src.trim()) {
+  if (show.media && isLikelyFilesystemPath(show.media.src || '')) {
     show.last_video = show.media.src;
+  } else {
+    delete show.last_video;
   }
   const json = JSON.stringify(show, null, 2);
 

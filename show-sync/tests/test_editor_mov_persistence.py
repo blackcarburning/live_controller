@@ -21,8 +21,10 @@ def resolve_saved_video(last_video: str, show: dict) -> str:
 def save_show_last_video(show: dict) -> None:
     media = show.get("media") or {}
     src = media.get("src")
-    if isinstance(src, str) and src.strip():
+    if isinstance(src, str) and is_likely_filesystem_path(src):
         show["last_video"] = src
+    else:
+        show.pop("last_video", None)
 
 
 def test_resolve_saved_video_prefers_explicit_last_video():
@@ -58,6 +60,12 @@ def test_save_show_sets_last_video_from_media_src():
 
 def test_save_show_does_not_set_last_video_for_blank_src():
     show = {"media": {"src": "   "}}
+    save_show_last_video(show)
+    assert "last_video" not in show
+
+
+def test_save_show_does_not_set_last_video_for_bare_filename():
+    show = {"media": {"src": "clip.mov"}}
     save_show_last_video(show)
     assert "last_video" not in show
 
