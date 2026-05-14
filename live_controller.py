@@ -398,6 +398,7 @@ def _default_zone():
         "crop_x": 0, "crop_y": 0, "crop_w": 1920, "crop_h": 1080,
         "scale_w": -1, "scale_h": -1,
         "border_px": 0,
+        "offset_y": 0,
         "mode": "crop",
     }
 
@@ -415,6 +416,7 @@ def _migrate_zoom_config(cfg):
         # Ensure every existing zone has the newer fields
         for z in zones:
             z.setdefault("border_px", 0)
+            z.setdefault("offset_y", 0)
             z.setdefault("mode", "crop")
         return {
             "zones": zones[:NUM_ZONES],
@@ -431,6 +433,7 @@ def _migrate_zoom_config(cfg):
         "scale_w": cfg.get("scale_w", -1),
         "scale_h": cfg.get("scale_h", -1),
         "border_px": 0,
+        "offset_y": 0,
         "mode": "crop",
     }
     zones = [zone0] + [_default_zone() for _ in range(NUM_ZONES - 1)]
@@ -465,6 +468,12 @@ def _build_vf_for_zones(zoom_config):
         border = z.get("border_px", 0)
         if border > 0:
             vf += f",pad=iw+{2*border}:ih+{2*border}:{border}:{border}:black"
+        offset_y = int(z.get("offset_y", 0))
+        if offset_y != 0:
+            abs_offset = abs(offset_y)
+            pad_y = max(offset_y, 0)
+            crop_y = max(-offset_y, 0)
+            vf += f",pad=iw:ih+{abs_offset}:0:{pad_y}:black,crop=iw:ih:0:{crop_y}"
         return vf
 
     def _zone_out_size(z):
@@ -1803,6 +1812,7 @@ class MultiZoomScaleDialog(QDialog):
         self._zone_sw_sbs   = []
         self._zone_sh_sbs   = []
         self._zone_border_sbs = []
+        self._zone_offset_y_sbs = []
 
         for i in range(NUM_ZONES):
             color = _ZONE_COLORS[i]
@@ -1894,9 +1904,26 @@ class MultiZoomScaleDialog(QDialog):
             bg.addWidget(QLabel("Thickness:"), 0, 0); bg.addWidget(border_sb, 0, 1)
             border_grp.setLayout(bg)
 
+            pos_grp = QGroupBox("Final Display Position")
+            pos_grp.setStyleSheet(f"QGroupBox::title {{ color: {color}; }}")
+            pos_grp.setToolTip(
+                "Move this zone's rendered output within the final stitched display.\n"
+                "This does NOT change the source crop rectangle.")
+            pg = QGridLayout(); pg.setSpacing(4)
+            offset_y_sb = QSpinBox()
+            offset_y_sb.setRange(-5000, 5000)
+            offset_y_sb.setSuffix(" px")
+            offset_y_sb.setFixedWidth(110)
+            offset_y_sb.setToolTip(
+                "Vertical offset in the final output (+ down, - up).\n"
+                "Does not affect source crop coordinates.")
+            pg.addWidget(QLabel("Y offset:"), 0, 0); pg.addWidget(offset_y_sb, 0, 1)
+            pos_grp.setLayout(pg)
+
             right.addWidget(crop_grp)
             right.addWidget(scale_grp)
             right.addWidget(border_grp)
+            right.addWidget(pos_grp)
             right.addStretch()
             body.addLayout(right, 1)
             tl.addLayout(body, 1)
@@ -1931,6 +1958,7 @@ class MultiZoomScaleDialog(QDialog):
             self._zone_sw_sbs.append(sw_sb)
             self._zone_sh_sbs.append(sh_sb)
             self._zone_border_sbs.append(border_sb)
+            self._zone_offset_y_sbs.append(offset_y_sb)
 
         # ---- Final Preview tab ----
         final_tab = QWidget()
@@ -1988,6 +2016,7 @@ class MultiZoomScaleDialog(QDialog):
             sw = zone.get("scale_w", -1)
             sh = zone.get("scale_h", -1)
             border = max(0, zone.get("border_px", 0))
+            offset_y = int(zone.get("offset_y", 0))
             mode   = zone.get("mode", "crop")
             self._zone_x_sbs[i].setValue(x)
             self._zone_y_sbs[i].setValue(y)
@@ -1996,6 +2025,7 @@ class MultiZoomScaleDialog(QDialog):
             self._zone_sw_sbs[i].setValue(sw)
             self._zone_sh_sbs[i].setValue(sh)
             self._zone_border_sbs[i].setValue(border)
+            self._zone_offset_y_sbs[i].setValue(offset_y)
             if mode == "stretch":
                 self._zone_mode_stretch_rbs[i].setChecked(True)
             else:
@@ -2025,6 +2055,7 @@ class MultiZoomScaleDialog(QDialog):
                 "scale_w":   self._zone_sw_sbs[i].value(),
                 "scale_h":   self._zone_sh_sbs[i].value(),
                 "border_px": self._zone_border_sbs[i].value(),
+                "offset_y":  self._zone_offset_y_sbs[i].value(),
                 "mode":      mode,
             })
         snapshot_path = self._cfg.get("frame_snapshot_path", "")
@@ -2119,6 +2150,7 @@ class MultiZoomScaleDialog(QDialog):
             cw, ch = max(1, z["crop_w"]), max(1, z["crop_h"])
             sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
             border = z.get("border_px", 0)
+            offset_y = int(z.get("offset_y", 0))
             pm = self._full_pixmap.copy(cx, cy, cw, ch)
             if sw > 0 and sh > 0:
                 pm = pm.scaled(sw, sh,
@@ -2131,6 +2163,13 @@ class MultiZoomScaleDialog(QDialog):
                 bp.drawPixmap(border, border, pm)
                 bp.end()
                 pm = bordered
+            if offset_y != 0:
+                shifted = QPixmap(pm.width(), pm.height())
+                shifted.fill(QColor("black"))
+                sp = QPainter(shifted)
+                sp.drawPixmap(0, offset_y, pm)
+                sp.end()
+                pm = shifted
             pieces.append(pm)
 
         if direction == "vertical":
@@ -3387,9 +3426,11 @@ class LiveController(QWidget):
                 cw, ch = z.get("crop_w", 0), z.get("crop_h", 0)
                 sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
                 border = z.get("border_px", 0)
+                offset_y = int(z.get("offset_y", 0))
                 scale_txt = f"→{sw}×{sh}" if sw > 0 and sh > 0 else ""
                 border_txt = f" +{border}b" if border > 0 else ""
-                parts.append(f"Z{idx+1}:{cw}×{ch}{scale_txt}{border_txt}")
+                offset_txt = f" y{offset_y:+d}" if offset_y != 0 else ""
+                parts.append(f"Z{idx+1}:{cw}×{ch}{scale_txt}{border_txt}{offset_txt}")
             dir_sym = "↔" if direction != "vertical" else "↕"
             self.zoom_status_label.setText(f"{dir_sym} " + "  ".join(parts))
             self.zoom_status_label.setStyleSheet("font-size: 10px; color: #00b894; font-style: italic;")
