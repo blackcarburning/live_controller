@@ -6,6 +6,11 @@ here rather than imported from live_controller (which has PyQt top-level
 imports that would fail in headless CI).
 """
 
+import json
+import os
+import time
+import uuid
+
 # ---------------------------------------------------------------------------
 # Verbatim copy of the standalone helpers — keep in sync with live_controller.py
 # ---------------------------------------------------------------------------
@@ -169,6 +174,28 @@ def _build_vf_for_zones(zoom_config):
     stack_part = f"{stack_inputs}{stack_fn}=inputs={n}{_composite_suffix()},setsar=1"
     graph = ";".join([split_part] + crop_parts + [stack_part])
     return f"lavfi=[{graph}]"
+
+
+def _make_unique_mpv_pipe_name(prefix):
+    return fr'\\.\pipe\{prefix}_{os.getpid()}_{uuid.uuid4().hex}'
+
+
+def _send_mpv_ipc_command(ipc_path, command, max_attempts=2, retry_delay=0.05):
+    if not ipc_path:
+        return False, "Missing IPC pipe path."
+    payload = json.dumps({"command": command}, ensure_ascii=False) + "\n"
+    last_error = "Unknown IPC error."
+    attempts = max(1, max_attempts)
+    for i in range(attempts):
+        try:
+            with open(ipc_path, "w", encoding="utf-8") as f:
+                f.write(payload)
+            return True, ""
+        except Exception as exc:
+            last_error = str(exc)
+            if i < attempts - 1:
+                time.sleep(retry_delay)
+    return False, last_error
 
 
 # ---------------------------------------------------------------------------
@@ -467,3 +494,34 @@ def test_old_single_zone_format_disabled_returns_none():
     old = {"enabled": False, "crop_x": 0, "crop_y": 0,
            "crop_w": 1920, "crop_h": 1080}
     assert _build_vf_for_zones(old) is None
+
+
+def test_make_unique_mpv_pipe_name_uses_prefix():
+    pipe_path = _make_unique_mpv_pipe_name("mpv_test")
+    assert pipe_path.startswith(r"\\.\pipe\mpv_test_")
+
+
+def test_make_unique_mpv_pipe_name_is_unique():
+    a = _make_unique_mpv_pipe_name("mpv_test")
+    b = _make_unique_mpv_pipe_name("mpv_test")
+    assert a != b
+
+
+def test_send_mpv_ipc_command_missing_path_returns_error():
+    ok, err = _send_mpv_ipc_command("", ["quit"])
+    assert ok is False
+    assert "Missing IPC pipe path" in err
+
+
+def test_send_mpv_ipc_command_retries_requested_attempts(monkeypatch):
+    calls = {"count": 0}
+
+    def _always_fail(*_args, **_kwargs):
+        calls["count"] += 1
+        raise OSError("pipe unavailable")
+
+    monkeypatch.setattr("builtins.open", _always_fail)
+    ok, err = _send_mpv_ipc_command(r"\\.\pipe\missing_pipe", ["quit"], max_attempts=3, retry_delay=0)
+    assert ok is False
+    assert "pipe unavailable" in err
+    assert calls["count"] == 3

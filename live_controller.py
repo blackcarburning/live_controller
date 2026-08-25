@@ -605,6 +605,30 @@ def _build_vf_for_zones(zoom_config):
     return f"lavfi=[{graph}]"
 
 
+def _make_unique_mpv_pipe_name(prefix):
+    """Build a unique Windows named-pipe path for mpv IPC."""
+    return fr'\\.\pipe\{prefix}_{os.getpid()}_{uuid.uuid4().hex}'
+
+
+def _send_mpv_ipc_command(ipc_path, command, max_attempts=2, retry_delay=0.05):
+    """Send a JSON IPC command to an mpv named pipe with bounded retries."""
+    if not ipc_path:
+        return False, "Missing IPC pipe path."
+    payload = json.dumps({"command": command}, ensure_ascii=False) + "\n"
+    last_error = "Unknown IPC error."
+    attempts = max(1, max_attempts)
+    for i in range(attempts):
+        try:
+            with open(ipc_path, "w", encoding="utf-8") as f:
+                f.write(payload)
+            return True, ""
+        except Exception as exc:
+            last_error = str(exc)
+            if i < attempts - 1:
+                time.sleep(retry_delay)
+    return False, last_error
+
+
 class MidiSyncWorker(QThread):
     """The main worker thread for handling synchronized mpv playback and MIDI clock output."""
     finished = pyqtSignal()          # Emitted when playback is finished.
@@ -1801,7 +1825,7 @@ class MultiZoomScaleDialog(QDialog):
     _COMP_TAB_INDEX  = NUM_ZONES      # "Composite Output"
     _FINAL_TAB_INDEX = NUM_ZONES + 1  # "Final Preview"
 
-    def __init__(self, current_config, parent=None):
+    def __init__(self, current_config, output_display_num=DEFAULT_VIDEO_SCREEN_NUMBER, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Multi-Zone Crop / Stretch Compositor")
         self.setModal(True)
@@ -1809,13 +1833,25 @@ class MultiZoomScaleDialog(QDialog):
 
         self._cfg = _migrate_zoom_config(current_config)
         self.result_config = None
+        self._output_display_num = max(1, int(output_display_num))
 
         # mpv / capture state (shared across all zone canvases)
         self._mpv_process = None
         self._ipc_path = None
+        self._selected_video_path = None
         self._temp_dir = tempfile.mkdtemp(prefix="lc_mzoom_")
         self._frame_path = os.path.join(self._temp_dir, "frame.png")
         self._full_pixmap = None      # Most-recently captured video frame
+
+        # Dedicated mpv process for fullscreen external preview on final-output display
+        self._ext_preview_process = None
+        self._ext_preview_ipc_path = None
+        self._ext_preview_open = False
+        self._ext_preview_paused = True
+        self._ext_preview_source_path = None
+        self._ext_preview_start_pos = 0.0
+        self._ext_preview_wall_start = None
+        self._ext_preview_vf = None
 
         self._updating = False        # Guard for circular signal updates
 
@@ -1824,6 +1860,12 @@ class MultiZoomScaleDialog(QDialog):
         self._update_timer.setSingleShot(True)
         self._update_timer.setInterval(120)  # ms — short delay to smooth drag interactions
         self._update_timer.timeout.connect(self._do_composite_update)
+
+        # Additional debounce for external-preview vf updates while dragging controls
+        self._ext_preview_update_timer = QTimer(self)
+        self._ext_preview_update_timer.setSingleShot(True)
+        self._ext_preview_update_timer.setInterval(220)
+        self._ext_preview_update_timer.timeout.connect(self._apply_external_preview_update)
 
         self._setup_ui()
         self._load_config_to_ui()
@@ -1860,6 +1902,29 @@ class MultiZoomScaleDialog(QDialog):
         file_bar.addWidget(self._pause_btn)
         file_bar.addWidget(self._capture_btn)
         root.addLayout(file_bar)
+
+        ext_bar = QHBoxLayout()
+        ext_bar.addWidget(QLabel("External preview:"))
+        self._ext_source_combo = QComboBox()
+        self._ext_source_combo.addItems(["Frame (captured/restored)", "Video (selected source)"])
+        self._ext_source_combo.setToolTip(
+            "Choose what to preview on the final-output display selected in the main window.\n"
+            "Frame mode loops the captured/restored snapshot. Video mode plays the selected source video.\n"
+            "This preview is separate from actual live playback.")
+        self._ext_source_combo.currentIndexChanged.connect(self._on_external_source_mode_changed)
+        self._ext_toggle_btn = QPushButton("Open External Preview")
+        self._ext_toggle_btn.setToolTip(
+            "Open/close a dedicated fullscreen mpv preview on the selected final-output display.\n"
+            "Uses the same composite filter chain as live playback and does not start automatically.")
+        self._ext_toggle_btn.clicked.connect(self._toggle_external_preview)
+        self._ext_preview_label = QLabel(f"Target display: {self._output_display_num}")
+        self._ext_preview_label.setStyleSheet("color: #888; font-style: italic;")
+        ext_bar.addWidget(self._ext_source_combo)
+        ext_bar.addWidget(self._ext_toggle_btn)
+        ext_bar.addWidget(self._ext_preview_label)
+        ext_bar.addStretch()
+        root.addLayout(ext_bar)
+        self._update_external_source_availability()
 
         # ---- Stitch direction ----
         stitch_bar = QHBoxLayout()
@@ -2255,7 +2320,8 @@ class MultiZoomScaleDialog(QDialog):
         self._tabs.currentChanged.connect(self._on_tab_changed)
 
         # ---- Status bar + OK / Cancel ----
-        self._status = QLabel("Select a video to begin, or adjust values directly.")
+        self._status = QLabel(
+            "Select a video/capture frame to edit. External preview is optional and opens on the selected final-output display.")
         self._status.setStyleSheet("font-style: italic; color: #888; font-size: 12px;")
         root.addWidget(self._status)
 
@@ -2494,6 +2560,7 @@ class MultiZoomScaleDialog(QDialog):
             self._rebuild_composite_canvas()
         elif current == self._FINAL_TAB_INDEX:
             self._refresh_final_preview()
+        self._schedule_external_preview_update()
 
     def _on_tab_changed(self, index):
         """Auto-rebuild when the user switches to Composite Output or Final Preview."""
@@ -2718,14 +2785,18 @@ class MultiZoomScaleDialog(QDialog):
         )
         if not path:
             return
+        self._selected_video_path = path
+        self._update_external_source_availability()
         self._video_label.setText(os.path.basename(path))
         self._video_label.setStyleSheet("color: #d4d4d4;")
         self._launch_mpv(path)
+        if self._ext_preview_open and self._is_external_source_video():
+            self._ext_preview_start_pos = 0.0
+            self._schedule_external_preview_update()
 
     def _launch_mpv(self, video_path):
         self._stop_mpv()
-        socket_name = f"mpv_mzoom_{int(time.time())}"
-        self._ipc_path = fr'\\.\pipe\{socket_name}'
+        self._ipc_path = _make_unique_mpv_pipe_name("mpv_mzoom")
         cmd = [
             MPV_PATH,
             f"--input-ipc-server={self._ipc_path}",
@@ -2749,20 +2820,26 @@ class MultiZoomScaleDialog(QDialog):
         except Exception as exc:
             self._status.setText(f"Error launching mpv: {exc}")
 
-    def _send_ipc(self, json_str):
-        if not self._ipc_path:
-            return
-        try:
-            with open(self._ipc_path, "w", encoding="utf-8") as f:
-                f.write(json_str + "\n")
-        except Exception as exc:
-            self._status.setText(f"IPC error: {exc}")
+    def _send_ipc(self, command, max_attempts=2):
+        ok, err = _send_mpv_ipc_command(self._ipc_path, command, max_attempts=max_attempts)
+        if not ok:
+            self._status.setText(f"IPC error: {err}")
+        return ok
 
     def _play(self):
-        self._send_ipc('{ "command": ["set_property", "pause", false] }')
+        self._send_ipc(["set_property", "pause", False])
+        self._ext_preview_paused = False
+        self._apply_external_preview_playback_state()
+        if self._ext_preview_open and self._is_external_source_video():
+            self._send_external_preview_command(["set_property", "pause", False], tolerate_closed=True)
 
     def _pause(self):
-        self._send_ipc('{ "command": ["set_property", "pause", true] }')
+        self._send_ipc(["set_property", "pause", True])
+        self._snapshot_external_preview_position()
+        self._ext_preview_paused = True
+        self._apply_external_preview_playback_state()
+        if self._ext_preview_open and self._is_external_source_video():
+            self._send_external_preview_command(["set_property", "pause", True], tolerate_closed=True)
 
     def _capture_frame(self):
         self._pause()
@@ -2770,7 +2847,7 @@ class MultiZoomScaleDialog(QDialog):
 
     def _do_capture(self):
         safe_path = self._frame_path.replace("\\", "/")
-        self._send_ipc(f'{{ "command": ["screenshot-to-file", "{safe_path}", "video"] }}')
+        self._send_ipc(["screenshot-to-file", safe_path, "video"])
         QTimer.singleShot(600, self._load_frame)
 
     def _load_frame(self):
@@ -2814,15 +2891,189 @@ class MultiZoomScaleDialog(QDialog):
     def _stop_mpv(self):
         if self._mpv_process and self._mpv_process.poll() is None:
             if self._ipc_path:
-                try:
-                    with open(self._ipc_path, "w", encoding="utf-8") as f:
-                        f.write('{ "command": ["quit"] }\n')
-                    time.sleep(0.2)
-                except Exception:
-                    pass
+                _send_mpv_ipc_command(self._ipc_path, ["quit"], max_attempts=2)
+                time.sleep(0.2)
             self._mpv_process.terminate()
         self._mpv_process = None
         self._ipc_path = None
+
+    def _is_external_source_video(self):
+        return self._ext_source_combo.currentIndex() == 1
+
+    def _update_external_source_availability(self):
+        model = self._ext_source_combo.model()
+        video_item = model.item(1)
+        has_video = bool(self._selected_video_path)
+        if video_item is not None:
+            video_item.setEnabled(has_video)
+        if not has_video and self._ext_source_combo.currentIndex() == 1:
+            self._ext_source_combo.setCurrentIndex(0)
+
+    def _on_external_source_mode_changed(self, _index):
+        if self._ext_preview_open:
+            self._schedule_external_preview_update()
+
+    def _toggle_external_preview(self):
+        if self._ext_preview_open:
+            self._close_external_preview("External preview closed.")
+            return
+        self._open_external_preview()
+
+    def _get_external_preview_frame_path(self):
+        if self._cfg.get("frame_snapshot_path") and os.path.isfile(self._cfg["frame_snapshot_path"]):
+            return self._cfg["frame_snapshot_path"]
+        if os.path.isfile(self._frame_path):
+            return self._frame_path
+        return None
+
+    def _get_external_preview_source_path(self):
+        if self._is_external_source_video():
+            return self._selected_video_path
+        return self._get_external_preview_frame_path()
+
+    def _send_external_preview_command(self, command, max_attempts=2, tolerate_closed=False):
+        if self._ext_preview_process and self._ext_preview_process.poll() is not None:
+            if not tolerate_closed:
+                self._close_external_preview("External preview was closed.")
+            return False
+        ok, err = _send_mpv_ipc_command(self._ext_preview_ipc_path, command, max_attempts=max_attempts)
+        if not ok and not tolerate_closed:
+            self._status.setText(f"External preview IPC error: {err}")
+        return ok
+
+    def _snapshot_external_preview_position(self):
+        if self._is_external_source_video() and not self._ext_preview_paused and self._ext_preview_wall_start is not None:
+            self._ext_preview_start_pos = max(0.0, time.time() - self._ext_preview_wall_start)
+
+    def _apply_external_preview_playback_state(self):
+        if self._is_external_source_video() and not self._ext_preview_paused:
+            self._ext_preview_wall_start = time.time() - max(0.0, self._ext_preview_start_pos)
+        else:
+            self._ext_preview_wall_start = None
+
+    def _update_external_preview_button(self):
+        self._ext_toggle_btn.setText("Close External Preview" if self._ext_preview_open else "Open External Preview")
+
+    def _open_external_preview(self):
+        self._snapshot_external_preview_position()
+        source_path = self._get_external_preview_source_path()
+        if self._is_external_source_video() and not source_path:
+            self._status.setText("Select a source video before opening Video external preview.")
+            return
+        if not self._is_external_source_video() and not source_path:
+            self._status.setText("Capture or restore a frame before opening Frame external preview.")
+            return
+
+        self._close_external_preview()
+        self._ext_preview_ipc_path = _make_unique_mpv_pipe_name("mpv_mzoom_external")
+        self._ext_preview_source_path = source_path
+        vf_str = _build_vf_for_zones(self._collect_config())
+        self._ext_preview_vf = vf_str or ""
+
+        cmd = [
+            MPV_PATH,
+            f"--input-ipc-server={self._ext_preview_ipc_path}",
+            "--fullscreen",
+            f"--fs-screen={self._output_display_num}",
+            "--no-osd-bar",
+            "--no-osc",
+            "--no-input-default-bindings",
+            "--really-quiet",
+            "--loop-file=inf",
+            "--keep-open=yes",
+            source_path,
+        ]
+        if not self._is_external_source_video():
+            cmd.insert(-1, "--image-display-duration=inf")
+        if self._ext_preview_paused:
+            cmd.insert(-1, "--pause")
+        if self._ext_preview_vf:
+            cmd.insert(-1, f"--vf={self._ext_preview_vf}")
+
+        try:
+            self._ext_preview_process = subprocess.Popen(cmd)
+        except Exception as exc:
+            self._ext_preview_process = None
+            self._ext_preview_ipc_path = None
+            self._status.setText(f"Could not open external preview mpv: {exc}")
+            return
+
+        self._ext_preview_open = True
+        self._ext_preview_start_pos = max(0.0, self._ext_preview_start_pos)
+        self._apply_external_preview_playback_state()
+        self._update_external_preview_button()
+        src_label = "video" if self._is_external_source_video() else "captured frame"
+        self._status.setText(
+            f"External preview opened on display {self._output_display_num} using {src_label}. "
+            "This is a separate preview process from live playback.")
+        if self._is_external_source_video() and self._ext_preview_start_pos > 0:
+            QTimer.singleShot(
+                300,
+                lambda: self._send_external_preview_command(
+                    ["set_property", "time-pos", max(0.0, self._ext_preview_start_pos)],
+                    max_attempts=8,
+                    tolerate_closed=True))
+        QTimer.singleShot(350, self._apply_external_preview_update)
+
+    def _close_external_preview(self, status_text=None):
+        self._snapshot_external_preview_position()
+        if self._ext_preview_process and self._ext_preview_process.poll() is None:
+            self._send_external_preview_command(["quit"], max_attempts=2, tolerate_closed=True)
+            try:
+                self._ext_preview_process.wait(timeout=0.2)
+            except subprocess.TimeoutExpired:
+                self._ext_preview_process.terminate()
+        self._ext_preview_process = None
+        self._ext_preview_ipc_path = None
+        self._ext_preview_open = False
+        self._ext_preview_source_path = None
+        self._ext_preview_vf = None
+        self._ext_preview_wall_start = None
+        self._update_external_preview_button()
+        if status_text:
+            self._status.setText(status_text)
+
+    def _schedule_external_preview_update(self):
+        if not self._ext_preview_open:
+            return
+        self._ext_preview_update_timer.start()
+
+    def _apply_external_preview_update(self):
+        if not self._ext_preview_open:
+            return
+        self._snapshot_external_preview_position()
+        if self._ext_preview_process and self._ext_preview_process.poll() is not None:
+            self._close_external_preview("External preview was closed.")
+            return
+
+        source_path = self._get_external_preview_source_path()
+        if not source_path:
+            mode = "video" if self._is_external_source_video() else "frame"
+            self._status.setText(f"External preview update skipped: no {mode} source available.")
+            return
+
+        cfg = self._collect_config()
+        vf_str = _build_vf_for_zones(cfg) or ""
+        source_changed = source_path != self._ext_preview_source_path
+        if source_changed:
+            self._ext_preview_source_path = source_path
+            load_mode = "replace"
+            if not self._send_external_preview_command(["loadfile", source_path, load_mode], max_attempts=8, tolerate_closed=True):
+                self._open_external_preview()
+                return
+            if self._is_external_source_video():
+                QTimer.singleShot(120, lambda: self._send_external_preview_command(["set_property", "time-pos", max(0.0, self._ext_preview_start_pos)], tolerate_closed=True))
+
+        if vf_str != self._ext_preview_vf:
+            # mpv accepts runtime filter updates via the vf property. If IPC update fails,
+            # perform a controlled restart to keep preview reliable during edits.
+            if not self._send_external_preview_command(["set_property", "vf", vf_str], max_attempts=3, tolerate_closed=True):
+                self._open_external_preview()
+                return
+            self._ext_preview_vf = vf_str
+
+        self._send_external_preview_command(["set_property", "pause", bool(self._ext_preview_paused)], tolerate_closed=True)
+        self._apply_external_preview_playback_state()
 
     # ------------------------------------------------------------------
     # Dialog accept / reject
@@ -2830,14 +3081,17 @@ class MultiZoomScaleDialog(QDialog):
 
     def _ok(self):
         self.result_config = self._collect_config()
+        self._close_external_preview()
         self._stop_mpv()
         self.accept()
 
     def _cancel(self):
+        self._close_external_preview()
         self._stop_mpv()
         self.reject()
 
     def closeEvent(self, event):
+        self._close_external_preview()
         self._stop_mpv()
         try:
             shutil.rmtree(self._temp_dir, ignore_errors=True)
@@ -3946,7 +4200,15 @@ class LiveController(QWidget):
 
     def open_zoom_dialog(self):
         """Opens the MultiZoomScaleDialog for configuring multi-zone crop/stretch."""
-        dialog = MultiZoomScaleDialog(self.zoom_config, parent=self)
+        try:
+            output_display_num = int(self.display_combo.currentText())
+        except (TypeError, ValueError):
+            output_display_num = DEFAULT_VIDEO_SCREEN_NUMBER
+        dialog = MultiZoomScaleDialog(
+            self.zoom_config,
+            output_display_num=output_display_num,
+            parent=self,
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.result_config is not None:
             self.zoom_config = dialog.result_config
             self.save_zoom_config()
