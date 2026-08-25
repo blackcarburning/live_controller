@@ -1653,6 +1653,10 @@ class StretchCanvas(QWidget):
         """Return (scale_w, scale_h)."""
         return self._out_w, self._out_h
 
+    def get_source_size(self):
+        """Return (crop_w, crop_h) — the natural source dimensions of the displayed image."""
+        return self._crop_w, self._crop_h
+
     # ------------------------------------------------------------------
     # Internal geometry
     # ------------------------------------------------------------------
@@ -1792,6 +1796,10 @@ class MultiZoomScaleDialog(QDialog):
     A *Final Preview* tab composites all enabled zones into one image showing
     exactly how the final stitched output will look.
     """
+
+    # Tab indices — zone tabs occupy 0 … NUM_ZONES-1
+    _COMP_TAB_INDEX  = NUM_ZONES      # "Composite Output"
+    _FINAL_TAB_INDEX = NUM_ZONES + 1  # "Final Preview"
 
     def __init__(self, current_config, parent=None):
         super().__init__(parent)
@@ -2106,10 +2114,8 @@ class MultiZoomScaleDialog(QDialog):
         self._comp_stacked.addWidget(self._comp_stretch_canvas) # index 1
         comp_body.addWidget(self._comp_stacked, 3)
 
-        self._comp_mode_crop_rb.toggled.connect(
-            lambda checked: self._comp_stacked.setCurrentIndex(0) if checked else None)
         self._comp_mode_stretch_rb.toggled.connect(
-            lambda checked: self._comp_stacked.setCurrentIndex(1) if checked else None)
+            lambda checked: self._comp_stacked.setCurrentIndex(1 if checked else 0))
 
         comp_right = QVBoxLayout()
         comp_right.setSpacing(4)
@@ -2456,8 +2462,7 @@ class MultiZoomScaleDialog(QDialog):
         sw = self._comp_sw_sb.value()
         sh = self._comp_sh_sb.value()
         # Use composite source dimensions as fallback when value is -1
-        src_w = self._comp_stretch_canvas._crop_w
-        src_h = self._comp_stretch_canvas._crop_h
+        src_w, src_h = self._comp_stretch_canvas.get_source_size()
         self._comp_stretch_canvas.set_output(
             sw if sw > 0 else src_w,
             sh if sh > 0 else src_h,
@@ -2485,20 +2490,16 @@ class MultiZoomScaleDialog(QDialog):
     def _do_composite_update(self):
         """Debounced handler: rebuild composite canvases and refresh the final preview."""
         current = self._tabs.currentIndex()
-        comp_idx   = NUM_ZONES          # "Composite Output" tab
-        final_idx  = NUM_ZONES + 1      # "Final Preview" tab
-        if current == comp_idx:
+        if current == self._COMP_TAB_INDEX:
             self._rebuild_composite_canvas()
-        elif current == final_idx:
+        elif current == self._FINAL_TAB_INDEX:
             self._refresh_final_preview()
 
     def _on_tab_changed(self, index):
         """Auto-rebuild when the user switches to Composite Output or Final Preview."""
-        comp_idx  = NUM_ZONES
-        final_idx = NUM_ZONES + 1
-        if index == comp_idx:
+        if index == self._COMP_TAB_INDEX:
             self._rebuild_composite_canvas()
-        elif index == final_idx:
+        elif index == self._FINAL_TAB_INDEX:
             self._refresh_final_preview()
 
     def _reset_composite_crop(self):
