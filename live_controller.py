@@ -1876,8 +1876,15 @@ class MultiZoomScaleDialog(QDialog):
         # Additional debounce for external-preview vf updates while dragging controls
         self._ext_preview_update_timer = QTimer(self)
         self._ext_preview_update_timer.setSingleShot(True)
-        self._ext_preview_update_timer.setInterval(220)
+        self._ext_preview_update_timer.setInterval(350)
         self._ext_preview_update_timer.timeout.connect(self._apply_external_preview_update)
+
+        # Flag and timer to guard against duplicate reopen calls during close/open cycle
+        self._ext_preview_reopen_pending = False
+        self._ext_preview_reopen_timer = QTimer(self)
+        self._ext_preview_reopen_timer.setSingleShot(True)
+        self._ext_preview_reopen_timer.setInterval(50)
+        self._ext_preview_reopen_timer.timeout.connect(self._do_reopen_external_preview)
 
         self._setup_ui()
         self._load_config_to_ui()
@@ -3032,6 +3039,9 @@ class MultiZoomScaleDialog(QDialog):
         QTimer.singleShot(350, self._apply_external_preview_update)
 
     def _close_external_preview(self, status_text=None):
+        self._ext_preview_update_timer.stop()
+        self._ext_preview_reopen_timer.stop()
+        self._ext_preview_reopen_pending = False
         self._snapshot_external_preview_position()
         if self._ext_preview_process and self._ext_preview_process.poll() is None:
             self._send_external_preview_command(["quit"], max_attempts=2, tolerate_closed=True)
@@ -3055,44 +3065,32 @@ class MultiZoomScaleDialog(QDialog):
         self._ext_preview_update_timer.start()
 
     def _apply_external_preview_update(self):
+        """Called after the debounce timer fires.  Restart the external preview
+        process so the updated filter configuration is applied at launch, which
+        is the only reliable way to force mpv to redraw paused/still-frame
+        content with the new crop/stretch/zone settings."""
         if not self._ext_preview_open:
             return
-        self._snapshot_external_preview_position()
+        if self._ext_preview_reopen_pending:
+            # A restart is already scheduled; don't stack another one.
+            return
         if self._ext_preview_process and self._ext_preview_process.poll() is not None:
+            # Process died on its own – treat as a normal close.
             self._close_external_preview("External preview was closed.")
             return
+        self._ext_preview_reopen_pending = True
+        # Use a tiny timer so the call stack unwinds before we close+reopen.
+        self._ext_preview_reopen_timer.start()
 
-        source_path = self._get_external_preview_source_path()
-        if not source_path:
-            mode = "video" if self._is_external_source_video() else "frame"
-            self._status.setText(f"External preview update skipped: no {mode} source available.")
+    def _do_reopen_external_preview(self):
+        """Execute the close-then-reopen cycle that reliably refreshes the
+        external preview after configuration changes."""
+        self._ext_preview_reopen_pending = False
+        if not self._ext_preview_open:
             return
-
-        cfg = self._collect_config()
-        vf_str = _build_vf_for_zones(cfg) or ""
-        source_changed = source_path != self._ext_preview_source_path
-        if source_changed:
-            self._ext_preview_source_path = source_path
-            load_mode = "replace"
-            if not self._send_external_preview_command(["loadfile", source_path, load_mode], max_attempts=8, tolerate_closed=True):
-                self._open_external_preview()
-                return
-            if self._is_external_source_video():
-                QTimer.singleShot(120, lambda: self._send_external_preview_command(["set_property", "time-pos", max(0.0, self._ext_preview_start_pos)], tolerate_closed=True))
-
-        if vf_str != self._ext_preview_vf:
-            # Use the vf command (set/clr) rather than set_property so both
-            # non-empty filter graphs and the no-filter case are handled correctly.
-            if not self._send_external_preview_command(_ext_preview_vf_command(vf_str), max_attempts=3, tolerate_closed=True):
-                self._open_external_preview()
-                return
-            self._ext_preview_vf = vf_str
-            # Force a frame re-render so that paused video and still images
-            # immediately reflect the new filter chain without needing a seek.
-            self._send_external_preview_command(["seek", 0, "relative+exact"], tolerate_closed=True)
-
-        self._send_external_preview_command(["set_property", "pause", bool(self._ext_preview_paused)], tolerate_closed=True)
-        self._apply_external_preview_playback_state()
+        # _open_external_preview calls _snapshot_external_preview_position and
+        # _close_external_preview internally, so no extra snapshot is needed here.
+        self._open_external_preview()
 
     # ------------------------------------------------------------------
     # Dialog accept / reject
