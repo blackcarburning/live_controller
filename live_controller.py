@@ -404,11 +404,38 @@ def _default_zone():
 
 
 def _migrate_zoom_config(cfg):
-    """Return a guaranteed multi-zone config dict, migrating old single-zone format if needed."""
+    """Return a guaranteed multi-zone config dict, migrating old single-zone format if needed.
+
+    New fields added for output-resolution simulation and whole-composite transform:
+      out_w / out_h        — simulated output canvas size (-1 = legacy, no padding in mpv)
+      out_sim_enabled      — whether to apply output canvas padding in mpv playback
+      comp_crop_x/y/w/h   — whole-composite crop (comp_crop_w=0 means no crop)
+      comp_scale_w/h       — whole-composite output scale (-1 = no scale)
+
+    Backward-compatibility: existing configs without these fields get out_w=-1/out_h=-1
+    and comp_crop_w=0/comp_scale_w=-1 so that mpv playback is unchanged.
+    """
+    def _backfill_composite(d):
+        d.setdefault("out_w", -1)
+        d.setdefault("out_h", -1)
+        d.setdefault("out_sim_enabled", False)
+        d.setdefault("comp_crop_x", 0)
+        d.setdefault("comp_crop_y", 0)
+        d.setdefault("comp_crop_w", 0)
+        d.setdefault("comp_crop_h", 0)
+        d.setdefault("comp_scale_w", -1)
+        d.setdefault("comp_scale_h", -1)
+
     if not cfg:
         zones = [_default_zone() for _ in range(NUM_ZONES)]
         zones[0]["enabled"] = True  # Enable zone 0 by default
-        return {"zones": zones, "stack_direction": "horizontal"}
+        result = {"zones": zones, "stack_direction": "horizontal",
+                  "frame_snapshot_path": "",
+                  "out_w": 1920, "out_h": 1080, "out_sim_enabled": False,
+                  "comp_crop_x": 0, "comp_crop_y": 0,
+                  "comp_crop_w": 0, "comp_crop_h": 0,
+                  "comp_scale_w": -1, "comp_scale_h": -1}
+        return result
     if "zones" in cfg:
         zones = list(cfg["zones"])
         while len(zones) < NUM_ZONES:
@@ -418,11 +445,19 @@ def _migrate_zoom_config(cfg):
             z.setdefault("border_px", 0)
             z.setdefault("offset_y", 0)
             z.setdefault("mode", "crop")
-        return {
+        result = {
             "zones": zones[:NUM_ZONES],
             "stack_direction": cfg.get("stack_direction", "horizontal"),
             "frame_snapshot_path": cfg.get("frame_snapshot_path", ""),
         }
+        # Copy composite/output fields, backfilling absent ones as no-ops
+        for k in ("out_w", "out_h", "out_sim_enabled",
+                  "comp_crop_x", "comp_crop_y", "comp_crop_w", "comp_crop_h",
+                  "comp_scale_w", "comp_scale_h"):
+            if k in cfg:
+                result[k] = cfg[k]
+        _backfill_composite(result)
+        return result
     # Old single-zone format — migrate to zone 0
     zone0 = {
         "enabled": cfg.get("enabled", True),
@@ -437,14 +472,28 @@ def _migrate_zoom_config(cfg):
         "mode": "crop",
     }
     zones = [zone0] + [_default_zone() for _ in range(NUM_ZONES - 1)]
-    return {"zones": zones, "stack_direction": "horizontal", "frame_snapshot_path": ""}
+    result = {"zones": zones, "stack_direction": "horizontal", "frame_snapshot_path": ""}
+    _backfill_composite(result)
+    return result
 
 
 def _build_vf_for_zones(zoom_config):
     """Build the mpv --vf string for a multi-zone config. Returns None if no transform needed.
 
+    Pipeline (in order):
+      1. Per-zone: crop → optional scale → optional border → optional offset_y
+      2. Zone stitch (hstack / vstack)
+      3. Whole-composite crop       (if comp_crop_w > 0)
+      4. Whole-composite scale      (if comp_scale_w > 0 and comp_scale_h > 0)
+      5. Pad to output canvas       (if out_sim_enabled and out_w > 0 and out_h > 0)
+      6. setsar=1
+
     If *zoom_config* is empty ({}), or contains no enabled zones with a crop region,
     returns None so mpv plays without any video filter.
+
+    Backward compatibility: existing configs without the composite/output fields are
+    treated as no-ops for those steps (comp_crop_w defaults to 0, comp_scale_w to -1,
+    out_sim_enabled to False), so pre-existing playback behaviour is preserved.
     """
     # An empty dict means "never configured" — apply no filter
     if not zoom_config:
@@ -484,6 +533,31 @@ def _build_vf_for_zones(zoom_config):
         border = z.get("border_px", 0)
         return w + 2 * border, h + 2 * border
 
+    # --- Composite-level transform parts (appended after stacking) ---
+    comp_crop_w = int(migrated.get("comp_crop_w", 0))
+    comp_crop_h = int(migrated.get("comp_crop_h", 0))
+    comp_crop_x = int(migrated.get("comp_crop_x", 0))
+    comp_crop_y = int(migrated.get("comp_crop_y", 0))
+    comp_scale_w = int(migrated.get("comp_scale_w", -1))
+    comp_scale_h = int(migrated.get("comp_scale_h", -1))
+    out_w = int(migrated.get("out_w", -1))
+    out_h = int(migrated.get("out_h", -1))
+    out_sim_enabled = bool(migrated.get("out_sim_enabled", False))
+
+    def _composite_suffix():
+        """Build filter suffix to apply after zone stacking (no leading comma)."""
+        parts = []
+        if comp_crop_w > 0 and comp_crop_h > 0:
+            parts.append(f"crop={comp_crop_w}:{comp_crop_h}:{comp_crop_x}:{comp_crop_y}")
+        if comp_scale_w > 0 and comp_scale_h > 0:
+            parts.append(f"scale={comp_scale_w}:{comp_scale_h}")
+        if out_sim_enabled and out_w > 0 and out_h > 0:
+            # Pad composite into the output canvas, centred, with black bars
+            parts.append(
+                f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:black"
+            )
+        return "," + ",".join(parts) if parts else ""
+
     # setsar=1 is appended to every filter graph so that mpv uses the composite's
     # own pixel dimensions for display-aspect-ratio calculations, rather than
     # inheriting the SAR from the source video.  Without this, a source whose
@@ -492,7 +566,7 @@ def _build_vf_for_zones(zoom_config):
     # stretched when rendered fullscreen instead of being letterboxed correctly.
     if len(enabled) == 1:
         # Wrap in lavfi so setsar=1 is applied inside the same graph.
-        return f"lavfi=[{_zone_vf(enabled[0])},setsar=1]"
+        return f"lavfi=[{_zone_vf(enabled[0])}{_composite_suffix()},setsar=1]"
 
     # Multiple zones: use lavfi split + per-zone crop/scale + hstack/vstack.
     n = len(enabled)
@@ -512,11 +586,11 @@ def _build_vf_for_zones(zoom_config):
 
     def _zone_segment(z, size, i):
         vf_str = _zone_vf(z)
-        out_w, out_h = size
-        if direction == "horizontal" and out_h < target_h:
+        out_w_z, out_h_z = size
+        if direction == "horizontal" and out_h_z < target_h:
             # Pad height to target_h with black at the bottom.
             vf_str += f",pad=iw:{target_h}:0:0:black"
-        elif direction == "vertical" and out_w < target_w:
+        elif direction == "vertical" and out_w_z < target_w:
             # Pad width to target_w with black on the right.
             vf_str += f",pad={target_w}:ih:0:0:black"
         return f"[z{i}]{vf_str}[c{i}]"
@@ -526,7 +600,7 @@ def _build_vf_for_zones(zoom_config):
     stack_fn = "vstack" if direction == "vertical" else "hstack"
     # setsar=1 after the stack forces the composite's pixel dimensions to be
     # used as-is, matching the preview display and preventing squashing.
-    stack_part = f"{stack_inputs}{stack_fn}=inputs={n},setsar=1"
+    stack_part = f"{stack_inputs}{stack_fn}=inputs={n}{_composite_suffix()},setsar=1"
     graph = ";".join([split_part] + crop_parts + [stack_part])
     return f"lavfi=[{graph}]"
 
@@ -1960,10 +2034,122 @@ class MultiZoomScaleDialog(QDialog):
             self._zone_border_sbs.append(border_sb)
             self._zone_offset_y_sbs.append(offset_y_sb)
 
+        # ---- Composite Output tab ----
+        # This tab lets the operator crop/scale the already-stitched zone
+        # composite as a whole (after per-zone transforms are applied).
+        comp_tab = QWidget()
+        comp_layout = QVBoxLayout(comp_tab)
+        comp_layout.setSpacing(6)
+        comp_layout.setContentsMargins(4, 4, 4, 4)
+
+        comp_top_bar = QHBoxLayout()
+        comp_top_bar.addWidget(QLabel(
+            "<b>Composite Output</b> — crop and scale the full stitched composite "
+            "after all per-zone transforms have been applied."))
+        self._comp_refresh_btn = QPushButton("🔄  Rebuild Composite")
+        self._comp_refresh_btn.setToolTip(
+            "Stitch the current zone settings into the composite canvas so you can\n"
+            "adjust the whole-composite crop region with draggable handles.")
+        self._comp_refresh_btn.clicked.connect(self._rebuild_composite_canvas)
+        comp_top_bar.addStretch()
+        comp_top_bar.addWidget(self._comp_refresh_btn)
+        comp_layout.addLayout(comp_top_bar)
+
+        comp_body = QHBoxLayout()
+        comp_body.setSpacing(8)
+
+        # Reuse ZoomCropCanvas for the composite crop editor
+        self._comp_crop_canvas = ZoomCropCanvas(color="#e040fb")
+        self._comp_crop_canvas.setToolTip(
+            "Drag handles to define the crop rectangle for the entire stitched composite.\n"
+            "This crop is applied after all per-zone transforms.")
+        self._comp_crop_canvas.region_changed.connect(self._on_comp_crop_changed)
+        comp_body.addWidget(self._comp_crop_canvas, 3)
+
+        comp_right = QVBoxLayout()
+        comp_right.setSpacing(4)
+
+        comp_crop_grp = QGroupBox("Whole-Composite Crop")
+        comp_crop_grp.setStyleSheet("QGroupBox::title { color: #e040fb; }")
+        comp_crop_grp.setToolTip(
+            "Crop the stitched composite image. Set Width to 0 to disable (pass-through).")
+        ccg = QGridLayout(); ccg.setSpacing(4)
+        self._comp_x_sb  = QSpinBox(); self._comp_x_sb.setRange(0, 99999);  self._comp_x_sb.setSuffix(" px"); self._comp_x_sb.setFixedWidth(110)
+        self._comp_y_sb  = QSpinBox(); self._comp_y_sb.setRange(0, 99999);  self._comp_y_sb.setSuffix(" px"); self._comp_y_sb.setFixedWidth(110)
+        self._comp_w_sb  = QSpinBox(); self._comp_w_sb.setRange(0, 99999);  self._comp_w_sb.setSuffix(" px"); self._comp_w_sb.setFixedWidth(110)
+        self._comp_w_sb.setSpecialValueText("Full (no crop)")
+        self._comp_h_sb  = QSpinBox(); self._comp_h_sb.setRange(0, 99999);  self._comp_h_sb.setSuffix(" px"); self._comp_h_sb.setFixedWidth(110)
+        self._comp_h_sb.setSpecialValueText("Full (no crop)")
+        ccg.addWidget(QLabel("X:"),      0, 0); ccg.addWidget(self._comp_x_sb, 0, 1)
+        ccg.addWidget(QLabel("Y:"),      1, 0); ccg.addWidget(self._comp_y_sb, 1, 1)
+        ccg.addWidget(QLabel("Width:"),  2, 0); ccg.addWidget(self._comp_w_sb, 2, 1)
+        ccg.addWidget(QLabel("Height:"), 3, 0); ccg.addWidget(self._comp_h_sb, 3, 1)
+        comp_crop_grp.setLayout(ccg)
+
+        comp_scale_grp = QGroupBox("Whole-Composite Scale / Stretch")
+        comp_scale_grp.setStyleSheet("QGroupBox::title { color: #e040fb; }")
+        comp_scale_grp.setToolTip(
+            "Scale the entire composite after cropping.\n"
+            "Set to -1 (auto) to skip this step.")
+        csg = QGridLayout(); csg.setSpacing(4)
+        self._comp_sw_sb = QSpinBox(); self._comp_sw_sb.setRange(-1, 99999); self._comp_sw_sb.setSuffix(" px"); self._comp_sw_sb.setSpecialValueText("auto"); self._comp_sw_sb.setFixedWidth(110)
+        self._comp_sh_sb = QSpinBox(); self._comp_sh_sb.setRange(-1, 99999); self._comp_sh_sb.setSuffix(" px"); self._comp_sh_sb.setSpecialValueText("auto"); self._comp_sh_sb.setFixedWidth(110)
+        csg.addWidget(QLabel("Scale W:"), 0, 0); csg.addWidget(self._comp_sw_sb, 0, 1)
+        csg.addWidget(QLabel("Scale H:"), 1, 0); csg.addWidget(self._comp_sh_sb, 1, 1)
+        comp_scale_grp.setLayout(csg)
+
+        self._comp_reset_btn = QPushButton("↺  Reset to Full Composite")
+        self._comp_reset_btn.setToolTip(
+            "Remove the composite crop (pass-through) and clear scale overrides.")
+        self._comp_reset_btn.clicked.connect(self._reset_composite_crop)
+
+        comp_right.addWidget(comp_crop_grp)
+        comp_right.addWidget(comp_scale_grp)
+        comp_right.addWidget(self._comp_reset_btn)
+        comp_right.addStretch()
+        comp_body.addLayout(comp_right, 1)
+        comp_layout.addLayout(comp_body, 1)
+
+        self._tabs.addTab(comp_tab, "Composite Output")
+
+        # Wire composite spinbox signals
+        for sb in (self._comp_x_sb, self._comp_y_sb,
+                   self._comp_w_sb, self._comp_h_sb):
+            sb.valueChanged.connect(self._on_comp_spinbox_changed)
+
         # ---- Final Preview tab ----
         final_tab = QWidget()
         final_layout = QVBoxLayout(final_tab)
         final_layout.setSpacing(6)
+
+        # Output resolution controls
+        out_res_bar = QHBoxLayout()
+        out_res_bar.addWidget(QLabel("Simulated output resolution:"))
+        self._out_w_sb = QSpinBox()
+        self._out_w_sb.setRange(160, 32768)
+        self._out_w_sb.setValue(1920)
+        self._out_w_sb.setSuffix(" px")
+        self._out_w_sb.setFixedWidth(100)
+        self._out_w_sb.setToolTip("Simulated display canvas width in pixels.")
+        self._out_h_sb = QSpinBox()
+        self._out_h_sb.setRange(120, 32768)
+        self._out_h_sb.setValue(1080)
+        self._out_h_sb.setSuffix(" px")
+        self._out_h_sb.setFixedWidth(100)
+        self._out_h_sb.setToolTip("Simulated display canvas height in pixels.")
+        out_res_bar.addWidget(self._out_w_sb)
+        out_res_bar.addWidget(QLabel("×"))
+        out_res_bar.addWidget(self._out_h_sb)
+        out_res_bar.addSpacing(12)
+        self._out_sim_playback_cb = QCheckBox("Apply output canvas to mpv playback")
+        self._out_sim_playback_cb.setToolTip(
+            "When checked, mpv will pad the final composite into the configured output\n"
+            "canvas during actual playback — matching the preview letterboxing/pillarboxing.\n"
+            "Leave unchecked to keep existing playback behaviour (no padding added).")
+        out_res_bar.addWidget(self._out_sim_playback_cb)
+        out_res_bar.addStretch()
+        final_layout.addLayout(out_res_bar)
+
         final_top = QHBoxLayout()
         self._refresh_btn = QPushButton("🔄  Refresh Final Preview")
         self._refresh_btn.clicked.connect(self._refresh_final_preview)
@@ -1997,6 +2183,7 @@ class MultiZoomScaleDialog(QDialog):
         btn_row.addWidget(self._ok_btn)
         btn_row.addWidget(self._cancel_btn)
         root.addLayout(btn_row)
+
 
     # ------------------------------------------------------------------
     # Config ↔ UI
@@ -2032,6 +2219,20 @@ class MultiZoomScaleDialog(QDialog):
                 self._zone_mode_crop_rbs[i].setChecked(True)
             self._zone_crop_canvases[i].set_region(x, y, w, h)
             self._zone_stretch_canvases[i].set_output(sw if sw > 0 else w, sh if sh > 0 else h)
+
+        # Load composite output fields
+        out_w  = self._cfg.get("out_w",  -1)
+        out_h  = self._cfg.get("out_h",  -1)
+        self._out_w_sb.setValue(out_w if out_w > 0 else 1920)
+        self._out_h_sb.setValue(out_h if out_h > 0 else 1080)
+        self._out_sim_playback_cb.setChecked(bool(self._cfg.get("out_sim_enabled", False)))
+        self._comp_x_sb.setValue(int(self._cfg.get("comp_crop_x", 0)))
+        self._comp_y_sb.setValue(int(self._cfg.get("comp_crop_y", 0)))
+        self._comp_w_sb.setValue(int(self._cfg.get("comp_crop_w", 0)))
+        self._comp_h_sb.setValue(int(self._cfg.get("comp_crop_h", 0)))
+        self._comp_sw_sb.setValue(int(self._cfg.get("comp_scale_w", -1)))
+        self._comp_sh_sb.setValue(int(self._cfg.get("comp_scale_h", -1)))
+
         self._updating = False
 
         # Attempt to reload the persistent frame snapshot
@@ -2059,10 +2260,21 @@ class MultiZoomScaleDialog(QDialog):
                 "mode":      mode,
             })
         snapshot_path = self._cfg.get("frame_snapshot_path", "")
+        out_sim = self._out_sim_playback_cb.isChecked()
         return {
             "zones": zones,
             "stack_direction": direction,
             "frame_snapshot_path": snapshot_path,
+            # Composite output / output simulation fields
+            "out_w":          self._out_w_sb.value(),
+            "out_h":          self._out_h_sb.value(),
+            "out_sim_enabled": out_sim,
+            "comp_crop_x":    self._comp_x_sb.value(),
+            "comp_crop_y":    self._comp_y_sb.value(),
+            "comp_crop_w":    self._comp_w_sb.value(),
+            "comp_crop_h":    self._comp_h_sb.value(),
+            "comp_scale_w":   self._comp_sw_sb.value(),
+            "comp_scale_h":   self._comp_sh_sb.value(),
         }
 
     # ------------------------------------------------------------------
@@ -2130,18 +2342,92 @@ class MultiZoomScaleDialog(QDialog):
         self._on_crop_changed(zi, 0, 0, w, h)
 
     # ------------------------------------------------------------------
-    # Final preview compositing
+    # Composite Output canvas handlers
     # ------------------------------------------------------------------
 
-    def _refresh_final_preview(self):
-        if not self._full_pixmap or self._full_pixmap.isNull():
-            self._final_canvas.setText("No frame captured yet.")
+    def _on_comp_crop_changed(self, x, y, w, h):
+        """Composite canvas crop changed → update composite spinboxes."""
+        if self._updating:
             return
-        cfg = self._collect_config()
+        self._updating = True
+        self._comp_x_sb.setValue(x)
+        self._comp_y_sb.setValue(y)
+        self._comp_w_sb.setValue(max(1, w))
+        self._comp_h_sb.setValue(max(1, h))
+        self._updating = False
+
+    def _on_comp_spinbox_changed(self):
+        """Composite crop spinboxes changed → update canvas selection."""
+        if self._updating:
+            return
+        cw = self._comp_w_sb.value()
+        ch = self._comp_h_sb.value()
+        if cw > 0 and ch > 0:
+            self._comp_crop_canvas.set_region(
+                self._comp_x_sb.value(),
+                self._comp_y_sb.value(),
+                cw, ch,
+            )
+
+    def _reset_composite_crop(self):
+        """Reset composite crop to full composite (pass-through) and clear scale."""
+        self._comp_x_sb.setValue(0)
+        self._comp_y_sb.setValue(0)
+        w = self._comp_crop_canvas.source_w or 0
+        h = self._comp_crop_canvas.source_h or 0
+        self._comp_w_sb.setValue(0)   # 0 = no crop (full composite)
+        self._comp_h_sb.setValue(0)
+        if w > 0 and h > 0:
+            self._comp_crop_canvas.set_region(0, 0, w, h)
+        self._comp_sw_sb.setValue(-1)
+        self._comp_sh_sb.setValue(-1)
+
+    def _rebuild_composite_canvas(self):
+        """Stitch zones and load the composite into the composite crop canvas."""
+        if not self._full_pixmap or self._full_pixmap.isNull():
+            self._status.setText("Capture a frame first before rebuilding the composite canvas.")
+            return
+        composite = self._build_composite_pixmap()
+        if composite is None or composite.isNull():
+            self._status.setText("No enabled zones — composite canvas cannot be built.")
+            return
+        # Save composite to a temp file and load via load_frame
+        tmp_path = os.path.join(self._temp_dir, "composite_preview.png")
+        composite.save(tmp_path)
+        self._comp_crop_canvas.load_frame(tmp_path)
+        # Restore crop region from spinboxes (if valid)
+        cw = self._comp_w_sb.value()
+        ch = self._comp_h_sb.value()
+        if cw > 0 and ch > 0:
+            self._comp_crop_canvas.set_region(
+                self._comp_x_sb.value(),
+                self._comp_y_sb.value(),
+                cw, ch,
+            )
+        else:
+            # Full composite — set to whole image
+            self._comp_crop_canvas.set_region(
+                0, 0, composite.width(), composite.height())
+        self._status.setText(
+            f"Composite canvas rebuilt  ({composite.width()} × {composite.height()} px). "
+            "Drag handles to define the whole-composite crop.")
+
+    def _build_composite_pixmap(self, cfg=None):
+        """Build and return the stitched composite QPixmap from current zone settings.
+
+        Applies per-zone crop, optional scale, border, and offset_y then stitches
+        according to the current stitch direction.  Returns None if no zones are enabled.
+
+        *cfg* may be a pre-collected config dict (to avoid a duplicate
+        :meth:`_collect_config` call when the caller already has one).
+        """
+        if not self._full_pixmap or self._full_pixmap.isNull():
+            return None
+        if cfg is None:
+            cfg = self._collect_config()
         zones = [z for z in cfg["zones"] if z.get("enabled") and z.get("crop_w", 0) > 0]
         if not zones:
-            self._final_canvas.setText("No zones are currently enabled.")
-            return
+            return None
 
         direction = cfg.get("stack_direction", "horizontal")
         pieces = []
@@ -2164,12 +2450,17 @@ class MultiZoomScaleDialog(QDialog):
                 bp.end()
                 pm = bordered
             if offset_y != 0:
-                shifted = QPixmap(pm.width(), pm.height())
-                shifted.fill(QColor("black"))
-                sp = QPainter(shifted)
-                sp.drawPixmap(0, offset_y, pm)
-                sp.end()
-                pm = shifted
+                # Match mpv filter: pad then crop to keep dimensions constant
+                abs_off = abs(offset_y)
+                pad_y   = max(offset_y, 0)
+                crop_y  = max(-offset_y, 0)
+                taller = QPixmap(pm.width(), pm.height() + abs_off)
+                taller.fill(QColor("black"))
+                tp = QPainter(taller)
+                tp.drawPixmap(0, pad_y, pm)
+                tp.end()
+                # Crop back to original height
+                pm = taller.copy(0, crop_y, pm.width(), pm.height())
             pieces.append(pm)
 
         if direction == "vertical":
@@ -2191,16 +2482,87 @@ class MultiZoomScaleDialog(QDialog):
                 painter.drawPixmap(off, 0, pm)
                 off += pm.width()
         painter.end()
+        return result
 
+    # ------------------------------------------------------------------
+    # Final preview compositing
+    # ------------------------------------------------------------------
+
+    def _refresh_final_preview(self):
+        if not self._full_pixmap or self._full_pixmap.isNull():
+            self._final_canvas.setText("No frame captured yet.")
+            return
+
+        cfg = self._collect_config()
+
+        # Step 1: build zone composite (pass cfg so we don't call _collect_config twice)
+        result = self._build_composite_pixmap(cfg)
+        if result is None or result.isNull():
+            self._final_canvas.setText("No zones are currently enabled.")
+            return
+
+        direction = cfg.get("stack_direction", "horizontal")
+        n_zones = sum(1 for z in cfg["zones"] if z.get("enabled") and z.get("crop_w", 0) > 0)
+
+        composite_w = result.width()
+        composite_h = result.height()
+
+        # Step 2: whole-composite crop
+        comp_crop_w = int(cfg.get("comp_crop_w", 0))
+        comp_crop_h = int(cfg.get("comp_crop_h", 0))
+        comp_crop_x = int(cfg.get("comp_crop_x", 0))
+        comp_crop_y = int(cfg.get("comp_crop_y", 0))
+        if comp_crop_w > 0 and comp_crop_h > 0:
+            # Clamp to composite bounds
+            cx = max(0, min(comp_crop_x, composite_w - 1))
+            cy = max(0, min(comp_crop_y, composite_h - 1))
+            cw = min(comp_crop_w, composite_w - cx)
+            ch = min(comp_crop_h, composite_h - cy)
+            if cw > 0 and ch > 0:
+                result = result.copy(cx, cy, cw, ch)
+
+
+        # Step 3: whole-composite scale
+        comp_sw = int(cfg.get("comp_scale_w", -1))
+        comp_sh = int(cfg.get("comp_scale_h", -1))
+        if comp_sw > 0 and comp_sh > 0:
+            result = result.scaled(comp_sw, comp_sh,
+                                   Qt.AspectRatioMode.IgnoreAspectRatio,
+                                   Qt.TransformationMode.SmoothTransformation)
+
+        # Step 4: place in output canvas (letterbox/pillarbox)
+        out_w = self._out_w_sb.value()
+        out_h = self._out_h_sb.value()
+        display_w = result.width()
+        display_h = result.height()
+
+        canvas = QPixmap(out_w, out_h)
+        canvas.fill(QColor("black"))
+        cp = QPainter(canvas)
+        # Centre the composite in the output canvas
+        ox = (out_w - display_w) // 2
+        oy = (out_h - display_h) // 2
+        cp.drawPixmap(ox, oy, result)
+        cp.end()
+
+        # Step 5: scale the output canvas to fit the preview label
         label_size = self._final_canvas.size()
-        scaled = result.scaled(label_size,
+        scaled = canvas.scaled(label_size,
                                Qt.AspectRatioMode.KeepAspectRatio,
                                Qt.TransformationMode.SmoothTransformation)
         self._final_canvas.setPixmap(scaled)
+
         dir_txt = "vertical" if direction == "vertical" else "horizontal"
+        crop_info = (f"  |  Comp crop: {comp_crop_w}×{comp_crop_h}"
+                     if comp_crop_w > 0 and comp_crop_h > 0 else "")
+        scale_info = (f"  |  Comp scale: {comp_sw}×{comp_sh}"
+                      if comp_sw > 0 and comp_sh > 0 else "")
         self._stitch_info_label.setText(
-            f"Stitch: {dir_txt}  |  {len(zones)} zone(s)  |  "
-            f"Output: {total_w} × {total_h} px")
+            f"Stitch: {dir_txt}  |  {n_zones} zone(s)  |  "
+            f"Composite: {composite_w}×{composite_h} px"
+            f"{crop_info}{scale_info}  |  "
+            f"Output canvas: {out_w}×{out_h} px")
+
 
     # ------------------------------------------------------------------
     # Video / mpv control
