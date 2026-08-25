@@ -6,6 +6,9 @@ here rather than imported from live_controller (which has PyQt top-level
 imports that would fail in headless CI).
 """
 
+import os
+import uuid
+
 # ---------------------------------------------------------------------------
 # Verbatim copy of the standalone helpers — keep in sync with live_controller.py
 # ---------------------------------------------------------------------------
@@ -169,6 +172,10 @@ def _build_vf_for_zones(zoom_config):
     stack_part = f"{stack_inputs}{stack_fn}=inputs={n}{_composite_suffix()},setsar=1"
     graph = ";".join([split_part] + crop_parts + [stack_part])
     return f"lavfi=[{graph}]"
+
+
+def _make_unique_mpv_pipe_name(prefix):
+    return fr'\\.\pipe\{prefix}_{os.getpid()}_{uuid.uuid4().hex}'
 
 
 # ---------------------------------------------------------------------------
@@ -467,3 +474,14 @@ def test_old_single_zone_format_disabled_returns_none():
     old = {"enabled": False, "crop_x": 0, "crop_y": 0,
            "crop_w": 1920, "crop_h": 1080}
     assert _build_vf_for_zones(old) is None
+
+
+def test_make_unique_mpv_pipe_name_uses_prefix():
+    pipe_path = _make_unique_mpv_pipe_name("mpv_test")
+    assert pipe_path.startswith(r"\\.\pipe\mpv_test_")
+
+
+def test_make_unique_mpv_pipe_name_is_unique():
+    a = _make_unique_mpv_pipe_name("mpv_test")
+    b = _make_unique_mpv_pipe_name("mpv_test")
+    assert a != b
