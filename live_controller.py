@@ -610,6 +610,18 @@ def _make_unique_mpv_pipe_name(prefix):
     return fr'\\.\pipe\{prefix}_{os.getpid()}_{uuid.uuid4().hex}'
 
 
+def _ext_preview_vf_command(vf_str):
+    """Return the mpv IPC command list to apply or clear the video filter chain.
+
+    Uses the ``vf set`` / ``vf clr`` commands rather than ``set_property vf``
+    so that both non-empty filter graphs and the no-filter (empty) case are
+    handled correctly at runtime without relying on mpv's option-string parser.
+    """
+    if vf_str:
+        return ["vf", "set", vf_str]
+    return ["vf", "clr", ""]
+
+
 def _send_mpv_ipc_command(ipc_path, command, max_attempts=2, retry_delay=0.05):
     """Send a JSON IPC command to an mpv named pipe with bounded retries."""
     if not ipc_path:
@@ -2444,6 +2456,7 @@ class MultiZoomScaleDialog(QDialog):
         self._zone_h_sbs[zi].setValue(max(1, h))
         self._updating = False
         self._sync_stretch_canvas(zi)
+        self._schedule_composite_update()
 
     def _on_stretch_changed(self, zi, sw, sh):
         """Stretch canvas handles moved → update scale spinboxes."""
@@ -2453,6 +2466,7 @@ class MultiZoomScaleDialog(QDialog):
         self._zone_sw_sbs[zi].setValue(sw)
         self._zone_sh_sbs[zi].setValue(sh)
         self._updating = False
+        self._schedule_composite_update()
 
     def _on_crop_spinbox_changed(self, zi):
         """Crop spinbox changed → update crop canvas and stretch canvas source."""
@@ -2507,6 +2521,7 @@ class MultiZoomScaleDialog(QDialog):
         self._comp_w_sb.setValue(max(1, w))
         self._comp_h_sb.setValue(max(1, h))
         self._updating = False
+        self._schedule_composite_update()
 
     def _on_comp_spinbox_changed(self):
         """Composite crop spinboxes changed → update canvas selection."""
@@ -2542,6 +2557,7 @@ class MultiZoomScaleDialog(QDialog):
         self._comp_sw_sb.setValue(sw)
         self._comp_sh_sb.setValue(sh)
         self._updating = False
+        self._schedule_composite_update()
 
     # ------------------------------------------------------------------
     # Real-time composite update scheduling
@@ -3065,12 +3081,15 @@ class MultiZoomScaleDialog(QDialog):
                 QTimer.singleShot(120, lambda: self._send_external_preview_command(["set_property", "time-pos", max(0.0, self._ext_preview_start_pos)], tolerate_closed=True))
 
         if vf_str != self._ext_preview_vf:
-            # mpv accepts runtime filter updates via the vf property. If IPC update fails,
-            # perform a controlled restart to keep preview reliable during edits.
-            if not self._send_external_preview_command(["set_property", "vf", vf_str], max_attempts=3, tolerate_closed=True):
+            # Use the vf command (set/clr) rather than set_property so both
+            # non-empty filter graphs and the no-filter case are handled correctly.
+            if not self._send_external_preview_command(_ext_preview_vf_command(vf_str), max_attempts=3, tolerate_closed=True):
                 self._open_external_preview()
                 return
             self._ext_preview_vf = vf_str
+            # Force a frame re-render so that paused video and still images
+            # immediately reflect the new filter chain without needing a seek.
+            self._send_external_preview_command(["seek", 0, "relative+exact"], tolerate_closed=True)
 
         self._send_external_preview_command(["set_property", "pause", bool(self._ext_preview_paused)], tolerate_closed=True)
         self._apply_external_preview_playback_state()
