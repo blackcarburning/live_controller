@@ -610,13 +610,13 @@ def _make_unique_mpv_pipe_name(prefix):
     return fr'\\.\pipe\{prefix}_{os.getpid()}_{uuid.uuid4().hex}'
 
 
-def _send_mpv_ipc_command(ipc_path, command, retries=1, retry_delay=0.05):
+def _send_mpv_ipc_command(ipc_path, command, max_attempts=2, retry_delay=0.05):
     """Send a JSON IPC command to an mpv named pipe with bounded retries."""
     if not ipc_path:
         return False, "Missing IPC pipe path."
     payload = json.dumps({"command": command}, ensure_ascii=False) + "\n"
     last_error = "Unknown IPC error."
-    attempts = max(1, retries)
+    attempts = max(1, max_attempts)
     for i in range(attempts):
         try:
             with open(ipc_path, "w", encoding="utf-8") as f:
@@ -2820,8 +2820,8 @@ class MultiZoomScaleDialog(QDialog):
         except Exception as exc:
             self._status.setText(f"Error launching mpv: {exc}")
 
-    def _send_ipc(self, command, retries=1):
-        ok, err = _send_mpv_ipc_command(self._ipc_path, command, retries=retries)
+    def _send_ipc(self, command, max_attempts=2):
+        ok, err = _send_mpv_ipc_command(self._ipc_path, command, max_attempts=max_attempts)
         if not ok:
             self._status.setText(f"IPC error: {err}")
         return ok
@@ -2891,7 +2891,7 @@ class MultiZoomScaleDialog(QDialog):
     def _stop_mpv(self):
         if self._mpv_process and self._mpv_process.poll() is None:
             if self._ipc_path:
-                _send_mpv_ipc_command(self._ipc_path, ["quit"], retries=2)
+                _send_mpv_ipc_command(self._ipc_path, ["quit"], max_attempts=2)
                 time.sleep(0.2)
             self._mpv_process.terminate()
         self._mpv_process = None
@@ -2931,12 +2931,12 @@ class MultiZoomScaleDialog(QDialog):
             return self._selected_video_path
         return self._get_external_preview_frame_path()
 
-    def _send_external_preview_command(self, command, retries=1, tolerate_closed=False):
+    def _send_external_preview_command(self, command, max_attempts=2, tolerate_closed=False):
         if self._ext_preview_process and self._ext_preview_process.poll() is not None:
             if not tolerate_closed:
                 self._close_external_preview("External preview was closed.")
             return False
-        ok, err = _send_mpv_ipc_command(self._ext_preview_ipc_path, command, retries=retries)
+        ok, err = _send_mpv_ipc_command(self._ext_preview_ipc_path, command, max_attempts=max_attempts)
         if not ok and not tolerate_closed:
             self._status.setText(f"External preview IPC error: {err}")
         return ok
@@ -3011,16 +3011,17 @@ class MultiZoomScaleDialog(QDialog):
                 300,
                 lambda: self._send_external_preview_command(
                     ["set_property", "time-pos", max(0.0, self._ext_preview_start_pos)],
-                    retries=8,
+                    max_attempts=8,
                     tolerate_closed=True))
         QTimer.singleShot(350, self._apply_external_preview_update)
 
     def _close_external_preview(self, status_text=None):
         self._snapshot_external_preview_position()
         if self._ext_preview_process and self._ext_preview_process.poll() is None:
-            self._send_external_preview_command(["quit"], retries=2, tolerate_closed=True)
-            time.sleep(0.15)
-            if self._ext_preview_process.poll() is None:
+            self._send_external_preview_command(["quit"], max_attempts=2, tolerate_closed=True)
+            try:
+                self._ext_preview_process.wait(timeout=0.2)
+            except subprocess.TimeoutExpired:
                 self._ext_preview_process.terminate()
         self._ext_preview_process = None
         self._ext_preview_ipc_path = None
@@ -3057,7 +3058,7 @@ class MultiZoomScaleDialog(QDialog):
         if source_changed:
             self._ext_preview_source_path = source_path
             load_mode = "replace"
-            if not self._send_external_preview_command(["loadfile", source_path, load_mode], retries=8, tolerate_closed=True):
+            if not self._send_external_preview_command(["loadfile", source_path, load_mode], max_attempts=8, tolerate_closed=True):
                 self._open_external_preview()
                 return
             if self._is_external_source_video():
@@ -3066,7 +3067,7 @@ class MultiZoomScaleDialog(QDialog):
         if vf_str != self._ext_preview_vf:
             # mpv accepts runtime filter updates via the vf property. If IPC update fails,
             # perform a controlled restart to keep preview reliable during edits.
-            if not self._send_external_preview_command(["set_property", "vf", vf_str], retries=3, tolerate_closed=True):
+            if not self._send_external_preview_command(["set_property", "vf", vf_str], max_attempts=3, tolerate_closed=True):
                 self._open_external_preview()
                 return
             self._ext_preview_vf = vf_str
