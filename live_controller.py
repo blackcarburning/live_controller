@@ -1811,6 +1811,12 @@ class MultiZoomScaleDialog(QDialog):
 
         self._updating = False        # Guard for circular signal updates
 
+        # Debounce timer for real-time composite/preview updates
+        self._update_timer = QTimer(self)
+        self._update_timer.setSingleShot(True)
+        self._update_timer.setInterval(120)  # ms — short delay to smooth drag interactions
+        self._update_timer.timeout.connect(self._do_composite_update)
+
         self._setup_ui()
         self._load_config_to_ui()
 
@@ -2035,7 +2041,7 @@ class MultiZoomScaleDialog(QDialog):
             self._zone_offset_y_sbs.append(offset_y_sb)
 
         # ---- Composite Output tab ----
-        # This tab lets the operator crop/scale the already-stitched zone
+        # This tab lets the operator crop and/or stretch the already-stitched zone
         # composite as a whole (after per-zone transforms are applied).
         comp_tab = QWidget()
         comp_layout = QVBoxLayout(comp_tab)
@@ -2044,35 +2050,75 @@ class MultiZoomScaleDialog(QDialog):
 
         comp_top_bar = QHBoxLayout()
         comp_top_bar.addWidget(QLabel(
-            "<b>Composite Output</b> — crop and scale the full stitched composite "
+            "<b>Composite Output</b> — crop and/or stretch the full stitched composite "
             "after all per-zone transforms have been applied."))
         self._comp_refresh_btn = QPushButton("🔄  Rebuild Composite")
         self._comp_refresh_btn.setToolTip(
-            "Stitch the current zone settings into the composite canvas so you can\n"
-            "adjust the whole-composite crop region with draggable handles.")
+            "Manually stitch the current zone settings into the composite canvas.\n"
+            "The composite is also rebuilt automatically when this tab is opened\n"
+            "or when any zone/composite control changes (with a short debounce).")
         self._comp_refresh_btn.clicked.connect(self._rebuild_composite_canvas)
         comp_top_bar.addStretch()
         comp_top_bar.addWidget(self._comp_refresh_btn)
         comp_layout.addLayout(comp_top_bar)
 
+        # Mode toggle: Crop or Stretch
+        comp_mode_bar = QHBoxLayout()
+        self._comp_mode_crop_rb    = QRadioButton("✂  Edit Crop")
+        self._comp_mode_stretch_rb = QRadioButton("⤢  Edit Stretch / Output Size")
+        self._comp_mode_crop_rb.setChecked(True)
+        self._comp_mode_crop_rb.setToolTip(
+            "Show the crop-handle canvas to define which region of the stitched\n"
+            "composite is kept.  This affects the ENTIRE stitched composite,\n"
+            "not an individual zone.")
+        self._comp_mode_stretch_rb.setToolTip(
+            "Show the stretch-handle canvas to set the final output dimensions of\n"
+            "the stitched composite after cropping.  Drag the handles to resize\n"
+            "width and/or height independently (non-uniform stretch).\n"
+            "This scales the ENTIRE stitched composite, not an individual zone.")
+        comp_mode_bar.addWidget(self._comp_mode_crop_rb)
+        comp_mode_bar.addWidget(self._comp_mode_stretch_rb)
+        comp_mode_bar.addStretch()
+        comp_layout.addLayout(comp_mode_bar)
+
         comp_body = QHBoxLayout()
         comp_body.setSpacing(8)
 
-        # Reuse ZoomCropCanvas for the composite crop editor
+        # Stacked canvas — index 0: crop handles, index 1: stretch handles
+        self._comp_stacked = QStackedWidget()
+
         self._comp_crop_canvas = ZoomCropCanvas(color="#e040fb")
         self._comp_crop_canvas.setToolTip(
-            "Drag handles to define the crop rectangle for the entire stitched composite.\n"
-            "This crop is applied after all per-zone transforms.")
+            "Drag the handles to define the crop rectangle for the ENTIRE stitched composite.\n"
+            "This crop is applied AFTER all per-zone transforms and BEFORE the composite stretch.\n"
+            "Set Width to 0 in the numeric controls to disable cropping (pass-through).")
         self._comp_crop_canvas.region_changed.connect(self._on_comp_crop_changed)
-        comp_body.addWidget(self._comp_crop_canvas, 3)
+
+        self._comp_stretch_canvas = StretchCanvas(color="#e040fb")
+        self._comp_stretch_canvas.setToolTip(
+            "Drag the right/bottom/corner handles to set the final output dimensions\n"
+            "of the ENTIRE stitched composite (after the composite crop step).\n"
+            "Width and height can be set independently for non-uniform stretching.\n"
+            "Set both Scale W and Scale H to -1 (auto) to skip this step.")
+        self._comp_stretch_canvas.output_changed.connect(self._on_comp_stretch_changed)
+
+        self._comp_stacked.addWidget(self._comp_crop_canvas)    # index 0
+        self._comp_stacked.addWidget(self._comp_stretch_canvas) # index 1
+        comp_body.addWidget(self._comp_stacked, 3)
+
+        self._comp_mode_crop_rb.toggled.connect(
+            lambda checked: self._comp_stacked.setCurrentIndex(0) if checked else None)
+        self._comp_mode_stretch_rb.toggled.connect(
+            lambda checked: self._comp_stacked.setCurrentIndex(1) if checked else None)
 
         comp_right = QVBoxLayout()
         comp_right.setSpacing(4)
 
-        comp_crop_grp = QGroupBox("Whole-Composite Crop")
+        comp_crop_grp = QGroupBox("Whole-Composite Crop  (entire stitched composite)")
         comp_crop_grp.setStyleSheet("QGroupBox::title { color: #e040fb; }")
         comp_crop_grp.setToolTip(
-            "Crop the stitched composite image. Set Width to 0 to disable (pass-through).")
+            "Crop the stitched composite image. Set Width to 0 to disable (pass-through).\n"
+            "Applies to the ENTIRE composite, not an individual zone.")
         ccg = QGridLayout(); ccg.setSpacing(4)
         self._comp_x_sb  = QSpinBox(); self._comp_x_sb.setRange(0, 99999);  self._comp_x_sb.setSuffix(" px"); self._comp_x_sb.setFixedWidth(110)
         self._comp_y_sb  = QSpinBox(); self._comp_y_sb.setRange(0, 99999);  self._comp_y_sb.setSuffix(" px"); self._comp_y_sb.setFixedWidth(110)
@@ -2086,21 +2132,31 @@ class MultiZoomScaleDialog(QDialog):
         ccg.addWidget(QLabel("Height:"), 3, 0); ccg.addWidget(self._comp_h_sb, 3, 1)
         comp_crop_grp.setLayout(ccg)
 
-        comp_scale_grp = QGroupBox("Whole-Composite Scale / Stretch")
+        comp_scale_grp = QGroupBox("Whole-Composite Stretch / Output Size  (entire stitched composite)")
         comp_scale_grp.setStyleSheet("QGroupBox::title { color: #e040fb; }")
         comp_scale_grp.setToolTip(
-            "Scale the entire composite after cropping.\n"
-            "Set to -1 (auto) to skip this step.")
+            "Stretch the ENTIRE stitched composite to exact output dimensions after cropping.\n"
+            "Width and height are set independently — non-uniform stretching is supported.\n"
+            "Set both to -1 (auto) to skip this step and pass the cropped composite unchanged.\n"
+            "Equivalent to mpv's scale= filter applied to the full composite image,\n"
+            "and to the draggable handles in the 'Edit Stretch' canvas view above.")
         csg = QGridLayout(); csg.setSpacing(4)
         self._comp_sw_sb = QSpinBox(); self._comp_sw_sb.setRange(-1, 99999); self._comp_sw_sb.setSuffix(" px"); self._comp_sw_sb.setSpecialValueText("auto"); self._comp_sw_sb.setFixedWidth(110)
         self._comp_sh_sb = QSpinBox(); self._comp_sh_sb.setRange(-1, 99999); self._comp_sh_sb.setSuffix(" px"); self._comp_sh_sb.setSpecialValueText("auto"); self._comp_sh_sb.setFixedWidth(110)
-        csg.addWidget(QLabel("Scale W:"), 0, 0); csg.addWidget(self._comp_sw_sb, 0, 1)
-        csg.addWidget(QLabel("Scale H:"), 1, 0); csg.addWidget(self._comp_sh_sb, 1, 1)
+        self._comp_sw_sb.setToolTip(
+            "Output width of the ENTIRE composite after stretch.\n"
+            "Set to -1 (auto) together with Scale H to skip this step.")
+        self._comp_sh_sb.setToolTip(
+            "Output height of the ENTIRE composite after stretch.\n"
+            "Set to -1 (auto) together with Scale W to skip this step.")
+        csg.addWidget(QLabel("Stretch W:"), 0, 0); csg.addWidget(self._comp_sw_sb, 0, 1)
+        csg.addWidget(QLabel("Stretch H:"), 1, 0); csg.addWidget(self._comp_sh_sb, 1, 1)
         comp_scale_grp.setLayout(csg)
 
         self._comp_reset_btn = QPushButton("↺  Reset to Full Composite")
         self._comp_reset_btn.setToolTip(
-            "Remove the composite crop (pass-through) and clear scale overrides.")
+            "Remove the composite crop (pass-through) and clear stretch overrides\n"
+            "for the ENTIRE stitched composite.")
         self._comp_reset_btn.clicked.connect(self._reset_composite_crop)
 
         comp_right.addWidget(comp_crop_grp)
@@ -2116,6 +2172,8 @@ class MultiZoomScaleDialog(QDialog):
         for sb in (self._comp_x_sb, self._comp_y_sb,
                    self._comp_w_sb, self._comp_h_sb):
             sb.valueChanged.connect(self._on_comp_spinbox_changed)
+        for sb in (self._comp_sw_sb, self._comp_sh_sb):
+            sb.valueChanged.connect(self._on_comp_scale_spinbox_changed)
 
         # ---- Final Preview tab ----
         final_tab = QWidget()
@@ -2167,6 +2225,28 @@ class MultiZoomScaleDialog(QDialog):
         self._tabs.addTab(final_tab, "Final Preview")
 
         root.addWidget(self._tabs, 1)
+
+        # ---- Real-time update signal wiring ----
+        # Connect all controls that affect the composite to _schedule_composite_update
+        # so the composite canvas and final preview refresh in real time (with debounce).
+        for cb in self._zone_enable_cbs:
+            cb.stateChanged.connect(self._schedule_composite_update)
+        for rb in self._zone_mode_crop_rbs + self._zone_mode_stretch_rbs:
+            rb.toggled.connect(lambda _: self._schedule_composite_update())
+        for sbs in (self._zone_x_sbs, self._zone_y_sbs, self._zone_w_sbs, self._zone_h_sbs,
+                    self._zone_sw_sbs, self._zone_sh_sbs, self._zone_border_sbs,
+                    self._zone_offset_y_sbs):
+            for sb in sbs:
+                sb.valueChanged.connect(self._schedule_composite_update)
+        self._stitch_h.toggled.connect(lambda _: self._schedule_composite_update())
+        self._stitch_v.toggled.connect(lambda _: self._schedule_composite_update())
+        for sb in (self._comp_x_sb, self._comp_y_sb, self._comp_w_sb, self._comp_h_sb,
+                   self._comp_sw_sb, self._comp_sh_sb, self._out_w_sb, self._out_h_sb):
+            sb.valueChanged.connect(self._schedule_composite_update)
+        self._out_sim_playback_cb.stateChanged.connect(self._schedule_composite_update)
+
+        # Auto-rebuild when switching to Composite Output or Final Preview tabs
+        self._tabs.currentChanged.connect(self._on_tab_changed)
 
         # ---- Status bar + OK / Cancel ----
         self._status = QLabel("Select a video to begin, or adjust values directly.")
@@ -2369,6 +2449,58 @@ class MultiZoomScaleDialog(QDialog):
                 cw, ch,
             )
 
+    def _on_comp_scale_spinbox_changed(self):
+        """Composite stretch spinboxes changed → update the stretch canvas output dimensions."""
+        if self._updating:
+            return
+        sw = self._comp_sw_sb.value()
+        sh = self._comp_sh_sb.value()
+        # Use composite source dimensions as fallback when value is -1
+        src_w = self._comp_stretch_canvas._crop_w
+        src_h = self._comp_stretch_canvas._crop_h
+        self._comp_stretch_canvas.set_output(
+            sw if sw > 0 else src_w,
+            sh if sh > 0 else src_h,
+        )
+
+    def _on_comp_stretch_changed(self, sw, sh):
+        """Stretch canvas handles moved → update composite scale spinboxes."""
+        if self._updating:
+            return
+        self._updating = True
+        self._comp_sw_sb.setValue(sw)
+        self._comp_sh_sb.setValue(sh)
+        self._updating = False
+
+    # ------------------------------------------------------------------
+    # Real-time composite update scheduling
+    # ------------------------------------------------------------------
+
+    def _schedule_composite_update(self, *_args):
+        """Schedule a debounced composite update (handles spurious signal args)."""
+        if self._updating:
+            return
+        self._update_timer.start()
+
+    def _do_composite_update(self):
+        """Debounced handler: rebuild composite canvases and refresh the final preview."""
+        current = self._tabs.currentIndex()
+        comp_idx   = NUM_ZONES          # "Composite Output" tab
+        final_idx  = NUM_ZONES + 1      # "Final Preview" tab
+        if current == comp_idx:
+            self._rebuild_composite_canvas()
+        elif current == final_idx:
+            self._refresh_final_preview()
+
+    def _on_tab_changed(self, index):
+        """Auto-rebuild when the user switches to Composite Output or Final Preview."""
+        comp_idx  = NUM_ZONES
+        final_idx = NUM_ZONES + 1
+        if index == comp_idx:
+            self._rebuild_composite_canvas()
+        elif index == final_idx:
+            self._refresh_final_preview()
+
     def _reset_composite_crop(self):
         """Reset composite crop to full composite (pass-through) and clear scale."""
         self._comp_x_sb.setValue(0)
@@ -2383,7 +2515,7 @@ class MultiZoomScaleDialog(QDialog):
         self._comp_sh_sb.setValue(-1)
 
     def _rebuild_composite_canvas(self):
-        """Stitch zones and load the composite into the composite crop canvas."""
+        """Stitch zones and load the composite into the composite crop and stretch canvases."""
         if not self._full_pixmap or self._full_pixmap.isNull():
             self._status.setText("Capture a frame first before rebuilding the composite canvas.")
             return
@@ -2408,9 +2540,19 @@ class MultiZoomScaleDialog(QDialog):
             # Full composite — set to whole image
             self._comp_crop_canvas.set_region(
                 0, 0, composite.width(), composite.height())
+
+        # Update the stretch canvas with the composite as the source image
+        sw = self._comp_sw_sb.value()
+        sh = self._comp_sh_sb.value()
+        out_w = sw if sw > 0 else composite.width()
+        out_h = sh if sh > 0 else composite.height()
+        self._comp_stretch_canvas.set_source(
+            composite, 0, 0, composite.width(), composite.height())
+        self._comp_stretch_canvas.set_output(out_w, out_h)
+
         self._status.setText(
             f"Composite canvas rebuilt  ({composite.width()} × {composite.height()} px). "
-            "Drag handles to define the whole-composite crop.")
+            "Switch to 'Edit Crop' or 'Edit Stretch' to adjust the composite output.")
 
     def _build_composite_pixmap(self, cfg=None):
         """Build and return the stitched composite QPixmap from current zone settings.
@@ -2665,6 +2807,8 @@ class MultiZoomScaleDialog(QDialog):
                 self._zone_h_sbs[i].value(),
             )
             self._sync_stretch_canvas(i)
+        # Rebuild composite canvases automatically whenever a new frame is loaded
+        self._schedule_composite_update()
 
     def _stop_mpv(self):
         if self._mpv_process and self._mpv_process.poll() is None:
@@ -2736,6 +2880,8 @@ class MultiZoomScaleDialog(QDialog):
             return
         self._cfg = _migrate_zoom_config(raw)
         self._load_config_to_ui()
+        # Rebuild composite preview immediately after importing state
+        self._schedule_composite_update()
         self._status.setText(
             f"Editor state imported from '{os.path.basename(path)}'.")
 
