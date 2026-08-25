@@ -2531,17 +2531,22 @@ class MultiZoomScaleDialog(QDialog):
         self._schedule_composite_update()
 
     def _on_comp_spinbox_changed(self):
-        """Composite crop spinboxes changed → update canvas selection."""
+        """Composite crop spinboxes changed → update canvas selection and schedule refresh."""
         if self._updating:
             return
         cw = self._comp_w_sb.value()
         ch = self._comp_h_sb.value()
         if cw > 0 and ch > 0:
-            self._comp_crop_canvas.set_region(
-                self._comp_x_sb.value(),
-                self._comp_y_sb.value(),
-                cw, ch,
-            )
+            self._updating = True
+            try:
+                self._comp_crop_canvas.set_region(
+                    self._comp_x_sb.value(),
+                    self._comp_y_sb.value(),
+                    cw, ch,
+                )
+            finally:
+                self._updating = False
+        self._schedule_composite_update()
 
     def _on_comp_scale_spinbox_changed(self):
         """Composite stretch spinboxes changed → update the stretch canvas output dimensions."""
@@ -2622,23 +2627,34 @@ class MultiZoomScaleDialog(QDialog):
         cw = self._comp_w_sb.value()
         ch = self._comp_h_sb.value()
         if cw > 0 and ch > 0:
-            self._comp_crop_canvas.set_region(
-                self._comp_x_sb.value(),
-                self._comp_y_sb.value(),
-                cw, ch,
-            )
+            # Clamp to composite bounds
+            cx = max(0, min(self._comp_x_sb.value(), composite.width() - 1))
+            cy = max(0, min(self._comp_y_sb.value(), composite.height() - 1))
+            cw = min(cw, composite.width() - cx)
+            ch = min(ch, composite.height() - cy)
+            self._updating = True
+            try:
+                self._comp_crop_canvas.set_region(cx, cy, cw, ch)
+            finally:
+                self._updating = False
+            cropped = composite.copy(cx, cy, cw, ch) if (cw > 0 and ch > 0) else composite
         else:
             # Full composite — set to whole image
-            self._comp_crop_canvas.set_region(
-                0, 0, composite.width(), composite.height())
+            self._updating = True
+            try:
+                self._comp_crop_canvas.set_region(
+                    0, 0, composite.width(), composite.height())
+            finally:
+                self._updating = False
+            cropped = composite
 
-        # Update the stretch canvas with the composite as the source image
+        # Update the stretch canvas with the cropped composite as the source image
         sw = self._comp_sw_sb.value()
         sh = self._comp_sh_sb.value()
-        out_w = sw if sw > 0 else composite.width()
-        out_h = sh if sh > 0 else composite.height()
+        out_w = sw if sw > 0 else cropped.width()
+        out_h = sh if sh > 0 else cropped.height()
         self._comp_stretch_canvas.set_source(
-            composite, 0, 0, composite.width(), composite.height())
+            cropped, 0, 0, cropped.width(), cropped.height())
         self._comp_stretch_canvas.set_output(out_w, out_h)
 
         self._status.setText(
@@ -3036,7 +3052,6 @@ class MultiZoomScaleDialog(QDialog):
                     ["set_property", "time-pos", max(0.0, self._ext_preview_start_pos)],
                     max_attempts=8,
                     tolerate_closed=True))
-        QTimer.singleShot(350, self._apply_external_preview_update)
 
     def _close_external_preview(self, status_text=None):
         self._ext_preview_update_timer.stop()
