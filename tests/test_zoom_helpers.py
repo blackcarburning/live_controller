@@ -198,6 +198,12 @@ def _send_mpv_ipc_command(ipc_path, command, max_attempts=2, retry_delay=0.05):
     return False, last_error
 
 
+def _ext_preview_vf_command(vf_str):
+    if vf_str:
+        return ["vf", "set", vf_str]
+    return ["vf", "clr", ""]
+
+
 # ---------------------------------------------------------------------------
 # _migrate_zoom_config tests
 # ---------------------------------------------------------------------------
@@ -525,3 +531,39 @@ def test_send_mpv_ipc_command_retries_requested_attempts(monkeypatch):
     assert ok is False
     assert "pipe unavailable" in err
     assert calls["count"] == 3
+
+
+# ---------------------------------------------------------------------------
+# _ext_preview_vf_command tests
+# ---------------------------------------------------------------------------
+
+def test_ext_preview_vf_command_non_empty():
+    """Non-empty vf string → vf set command."""
+    cmd = _ext_preview_vf_command("lavfi=[crop=100:100:0:0,setsar=1]")
+    assert cmd == ["vf", "set", "lavfi=[crop=100:100:0:0,setsar=1]"]
+
+
+def test_ext_preview_vf_command_empty_string():
+    """Empty vf string → vf clr command (clears the filter chain)."""
+    cmd = _ext_preview_vf_command("")
+    assert cmd == ["vf", "clr", ""]
+
+
+def test_ext_preview_vf_command_none_via_build():
+    """_build_vf_for_zones returns None for no-filter; caller normalises with ``or ""``,
+    and _ext_preview_vf_command must then produce a clr command."""
+    vf_str = _build_vf_for_zones({}) or ""
+    assert vf_str == ""
+    cmd = _ext_preview_vf_command(vf_str)
+    assert cmd == ["vf", "clr", ""]
+
+
+def test_ext_preview_vf_command_real_single_zone():
+    """A real single-zone filter string is passed through to a set command."""
+    cfg = _make_cfg(_enabled_zone(crop_x=0, crop_y=0, crop_w=1920, crop_h=1080))
+    vf_str = _build_vf_for_zones(cfg)
+    assert vf_str  # must be non-empty
+    cmd = _ext_preview_vf_command(vf_str)
+    assert cmd[0] == "vf"
+    assert cmd[1] == "set"
+    assert cmd[2] == vf_str
