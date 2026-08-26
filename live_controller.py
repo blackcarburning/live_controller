@@ -49,7 +49,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QGroupBox, QLabel, QFileDialog, QSizePolicy, QComboBox,
                              QAbstractButton, QSlider, QAbstractItemView, QCheckBox,
                              QGridLayout, QRadioButton, QSpinBox, QColorDialog, QDialog,
-                             QTabWidget, QStackedWidget)
+                             QTabWidget, QStackedWidget, QMessageBox)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer, QRect
 from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen, QPixmap
 
@@ -4227,11 +4227,39 @@ class LiveController(QWidget):
             output_display_num=output_display_num,
             parent=self,
         )
-        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.result_config is not None:
+        dialog_result = dialog.exec()
+        if dialog_result == QDialog.DialogCode.Accepted and dialog.result_config is not None:
             self.zoom_config = dialog.result_config
             self.save_zoom_config()
             self._update_zoom_status_label()
-            self.status_label.setText("Status: Multi-zone zoom/scale settings saved and will apply in play mode.")
+            status_prefix = "Status: Multi-zone zoom/scale settings saved and will apply in play mode"
+        else:
+            status_prefix = "Status: Multi-zone zoom/scale dialog closed"
+
+        self._show_multizone_restart_warning()
+        self.status_label.setText(
+            f"{status_prefix} — RESTART the application before going live (MIDI timing may drift)."
+        )
+
+    def _show_multizone_restart_warning(self):
+        """Shows a modal restart reminder after opening the multi-zone dialog."""
+        # The multi-zone dialog launches extra mpv preview processes; in practice this can
+        # degrade MIDI clock timing for the rest of the session until the app is restarted.
+        warning_box = QMessageBox(self)
+        warning_box.setWindowTitle("RESTART REQUIRED")
+        warning_box.setIcon(QMessageBox.Icon.Warning)
+        warning_box.setText("RESTART REQUIRED")
+        warning_box.setInformativeText(
+            "Multi-zone zoom/scale settings were accessed.\n\n"
+            "Please restart Live Controller before the show — MIDI timing may be unreliable until you do."
+        )
+        warning_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        warning_box.setStyleSheet(
+            "QMessageBox { background-color: rgba(180, 0, 0, 0.95); }"
+            "QLabel { color: white; font-weight: bold; }"
+            "QPushButton { min-width: 90px; padding: 6px 10px; font-weight: bold; }"
+        )
+        warning_box.exec()
 
     def setting_changed(self):
         """Saves the config whenever a setting is changed."""
