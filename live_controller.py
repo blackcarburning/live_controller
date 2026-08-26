@@ -622,6 +622,40 @@ def _ext_preview_vf_command(vf_str):
     return ["vf", "clr", ""]
 
 
+def _build_external_preview_mpv_command(
+    mpv_path,
+    ipc_path,
+    output_display_num,
+    source_path,
+    *,
+    is_video_source,
+    paused=False,
+    vf_str="",
+):
+    """Build the external-preview mpv command line for either video or still images."""
+    cmd = [
+        mpv_path,
+        f"--input-ipc-server={ipc_path}",
+        "--fullscreen",
+        f"--fs-screen={output_display_num}",
+        "--no-osd-bar",
+        "--no-osc",
+        "--no-input-default-bindings",
+        "--really-quiet",
+        "--keep-open=yes",
+    ]
+    if is_video_source:
+        cmd.append("--loop-file=inf")
+    else:
+        cmd.append("--image-display-duration=inf")
+    if paused:
+        cmd.append("--pause")
+    if vf_str:
+        cmd.append(f"--vf={vf_str}")
+    cmd.append(source_path)
+    return cmd
+
+
 def _send_mpv_ipc_command(ipc_path, command, max_attempts=2, retry_delay=0.05):
     """Send a JSON IPC command to an mpv named pipe with bounded retries."""
     if not ipc_path:
@@ -1886,23 +1920,6 @@ class MultiZoomScaleDialog(QDialog):
         self._update_timer.setInterval(120)  # ms — short delay to smooth drag interactions
         self._update_timer.timeout.connect(self._do_composite_update)
 
-        # Additional debounce for external-preview vf updates while dragging controls
-        self._ext_preview_update_timer = QTimer(self)
-        self._ext_preview_update_timer.setSingleShot(True)
-        self._ext_preview_update_timer.setInterval(350)
-        self._ext_preview_update_timer.timeout.connect(self._apply_external_preview_update)
-
-        # Flag and timer to guard against duplicate reopen calls during close/open cycle
-        self._ext_preview_reopen_pending = False
-        self._ext_preview_reopen_timer = QTimer(self)
-        self._ext_preview_reopen_timer.setSingleShot(True)
-        self._ext_preview_reopen_timer.setInterval(50)
-        self._ext_preview_reopen_timer.timeout.connect(self._do_reopen_external_preview)
-
-        # Suppress live-refresh external preview restarts while a canvas drag is in progress;
-        # refresh is triggered once on drag_finished instead.
-        self._canvas_drag_active = False
-
         self._setup_ui()
         self._load_config_to_ui()
 
@@ -2130,10 +2147,6 @@ class MultiZoomScaleDialog(QDialog):
                 lambda x, y, w, h, zi=i: self._on_crop_changed(zi, x, y, w, h))
             stretch_canvas.output_changed.connect(
                 lambda sw, sh, zi=i: self._on_stretch_changed(zi, sw, sh))
-            crop_canvas.drag_started.connect(self._on_canvas_drag_started)
-            crop_canvas.drag_finished.connect(self._on_canvas_drag_finished)
-            stretch_canvas.drag_started.connect(self._on_canvas_drag_started)
-            stretch_canvas.drag_finished.connect(self._on_canvas_drag_finished)
             for sb in (x_sb, y_sb, w_sb, h_sb):
                 sb.valueChanged.connect(lambda _, zi=i: self._on_crop_spinbox_changed(zi))
             sw_sb.valueChanged.connect(lambda _, zi=i: self._on_scale_spinbox_changed(zi))
@@ -2212,8 +2225,6 @@ class MultiZoomScaleDialog(QDialog):
             "This crop is applied AFTER all per-zone transforms and BEFORE the composite stretch.\n"
             "Set Width to 0 in the numeric controls to disable cropping (pass-through).")
         self._comp_crop_canvas.region_changed.connect(self._on_comp_crop_changed)
-        self._comp_crop_canvas.drag_started.connect(self._on_canvas_drag_started)
-        self._comp_crop_canvas.drag_finished.connect(self._on_canvas_drag_finished)
 
         self._comp_stretch_canvas = StretchCanvas(color="#e040fb")
         self._comp_stretch_canvas.setToolTip(
@@ -2222,8 +2233,6 @@ class MultiZoomScaleDialog(QDialog):
             "Width and height can be set independently for non-uniform stretching.\n"
             "Set both Scale W and Scale H to -1 (auto) to skip this step.")
         self._comp_stretch_canvas.output_changed.connect(self._on_comp_stretch_changed)
-        self._comp_stretch_canvas.drag_started.connect(self._on_canvas_drag_started)
-        self._comp_stretch_canvas.drag_finished.connect(self._on_canvas_drag_finished)
 
         self._comp_stacked.addWidget(self._comp_crop_canvas)    # index 0
         self._comp_stacked.addWidget(self._comp_stretch_canvas) # index 1
@@ -2600,20 +2609,6 @@ class MultiZoomScaleDialog(QDialog):
         self._schedule_composite_update()
 
     # ------------------------------------------------------------------
-    # Canvas drag-active tracking for live-refresh gating
-    # ------------------------------------------------------------------
-
-    def _on_canvas_drag_started(self, *_args):
-        """Set drag-active flag when a canvas drag handle is pressed.
-        The flag suppresses external-preview restarts mid-drag."""
-        self._canvas_drag_active = True
-
-    def _on_canvas_drag_finished(self):
-        """Clear drag-active flag and trigger one external-preview update on release."""
-        self._canvas_drag_active = False
-        self._schedule_external_preview_update()
-
-    # ------------------------------------------------------------------
     # Real-time composite update scheduling
     # ------------------------------------------------------------------
 
@@ -2630,7 +2625,6 @@ class MultiZoomScaleDialog(QDialog):
             self._rebuild_composite_canvas()
         elif current == self._FINAL_TAB_INDEX:
             self._refresh_final_preview()
-        self._schedule_external_preview_update()
 
     def _on_tab_changed(self, index):
         """Auto-rebuild when the user switches to Composite Output or Final Preview."""
@@ -2862,7 +2856,7 @@ class MultiZoomScaleDialog(QDialog):
         self._launch_mpv(path)
         if self._ext_preview_open and self._is_external_source_video():
             self._ext_preview_start_pos = 0.0
-            self._schedule_external_preview_update()
+            self._open_external_preview()
 
     def _launch_mpv(self, video_path):
         self._stop_mpv()
@@ -2981,7 +2975,7 @@ class MultiZoomScaleDialog(QDialog):
 
     def _on_external_source_mode_changed(self, _index):
         if self._ext_preview_open:
-            self._schedule_external_preview_update()
+            self._open_external_preview()
 
     def _toggle_external_preview(self):
         if self._ext_preview_open:
@@ -3040,25 +3034,15 @@ class MultiZoomScaleDialog(QDialog):
         vf_str = _build_vf_for_zones(self._collect_config())
         self._ext_preview_vf = vf_str or ""
 
-        cmd = [
+        cmd = _build_external_preview_mpv_command(
             MPV_PATH,
-            f"--input-ipc-server={self._ext_preview_ipc_path}",
-            "--fullscreen",
-            f"--fs-screen={self._output_display_num}",
-            "--no-osd-bar",
-            "--no-osc",
-            "--no-input-default-bindings",
-            "--really-quiet",
-            "--loop-file=inf",
-            "--keep-open=yes",
+            self._ext_preview_ipc_path,
+            self._output_display_num,
             source_path,
-        ]
-        if not self._is_external_source_video():
-            cmd.insert(-1, "--image-display-duration=inf")
-        if self._ext_preview_paused:
-            cmd.insert(-1, "--pause")
-        if self._ext_preview_vf:
-            cmd.insert(-1, f"--vf={self._ext_preview_vf}")
+            is_video_source=self._is_external_source_video(),
+            paused=self._ext_preview_paused,
+            vf_str=self._ext_preview_vf,
+        )
 
         try:
             self._ext_preview_process = subprocess.Popen(cmd)
@@ -3083,12 +3067,8 @@ class MultiZoomScaleDialog(QDialog):
                     ["set_property", "time-pos", max(0.0, self._ext_preview_start_pos)],
                     max_attempts=8,
                     tolerate_closed=True))
-        QTimer.singleShot(350, self._apply_external_preview_update)
 
     def _close_external_preview(self, status_text=None):
-        self._ext_preview_update_timer.stop()
-        self._ext_preview_reopen_timer.stop()
-        self._ext_preview_reopen_pending = False
         self._snapshot_external_preview_position()
         if self._ext_preview_process and self._ext_preview_process.poll() is None:
             self._send_external_preview_command(["quit"], max_attempts=2, tolerate_closed=True)
@@ -3111,40 +3091,6 @@ class MultiZoomScaleDialog(QDialog):
         if not self._ext_preview_open:
             self._status.setText("External preview is not open.")
             return
-        self._apply_external_preview_update()
-
-    def _schedule_external_preview_update(self):
-        """Automatic external preview refresh disabled; manual Live Refresh only.
-        Call sites are intentionally preserved so auto-refresh can be re-enabled
-        in future without hunting for every trigger location."""
-        return
-
-    def _apply_external_preview_update(self):
-        """Called after the debounce timer fires.  Restart the external preview
-        process so the updated filter configuration is applied at launch, which
-        is the only reliable way to force mpv to redraw paused/still-frame
-        content with the new crop/stretch/zone settings."""
-        if not self._ext_preview_open:
-            return
-        if self._ext_preview_reopen_pending:
-            # A restart is already scheduled; don't stack another one.
-            return
-        if self._ext_preview_process and self._ext_preview_process.poll() is not None:
-            # Process died on its own – treat as a normal close.
-            self._close_external_preview("External preview was closed.")
-            return
-        self._ext_preview_reopen_pending = True
-        # Use a tiny timer so the call stack unwinds before we close+reopen.
-        self._ext_preview_reopen_timer.start()
-
-    def _do_reopen_external_preview(self):
-        """Execute the close-then-reopen cycle that reliably refreshes the
-        external preview after configuration changes."""
-        self._ext_preview_reopen_pending = False
-        if not self._ext_preview_open:
-            return
-        # _open_external_preview calls _snapshot_external_preview_position and
-        # _close_external_preview internally, so no extra snapshot is needed here.
         self._open_external_preview()
 
     # ------------------------------------------------------------------

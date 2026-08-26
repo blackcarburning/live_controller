@@ -204,6 +204,39 @@ def _ext_preview_vf_command(vf_str):
     return ["vf", "clr", ""]
 
 
+def _build_external_preview_mpv_command(
+    mpv_path,
+    ipc_path,
+    output_display_num,
+    source_path,
+    *,
+    is_video_source,
+    paused=False,
+    vf_str="",
+):
+    cmd = [
+        mpv_path,
+        f"--input-ipc-server={ipc_path}",
+        "--fullscreen",
+        f"--fs-screen={output_display_num}",
+        "--no-osd-bar",
+        "--no-osc",
+        "--no-input-default-bindings",
+        "--really-quiet",
+        "--keep-open=yes",
+    ]
+    if is_video_source:
+        cmd.append("--loop-file=inf")
+    else:
+        cmd.append("--image-display-duration=inf")
+    if paused:
+        cmd.append("--pause")
+    if vf_str:
+        cmd.append(f"--vf={vf_str}")
+    cmd.append(source_path)
+    return cmd
+
+
 # ---------------------------------------------------------------------------
 # _migrate_zoom_config tests
 # ---------------------------------------------------------------------------
@@ -567,3 +600,41 @@ def test_ext_preview_vf_command_real_single_zone():
     assert cmd[0] == "vf"
     assert cmd[1] == "set"
     assert cmd[2] == vf_str
+
+
+# ---------------------------------------------------------------------------
+# _build_external_preview_mpv_command tests
+# ---------------------------------------------------------------------------
+
+def test_external_preview_image_command_is_static():
+    cmd = _build_external_preview_mpv_command(
+        r"c:\mpv\mpv.exe",
+        r"\\.\pipe\preview",
+        2,
+        r"c:\frames\snapshot.png",
+        is_video_source=False,
+        paused=True,
+        vf_str="lavfi=[crop=100:100:0:0,setsar=1]",
+    )
+    assert "--image-display-duration=inf" in cmd
+    assert "--keep-open=yes" in cmd
+    assert "--loop-file=inf" not in cmd
+    assert "--pause" in cmd
+    assert "--vf=lavfi=[crop=100:100:0:0,setsar=1]" in cmd
+    assert cmd[-1] == r"c:\frames\snapshot.png"
+
+
+def test_external_preview_video_command_loops():
+    cmd = _build_external_preview_mpv_command(
+        r"c:\mpv\mpv.exe",
+        r"\\.\pipe\preview",
+        2,
+        r"c:\videos\clip.mp4",
+        is_video_source=True,
+        paused=False,
+        vf_str="",
+    )
+    assert "--loop-file=inf" in cmd
+    assert "--image-display-duration=inf" not in cmd
+    assert "--pause" not in cmd
+    assert cmd[-1] == r"c:\videos\clip.mp4"

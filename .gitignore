@@ -1,4 +1,5 @@
 __pycache__/
+.venv/
 mac_fallback_config.json
 mac_fallback_session.json
 mac_track_names.json
