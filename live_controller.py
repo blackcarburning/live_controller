@@ -971,6 +971,8 @@ class ZoomCropCanvas(QWidget):
     """
     region_changed = pyqtSignal(int, int, int, int)  # x, y, w, h in source pixels
     handle_dragged = pyqtSignal(str, int, int)        # drag_mode, abs_x, abs_y
+    drag_started   = pyqtSignal()                     # emitted once on left-button press (drag begins)
+    drag_finished  = pyqtSignal()                     # emitted once on mouse-button release after a drag
 
     HANDLE_SIZE = 9  # Half-size of resize handles in canvas pixels
 
@@ -1165,6 +1167,8 @@ class ZoomCropCanvas(QWidget):
         self._drag_start = event.pos()
         self._drag_mode = self._hit_mode(event.pos())
         self._drag_orig_rect = QRect(self._sel)
+        if self._drag_mode is not None:
+            self.drag_started.emit()
 
     def mouseMoveEvent(self, event):
         if not self.pixmap:
@@ -1259,10 +1263,13 @@ class ZoomCropCanvas(QWidget):
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            was_dragging = self._drag_mode is not None
             self._drag_start = None
             self._drag_mode = None
             self._drag_handle_pos = None
             self.handle_dragged.emit("", 0, 0)
+            if was_dragging:
+                self.drag_finished.emit()
             self.update()
 
     def resizeEvent(self, event):
@@ -1646,6 +1653,8 @@ class StretchCanvas(QWidget):
     """
 
     output_changed = pyqtSignal(int, int)  # scale_w, scale_h
+    drag_started   = pyqtSignal()          # emitted once on left-button press when a handle is hit
+    drag_finished  = pyqtSignal()          # emitted once on mouse-button release after a drag
     HANDLE_SIZE = 9
 
     def __init__(self, color="#ff9800", parent=None):
@@ -1775,6 +1784,7 @@ class StretchCanvas(QWidget):
             self._drag_mode = mode
             self._drag_start = event.pos()
             self._drag_orig = (self._out_w, self._out_h)
+            self.drag_started.emit()
 
     def mouseMoveEvent(self, event):
         if not (event.buttons() & Qt.MouseButton.LeftButton):
@@ -1805,8 +1815,11 @@ class StretchCanvas(QWidget):
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            was_dragging = self._drag_mode is not None
             self._drag_mode = None
             self._drag_start = None
+            if was_dragging:
+                self.drag_finished.emit()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1885,6 +1898,10 @@ class MultiZoomScaleDialog(QDialog):
         self._ext_preview_reopen_timer.setSingleShot(True)
         self._ext_preview_reopen_timer.setInterval(50)
         self._ext_preview_reopen_timer.timeout.connect(self._do_reopen_external_preview)
+
+        # Suppress live-refresh external preview restarts while a canvas drag is in progress;
+        # refresh is triggered once on drag_finished instead.
+        self._canvas_drag_active = False
 
         self._setup_ui()
         self._load_config_to_ui()
@@ -2115,6 +2132,10 @@ class MultiZoomScaleDialog(QDialog):
                 lambda x, y, w, h, zi=i: self._on_crop_changed(zi, x, y, w, h))
             stretch_canvas.output_changed.connect(
                 lambda sw, sh, zi=i: self._on_stretch_changed(zi, sw, sh))
+            crop_canvas.drag_started.connect(self._on_canvas_drag_started)
+            crop_canvas.drag_finished.connect(self._on_canvas_drag_finished)
+            stretch_canvas.drag_started.connect(self._on_canvas_drag_started)
+            stretch_canvas.drag_finished.connect(self._on_canvas_drag_finished)
             for sb in (x_sb, y_sb, w_sb, h_sb):
                 sb.valueChanged.connect(lambda _, zi=i: self._on_crop_spinbox_changed(zi))
             sw_sb.valueChanged.connect(lambda _, zi=i: self._on_scale_spinbox_changed(zi))
@@ -2193,6 +2214,8 @@ class MultiZoomScaleDialog(QDialog):
             "This crop is applied AFTER all per-zone transforms and BEFORE the composite stretch.\n"
             "Set Width to 0 in the numeric controls to disable cropping (pass-through).")
         self._comp_crop_canvas.region_changed.connect(self._on_comp_crop_changed)
+        self._comp_crop_canvas.drag_started.connect(self._on_canvas_drag_started)
+        self._comp_crop_canvas.drag_finished.connect(self._on_canvas_drag_finished)
 
         self._comp_stretch_canvas = StretchCanvas(color="#e040fb")
         self._comp_stretch_canvas.setToolTip(
@@ -2201,6 +2224,8 @@ class MultiZoomScaleDialog(QDialog):
             "Width and height can be set independently for non-uniform stretching.\n"
             "Set both Scale W and Scale H to -1 (auto) to skip this step.")
         self._comp_stretch_canvas.output_changed.connect(self._on_comp_stretch_changed)
+        self._comp_stretch_canvas.drag_started.connect(self._on_canvas_drag_started)
+        self._comp_stretch_canvas.drag_finished.connect(self._on_canvas_drag_finished)
 
         self._comp_stacked.addWidget(self._comp_crop_canvas)    # index 0
         self._comp_stacked.addWidget(self._comp_stretch_canvas) # index 1
@@ -2575,6 +2600,20 @@ class MultiZoomScaleDialog(QDialog):
         self._comp_sh_sb.setValue(sh)
         self._updating = False
         self._schedule_composite_update()
+
+    # ------------------------------------------------------------------
+    # Canvas drag-active tracking for live-refresh gating
+    # ------------------------------------------------------------------
+
+    def _on_canvas_drag_started(self, *_args):
+        """Set drag-active flag when a canvas drag handle is pressed.
+        The flag suppresses external-preview restarts mid-drag."""
+        self._canvas_drag_active = True
+
+    def _on_canvas_drag_finished(self):
+        """Clear drag-active flag and trigger one external-preview update on release."""
+        self._canvas_drag_active = False
+        self._schedule_external_preview_update()
 
     # ------------------------------------------------------------------
     # Real-time composite update scheduling
@@ -3071,6 +3110,9 @@ class MultiZoomScaleDialog(QDialog):
 
     def _schedule_external_preview_update(self):
         if not self._ext_preview_open or not self._ext_live_refresh_btn.isChecked():
+            return
+        # Don't restart the preview mid-drag; _on_canvas_drag_finished will trigger it on release.
+        if self._canvas_drag_active:
             return
         self._ext_preview_update_timer.start()
 
