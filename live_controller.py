@@ -1936,10 +1936,18 @@ class MultiZoomScaleDialog(QDialog):
             "Open/close a dedicated fullscreen mpv preview on the selected final-output display.\n"
             "Uses the same composite filter chain as live playback and does not start automatically.")
         self._ext_toggle_btn.clicked.connect(self._toggle_external_preview)
+        self._ext_live_refresh_btn = QPushButton("Live Refresh")
+        self._ext_live_refresh_btn.setCheckable(True)
+        self._ext_live_refresh_btn.setChecked(False)
+        self._ext_live_refresh_btn.setToolTip(
+            "When enabled, any change to zone or composite crop/stretch settings automatically\n"
+            "restarts the external preview (debounced, 350 ms) so the new filter chain is\n"
+            "shown immediately. Disable to manage the preview window manually.")
         self._ext_preview_label = QLabel(f"Target display: {self._output_display_num}")
         self._ext_preview_label.setStyleSheet("color: #888; font-style: italic;")
         ext_bar.addWidget(self._ext_source_combo)
         ext_bar.addWidget(self._ext_toggle_btn)
+        ext_bar.addWidget(self._ext_live_refresh_btn)
         ext_bar.addWidget(self._ext_preview_label)
         ext_bar.addStretch()
         root.addLayout(ext_bar)
@@ -2542,6 +2550,7 @@ class MultiZoomScaleDialog(QDialog):
                 self._comp_y_sb.value(),
                 cw, ch,
             )
+        self._schedule_composite_update()
 
     def _on_comp_scale_spinbox_changed(self):
         """Composite stretch spinboxes changed → update the stretch canvas output dimensions."""
@@ -2555,6 +2564,7 @@ class MultiZoomScaleDialog(QDialog):
             sw if sw > 0 else src_w,
             sh if sh > 0 else src_h,
         )
+        self._schedule_composite_update()
 
     def _on_comp_stretch_changed(self, sw, sh):
         """Stretch canvas handles moved → update composite scale spinboxes."""
@@ -3060,7 +3070,7 @@ class MultiZoomScaleDialog(QDialog):
             self._status.setText(status_text)
 
     def _schedule_external_preview_update(self):
-        if not self._ext_preview_open:
+        if not self._ext_preview_open or not self._ext_live_refresh_btn.isChecked():
             return
         self._ext_preview_update_timer.start()
 
