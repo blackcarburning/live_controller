@@ -1954,12 +1954,10 @@ class MultiZoomScaleDialog(QDialog):
             "Uses the same composite filter chain as live playback and does not start automatically.")
         self._ext_toggle_btn.clicked.connect(self._toggle_external_preview)
         self._ext_live_refresh_btn = QPushButton("Live Refresh")
-        self._ext_live_refresh_btn.setCheckable(True)
-        self._ext_live_refresh_btn.setChecked(False)
         self._ext_live_refresh_btn.setToolTip(
-            "When enabled, any change to zone or composite crop/stretch settings automatically\n"
-            "restarts the external preview (debounced, 350 ms) so the new filter chain is\n"
-            "shown immediately. Disable to manage the preview window manually.")
+            "Apply current zone/composite settings to the external preview.\n"
+            "Click to reload the preview once.")
+        self._ext_live_refresh_btn.clicked.connect(self._on_live_refresh_clicked)
         self._ext_preview_label = QLabel(f"Target display: {self._output_display_num}")
         self._ext_preview_label.setStyleSheet("color: #888; font-style: italic;")
         ext_bar.addWidget(self._ext_source_combo)
@@ -3108,13 +3106,18 @@ class MultiZoomScaleDialog(QDialog):
         if status_text:
             self._status.setText(status_text)
 
+    def _on_live_refresh_clicked(self):
+        """Manually reload external preview using current settings."""
+        if not self._ext_preview_open:
+            self._status.setText("External preview is not open.")
+            return
+        self._apply_external_preview_update()
+
     def _schedule_external_preview_update(self):
-        if not self._ext_preview_open or not self._ext_live_refresh_btn.isChecked():
-            return
-        # Don't restart the preview mid-drag; _on_canvas_drag_finished will trigger it on release.
-        if self._canvas_drag_active:
-            return
-        self._ext_preview_update_timer.start()
+        """Automatic external preview refresh disabled; manual Live Refresh only.
+        Call sites are intentionally preserved so auto-refresh can be re-enabled
+        in future without hunting for every trigger location."""
+        return
 
     def _apply_external_preview_update(self):
         """Called after the debounce timer fires.  Restart the external preview
