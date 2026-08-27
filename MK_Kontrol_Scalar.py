@@ -1864,9 +1864,10 @@ class StretchCanvas(QWidget):
         dx = (event.pos().x() - self._drag_start.x()) / max(1e-6, scale)
         dy = (event.pos().y() - self._drag_start.y()) / max(1e-6, scale)
         ow, oh = self._drag_orig
-        if 'r' in self._drag_mode:
+        suffix = self._drag_mode[len('resize_'):]
+        if 'r' in suffix:
             ow = max(1, int(ow + dx))
-        if 'b' in self._drag_mode:
+        if 'b' in suffix:
             oh = max(1, int(oh + dy))
         self._out_w = ow
         self._out_h = oh
