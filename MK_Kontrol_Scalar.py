@@ -39,6 +39,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
 import json
 import shutil
 import uuid
@@ -1332,7 +1333,7 @@ class MidiSyncWorker(QThread):
             if not self._is_running:
                 raise InterruptedError("Playback stopped by user during offset window")
 
-            self._debug_log(
+            self._log_debug(
                 f"MIDI offset applied: {self.midi_offset_ms} ms "
                 f"(midi_start in +{lead:.4f}s, "
                 f"video_unpause in +{lead + offset_sec:.4f}s)")
@@ -1349,7 +1350,10 @@ class MidiSyncWorker(QThread):
                 else:
                     time.sleep(0.001)
             self._log_mpv_exit("playback")
+        except InterruptedError:
+            pass
         except Exception as e:
+            self._log_debug(f"Playback exception: {traceback.format_exc()}")
             self.error.emit(f"Playback error: {e}")
         finally:
             self.cleanup(socket_path, started_ports)
