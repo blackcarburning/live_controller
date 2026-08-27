@@ -76,9 +76,9 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QGroupBox, QLabel, QFileDialog, QSizePolicy, QComboBox,
                              QAbstractButton, QAbstractItemView, QCheckBox,
                              QGridLayout, QSpinBox, QColorDialog, QTextEdit, QDialog,
-                             QSlider, QRadioButton, QTabWidget, QMessageBox)
+                             QSlider, QRadioButton, QTabWidget, QStackedWidget, QMessageBox)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer, QRect
-from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen, QTextCursor
+from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen, QPixmap, QTextCursor
 
 
 # --- Executable Path Detection ---
@@ -873,6 +873,69 @@ def _make_unique_mpv_pipe_name(prefix):
     return path
 
 
+
+
+def _build_external_preview_mpv_command(
+    mpv_path,
+    ipc_path,
+    output_display_num,
+    source_path,
+    *,
+    is_video_source,
+    paused=False,
+    vf_str="",
+):
+    """Build the external-preview mpv command line for either video or still images."""
+    cmd = [
+        mpv_path,
+        f"--input-ipc-server={ipc_path}",
+        "--fullscreen",
+        f"--fs-screen={output_display_num}",
+        "--no-osd-bar",
+        "--no-osc",
+        "--no-input-default-bindings",
+        "--really-quiet",
+        "--keep-open=yes",
+    ]
+    if is_video_source:
+        cmd.append("--loop-file=inf")
+    else:
+        cmd.append("--image-display-duration=inf")
+    if paused:
+        cmd.append("--pause")
+    if vf_str:
+        cmd.append(f"--vf={vf_str}")
+    cmd.append(source_path)
+    return cmd
+
+
+def _build_multizone_capture_preview_mpv_command(mpv_path, ipc_path, video_path):
+    """Build the windowed mpv command used for Multi-Zone frame capture preview."""
+    return [
+        mpv_path,
+        f"--input-ipc-server={ipc_path}",
+        "--pause",
+        "--no-fullscreen",
+        "--geometry=800x600",
+        "--title=Multi-Zone Preview — navigate then click Capture Frame",
+        "--ontop",
+        "--no-osd-bar",
+        "--no-osc",
+        "--no-input-default-bindings",
+        "--loop-file=inf",
+        "--really-quiet",
+        video_path,
+    ]
+
+
+def _mz_format_duration(seconds):
+    """Format *seconds* as MM:SS for display in the Multi-Zone scrub bar."""
+    if seconds is None or seconds < 0:
+        return "00:00"
+    total = int(seconds)
+    mins, secs = divmod(total, 60)
+    return f"{mins:02d}:{secs:02d}"
+
 def _send_mpv_ipc_command(ipc_path, command, max_attempts=2, retry_delay=0.05):
     payload = json.dumps({"command": command}, ensure_ascii=False)
     attempts = max(1, max_attempts)
@@ -1326,60 +1389,1939 @@ class PositionPoller(QThread):
 
 
 class ZoomCropCanvas(QWidget):
-    config_changed = pyqtSignal(dict)
+    """A canvas widget for visually defining a crop region on a captured video frame.
+    
+    The user can drag to create a new selection, move the selection,
+    or resize it by dragging the corner/edge handles. Pixel coordinates
+    are reported live via the region_changed signal.
+    """
+    region_changed = pyqtSignal(int, int, int, int)  # x, y, w, h in source pixels
+    handle_dragged = pyqtSignal(str, int, int)        # drag_mode, abs_x, abs_y
+    drag_started   = pyqtSignal()                     # emitted once on left-button press (drag begins)
+    drag_finished  = pyqtSignal()                     # emitted once on mouse-button release after a drag
 
-    def __init__(self, zone_config=None, parent=None):
+    HANDLE_SIZE = 9  # Half-size of resize handles in canvas pixels
+
+    def __init__(self, color="#00e676", parent=None):
         super().__init__(parent)
-        self.zone_config = dict(zone_config or _default_zone())
-        self.setMinimumHeight(120)
+        self.selection_color = color  # Colour used for border and handles
+        self.pixmap = None
+        self.scale_factor = 1.0
+        self.offset_x = 0.0
+        self.offset_y = 0.0
+        self.source_w = 0
+        self.source_h = 0
 
-    def paintEvent(self, _event):
+        # Selection rectangle in source-pixel coordinates
+        self._sel = QRect()
+        self._drag_start = None
+        self._drag_mode = None
+        self._drag_orig_rect = QRect()
+        self._drag_handle_pos = None  # (mode, src_x, src_y) while dragging
+
+        self.setMinimumSize(480, 270)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def load_frame(self, image_path):
+        """Load a video frame image from *image_path* and display it."""
+        pm = QPixmap(image_path)
+        if pm.isNull():
+            return
+        self.pixmap = pm
+        self.source_w = pm.width()
+        self.source_h = pm.height()
+        if self._sel.isNull():
+            self._sel = QRect(0, 0, self.source_w, self.source_h)
+        self._update_transform()
+        self.update()
+
+    def set_region(self, x, y, w, h):
+        """Set the selection region in source-pixel coordinates."""
+        self._sel = QRect(x, y, max(1, w), max(1, h))
+        self.update()
+        self.region_changed.emit(self._sel.x(), self._sel.y(),
+                                 self._sel.width(), self._sel.height())
+
+    def get_region(self):
+        """Return (x, y, w, h) of the selection in source-pixel coordinates."""
+        return self._sel.x(), self._sel.y(), self._sel.width(), self._sel.height()
+
+    # ------------------------------------------------------------------
+    # Coordinate helpers
+    # ------------------------------------------------------------------
+
+    def _update_transform(self):
+        if not self.pixmap:
+            return
+        sx = self.width() / max(1, self.source_w)
+        sy = self.height() / max(1, self.source_h)
+        self.scale_factor = min(sx, sy)
+        self.offset_x = (self.width() - self.source_w * self.scale_factor) / 2.0
+        self.offset_y = (self.height() - self.source_h * self.scale_factor) / 2.0
+
+    def _to_canvas(self, sx, sy):
+        return QPoint(int(sx * self.scale_factor + self.offset_x),
+                      int(sy * self.scale_factor + self.offset_y))
+
+    def _to_source(self, cx, cy):
+        sx = (cx - self.offset_x) / max(1e-6, self.scale_factor)
+        sy = (cy - self.offset_y) / max(1e-6, self.scale_factor)
+        return int(sx), int(sy)
+
+    def _sel_canvas(self):
+        """Return the selection rect in canvas coordinates."""
+        if self._sel.isNull():
+            return QRect()
+        tl = self._to_canvas(self._sel.left(), self._sel.top())
+        br = self._to_canvas(self._sel.right(), self._sel.bottom())
+        return QRect(tl, br)
+
+    def _handle_rects(self):
+        """Return list of (QRect, name) for the eight resize handles."""
+        cr = self._sel_canvas()
+        if cr.isNull():
+            return []
+        h = self.HANDLE_SIZE
+        cx, cy = cr.center().x(), cr.center().y()
+        points = [
+            (cr.left(),   cr.top(),    'tl'),
+            (cr.right(),  cr.top(),    'tr'),
+            (cr.left(),   cr.bottom(), 'bl'),
+            (cr.right(),  cr.bottom(), 'br'),
+            (cx,          cr.top(),    't'),
+            (cx,          cr.bottom(), 'b'),
+            (cr.left(),   cy,          'l'),
+            (cr.right(),  cy,          'r'),
+        ]
+        return [(QRect(px - h, py - h, h * 2, h * 2), name)
+                for px, py, name in points]
+
+    def _hit_mode(self, pos):
+        """Return the drag mode string based on where *pos* lands."""
+        cr = self._sel_canvas()
+        for rect, name in self._handle_rects():
+            if rect.contains(pos):
+                return f'resize_{name}'
+        if not cr.isNull() and cr.contains(pos):
+            return 'move'
+        return 'new'
+
+    # ------------------------------------------------------------------
+    # Paint
+    # ------------------------------------------------------------------
+
+    def paintEvent(self, event):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#1c1c1e"))
-        painter.setPen(QPen(QColor("#636366"), 1))
-        painter.drawRect(self.rect().adjusted(1, 1, -2, -2))
+        if not self.pixmap:
+            painter.setPen(QColor("#555"))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                             "Load a video and click 'Capture Frame'")
+            return
+
+        # Draw scaled video frame
+        dest_w = int(self.source_w * self.scale_factor)
+        dest_h = int(self.source_h * self.scale_factor)
+        dest_rect = QRect(int(self.offset_x), int(self.offset_y), dest_w, dest_h)
+        painter.drawPixmap(dest_rect, self.pixmap)
+
+        cr = self._sel_canvas()
+        if not cr.isNull():
+            # Semi-transparent dark overlay outside the selection
+            painter.setBrush(QBrush(QColor(0, 0, 0, 120)))
+            painter.setPen(Qt.PenStyle.NoPen)
+            # top strip
+            painter.drawRect(dest_rect.left(), dest_rect.top(),
+                             dest_rect.width(), cr.top() - dest_rect.top())
+            # bottom strip
+            painter.drawRect(dest_rect.left(), cr.bottom(),
+                             dest_rect.width(), dest_rect.bottom() - cr.bottom())
+            # left strip
+            painter.drawRect(dest_rect.left(), cr.top(),
+                             cr.left() - dest_rect.left(), cr.height())
+            # right strip
+            painter.drawRect(cr.right(), cr.top(),
+                             dest_rect.right() - cr.right(), cr.height())
+
+            # Selection border
+            painter.setPen(QPen(QColor(self.selection_color), 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(cr)
+
+            # Resize handles
+            painter.setPen(QPen(QColor(self.selection_color), 1))
+            painter.setBrush(QBrush(QColor(self.selection_color)))
+            for rect, _ in self._handle_rects():
+                painter.drawRect(rect)
+
+        # Coordinate overlay while a handle is being dragged
+        if self._drag_handle_pos:
+            mode, src_x, src_y = self._drag_handle_pos
+            vertical_modes = ('resize_t', 'resize_b',
+                              'resize_tl', 'resize_tr',
+                              'resize_bl', 'resize_br')
+            if mode in vertical_modes and self.source_h > 0:
+                y_from_bottom = self.source_h - src_y - 1
+                coord_text = f"X:{src_x}  Y:{src_y}  (↑{y_from_bottom} from bottom)"
+            else:
+                coord_text = f"X:{src_x}  Y:{src_y}"
+            canvas_pos = self._to_canvas(src_x, src_y)
+            fm = painter.fontMetrics()
+            tw = fm.horizontalAdvance(coord_text) + 10
+            th = fm.height() + 6
+            tx = canvas_pos.x() + 15
+            ty = canvas_pos.y() - th // 2
+            # Keep the tooltip within the canvas area
+            tx = max(2, min(self.width() - tw - 2, tx))
+            ty = max(2, min(self.height() - th - 2, ty))
+            painter.fillRect(tx, ty, tw, th, QColor(0, 0, 0, 200))
+            painter.setPen(QColor(self.selection_color))
+            painter.drawText(tx + 5, ty + th - 4, coord_text)
+
+    # ------------------------------------------------------------------
+    # Mouse interaction
+    # ------------------------------------------------------------------
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton or not self.pixmap:
+            return
+        self._drag_start = event.pos()
+        self._drag_mode = self._hit_mode(event.pos())
+        self._drag_orig_rect = QRect(self._sel)
+        if self._drag_mode is not None:
+            self.drag_started.emit()
+
+    def mouseMoveEvent(self, event):
+        if not self.pixmap:
+            return
+
+        # Update cursor
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            mode = self._hit_mode(event.pos())
+            cursors = {
+                'move': Qt.CursorShape.SizeAllCursor,
+                'resize_tl': Qt.CursorShape.SizeFDiagCursor,
+                'resize_br': Qt.CursorShape.SizeFDiagCursor,
+                'resize_tr': Qt.CursorShape.SizeBDiagCursor,
+                'resize_bl': Qt.CursorShape.SizeBDiagCursor,
+                'resize_t': Qt.CursorShape.SizeVerCursor,
+                'resize_b': Qt.CursorShape.SizeVerCursor,
+                'resize_l': Qt.CursorShape.SizeHorCursor,
+                'resize_r': Qt.CursorShape.SizeHorCursor,
+            }
+            self.setCursor(cursors.get(mode, Qt.CursorShape.CrossCursor))
+            return
+
+        if not self._drag_start:
+            return
+
+        # Delta in source pixels
+        dx_c = event.pos().x() - self._drag_start.x()
+        dy_c = event.pos().y() - self._drag_start.y()
+        dx_s = int(dx_c / max(1e-6, self.scale_factor))
+        dy_s = int(dy_c / max(1e-6, self.scale_factor))
+
+        r = QRect(self._drag_orig_rect)
+
+        if self._drag_mode == 'move':
+            r.translate(dx_s, dy_s)
+        elif self._drag_mode == 'new':
+            sx0, sy0 = self._to_source(self._drag_start.x(), self._drag_start.y())
+            sx1, sy1 = self._to_source(event.pos().x(), event.pos().y())
+            r = QRect(min(sx0, sx1), min(sy0, sy1),
+                      abs(sx1 - sx0), abs(sy1 - sy0))
+        elif self._drag_mode == 'resize_tl':
+            r.setTopLeft(r.topLeft() + QPoint(dx_s, dy_s))
+        elif self._drag_mode == 'resize_tr':
+            r.setTopRight(r.topRight() + QPoint(dx_s, dy_s))
+        elif self._drag_mode == 'resize_bl':
+            r.setBottomLeft(r.bottomLeft() + QPoint(dx_s, dy_s))
+        elif self._drag_mode == 'resize_br':
+            r.setBottomRight(r.bottomRight() + QPoint(dx_s, dy_s))
+        elif self._drag_mode == 'resize_t':
+            r.setTop(r.top() + dy_s)
+        elif self._drag_mode == 'resize_b':
+            r.setBottom(r.bottom() + dy_s)
+        elif self._drag_mode == 'resize_l':
+            r.setLeft(r.left() + dx_s)
+        elif self._drag_mode == 'resize_r':
+            r.setRight(r.right() + dx_s)
+
+        r = r.normalized()
+        # Hard-clamp to source image bounds — no handle can escape the frame
+        r.setLeft(max(0, r.left()))
+        r.setTop(max(0, r.top()))
+        r.setRight(min(self.source_w - 1, r.right()))
+        r.setBottom(min(self.source_h - 1, r.bottom()))
+        if r.width() < 1:
+            r.setWidth(1)
+        if r.height() < 1:
+            r.setHeight(1)
+
+        self._sel = r
+
+        # Determine the active handle position in source coordinates and emit
+        cx_s = self._sel.center().x()
+        cy_s = self._sel.center().y()
+        _pos_map = {
+            'move':      (self._sel.left(), self._sel.top()),
+            'new':       (self._sel.right(), self._sel.bottom()),
+            'resize_tl': (self._sel.left(),  self._sel.top()),
+            'resize_tr': (self._sel.right(), self._sel.top()),
+            'resize_bl': (self._sel.left(),  self._sel.bottom()),
+            'resize_br': (self._sel.right(), self._sel.bottom()),
+            'resize_t':  (cx_s,              self._sel.top()),
+            'resize_b':  (cx_s,              self._sel.bottom()),
+            'resize_l':  (self._sel.left(),  cy_s),
+            'resize_r':  (self._sel.right(), cy_s),
+        }
+        hx, hy = _pos_map.get(self._drag_mode, (cx_s, cy_s))
+        self._drag_handle_pos = (self._drag_mode, hx, hy)
+        self.handle_dragged.emit(self._drag_mode, hx, hy)
+
+        self.update()
+        self.region_changed.emit(r.x(), r.y(), r.width(), r.height())
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            was_dragging = self._drag_mode is not None
+            self._drag_start = None
+            self._drag_mode = None
+            self._drag_handle_pos = None
+            self.handle_dragged.emit("", 0, 0)
+            if was_dragging:
+                self.drag_finished.emit()
+            self.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_transform()
+        self.update()
 
 
-class StretchCanvas(ZoomCropCanvas):
-    pass
+class StretchCanvas(QWidget):
+    """Canvas that displays a cropped region and lets the user resize output dimensions.
+
+    In stretch/scale edit mode the user sees the cropped sub-image drawn at the
+    *current output size* (potentially distorted) and can drag the right/bottom/
+    corner handles to change the scale_w × scale_h values.
+    """
+
+    output_changed = pyqtSignal(int, int)  # scale_w, scale_h
+    drag_started   = pyqtSignal()          # emitted once on left-button press when a handle is hit
+    drag_finished  = pyqtSignal()          # emitted once on mouse-button release after a drag
+    HANDLE_SIZE = 9
+
+    def __init__(self, color="#ff9800", parent=None):
+        super().__init__(parent)
+        self._color = color
+        self._full_pixmap = None   # Full captured frame
+        self._cropped_pm = None    # Cropped sub-image
+        self._crop_w = 1920
+        self._crop_h = 1080
+        self._out_w = 1920
+        self._out_h = 1080
+        self._drag_mode = None
+        self._drag_start = None
+        self._drag_orig = (0, 0)
+        self.setMinimumSize(480, 270)
+        self.setMouseTracking(True)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def set_source(self, full_pixmap, crop_x, crop_y, crop_w, crop_h):
+        """Update the displayed pixmap to the given crop region of full_pixmap."""
+        self._full_pixmap = full_pixmap
+        self._crop_w = max(1, crop_w)
+        self._crop_h = max(1, crop_h)
+        if full_pixmap and not full_pixmap.isNull():
+            self._cropped_pm = full_pixmap.copy(
+                max(0, crop_x), max(0, crop_y), self._crop_w, self._crop_h)
+        else:
+            self._cropped_pm = None
+        self.update()
+
+    def set_output(self, w, h):
+        """Set the output (scale) dimensions and repaint."""
+        self._out_w = max(1, w)
+        self._out_h = max(1, h)
+        self.update()
+
+    def get_output(self):
+        """Return (scale_w, scale_h)."""
+        return self._out_w, self._out_h
+
+    def get_source_size(self):
+        """Return (crop_w, crop_h) — the natural source dimensions of the displayed image."""
+        return self._crop_w, self._crop_h
+
+    # ------------------------------------------------------------------
+    # Internal geometry
+    # ------------------------------------------------------------------
+
+    def _display_rect(self):
+        """Return (QRect, scale) for the output box drawn in widget space."""
+        margin = 20
+        avail_w = self.width() - 2 * margin
+        avail_h = self.height() - 2 * margin
+        sx = avail_w / max(1, self._out_w)
+        sy = avail_h / max(1, self._out_h)
+        scale = min(sx, sy)
+        dw = int(self._out_w * scale)
+        dh = int(self._out_h * scale)
+        ox = (self.width() - dw) // 2
+        oy = (self.height() - dh) // 2
+        return QRect(ox, oy, dw, dh), scale
+
+    def _handle_rects(self):
+        r, _ = self._display_rect()
+        h = self.HANDLE_SIZE
+        cx, cy = r.center().x(), r.center().y()
+        pts = [
+            (r.right(),  r.bottom(), 'br'),
+            (r.right(),  r.top(),    'tr'),
+            (r.left(),   r.bottom(), 'bl'),
+            (r.right(),  cy,         'r'),
+            (cx,         r.bottom(), 'b'),
+        ]
+        return [(QRect(px - h, py - h, h * 2, h * 2), name) for px, py, name in pts]
+
+    def _hit_mode(self, pos):
+        for rect, name in self._handle_rects():
+            if rect.contains(pos):
+                return f'resize_{name}'
+        return None
+
+    # ------------------------------------------------------------------
+    # Paint
+    # ------------------------------------------------------------------
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("#1c1c1e"))
+        r, _ = self._display_rect()
+
+        if self._cropped_pm and not self._cropped_pm.isNull():
+            painter.drawPixmap(r, self._cropped_pm)
+        else:
+            painter.setBrush(QBrush(QColor("#2a2a2a")))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRect(r)
+            painter.setPen(QColor("#555"))
+            painter.drawText(r, Qt.AlignmentFlag.AlignCenter,
+                             "Capture a frame first")
+
+        col = QColor(self._color)
+        painter.setPen(QPen(col, 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(r)
+
+        painter.setPen(QPen(col, 1))
+        painter.setBrush(QBrush(col))
+        for rect, _ in self._handle_rects():
+            painter.drawRect(rect)
+
+        painter.setPen(col)
+        painter.drawText(r.x() + 4, r.y() + 16,
+                         f"Output: {self._out_w} × {self._out_h} px")
+
+    # ------------------------------------------------------------------
+    # Mouse interaction
+    # ------------------------------------------------------------------
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        mode = self._hit_mode(event.pos())
+        if mode:
+            self._drag_mode = mode
+            self._drag_start = event.pos()
+            self._drag_orig = (self._out_w, self._out_h)
+            self.drag_started.emit()
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            mode = self._hit_mode(event.pos())
+            cursors = {
+                'resize_br': Qt.CursorShape.SizeFDiagCursor,
+                'resize_tr': Qt.CursorShape.SizeBDiagCursor,
+                'resize_bl': Qt.CursorShape.SizeBDiagCursor,
+                'resize_r':  Qt.CursorShape.SizeHorCursor,
+                'resize_b':  Qt.CursorShape.SizeVerCursor,
+            }
+            self.setCursor(cursors.get(mode, Qt.CursorShape.ArrowCursor))
+            return
+        if not self._drag_mode or not self._drag_start:
+            return
+        _, scale = self._display_rect()
+        dx = (event.pos().x() - self._drag_start.x()) / max(1e-6, scale)
+        dy = (event.pos().y() - self._drag_start.y()) / max(1e-6, scale)
+        ow, oh = self._drag_orig
+        suffix = self._drag_mode[len('resize_'):]
+        if 'r' in suffix:
+            ow = max(1, int(ow + dx))
+        if 'b' in suffix:
+            oh = max(1, int(oh + dy))
+        self._out_w = ow
+        self._out_h = oh
+        self.update()
+        self.output_changed.emit(self._out_w, self._out_h)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            was_dragging = self._drag_mode is not None
+            self._drag_mode = None
+            self._drag_start = None
+            if was_dragging:
+                self.drag_finished.emit()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update()
 
 
 class MultiZoomScaleDialog(QDialog):
-    def __init__(self, zoom_config, parent=None):
+    """Multi-zone crop/stretch configuration dialog.
+
+    Up to 3 independent crop zones can be configured and enabled; the enabled
+    zones are stitched (horizontally or vertically) to produce the final output
+    image sent to mpv.
+
+    Per-zone the user can toggle between:
+      • Crop mode   — drag the coloured rectangle on the full source frame.
+      • Stretch mode — drag handles to set output scale dimensions; the
+                       cropped sub-image is previewed stretched in real-time.
+
+    A *Final Preview* tab composites all enabled zones into one image showing
+    exactly how the final stitched output will look.
+    """
+
+    # Tab indices — zone tabs occupy 0 … NUM_ZONES-1
+    _COMP_TAB_INDEX  = NUM_ZONES      # "Composite Output"
+    _FINAL_TAB_INDEX = NUM_ZONES + 1  # "Final Preview"
+
+    def __init__(self, current_config, output_display_num=DEFAULT_VIDEO_SCREEN_NUMBER, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Multi-Zone Zoom / Scale")
-        self.resize(840, 520)
-        self._cfg = _migrate_zoom_config(zoom_config)
+        self.setWindowTitle("Multi-Zone Crop / Stretch Compositor")
+        self.setModal(True)
+        self.resize(1280, 820)
+
+        self._cfg = _migrate_zoom_config(current_config)
+        self.result_config = None
+        self._output_display_num = max(1, int(output_display_num))
+
+        # mpv / capture state (shared across all zone canvases)
+        self._mpv_process = None
+        self._ipc_path = None
+        self._selected_video_path = None
+        self._temp_dir = os.path.join(os.getcwd(), f".lc_mzoom_{os.getpid()}_{uuid.uuid4().hex[:8]}")
+        os.makedirs(self._temp_dir, exist_ok=True)
+        self._frame_path = os.path.join(self._temp_dir, "frame.png")
+        self._full_pixmap = None      # Most-recently captured video frame
+
+        # Dedicated mpv process for fullscreen external preview on final-output display
+        self._ext_preview_process = None
+        self._ext_preview_ipc_path = None
+        self._ext_preview_open = False
+        self._ext_preview_paused = True
+        self._ext_preview_source_path = None
+        self._ext_preview_start_pos = 0.0
+        self._ext_preview_wall_start = None
+        self._ext_preview_vf = None
+
+        self._updating = False        # Guard for circular signal updates
+
+        # Scrub-slider tracking state (capture-preview transport)
+        self._mz_pos = 0.0            # Most-recently known playback position (seconds)
+        self._mz_dur = 0.0            # Most-recently known video duration (seconds)
+        self._mz_slider_dragging = False  # True while the user has the handle pressed
+
+        # Background position poller for the capture-preview mpv instance
+        self._pos_poller = PositionPoller()
+        self._pos_poller.position_updated.connect(self._on_mz_position_updated)
+
+        # Debounce timer for real-time composite/preview updates
+        self._update_timer = QTimer(self)
+        self._update_timer.setSingleShot(True)
+        self._update_timer.setInterval(120)  # ms — short delay to smooth drag interactions
+        self._update_timer.timeout.connect(self._do_composite_update)
+
+        self._setup_ui()
+        self._load_config_to_ui()
+        # Start the position poller after all UI widgets are constructed so the
+        # slot cannot reference attributes that do not yet exist.
+        self._pos_poller.start()
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+
+    def _setup_ui(self):
         root = QVBoxLayout(self)
-        tabs = QTabWidget()
+        root.setSpacing(6)
+
+        # ---- Video controls bar ----
+        file_bar = QHBoxLayout()
+        self._select_btn = QPushButton("Select Video…")
+        self._select_btn.clicked.connect(self._select_video)
+        self._video_label = QLabel("No video selected.")
+        self._video_label.setStyleSheet("font-style: italic; color: #888;")
+        self._play_btn   = QPushButton("▶  Play")
+        self._play_btn.clicked.connect(self._play)
+        self._pause_btn  = QPushButton("⏸  Pause")
+        self._pause_btn.clicked.connect(self._pause)
+        self._capture_btn = QPushButton("📷  Capture Frame  →")
+        self._capture_btn.setStyleSheet(
+            "background-color: #007acc; color: white; font-weight: bold; padding: 4px 8px;")
+        self._capture_btn.clicked.connect(self._capture_frame)
+        self._capture_btn.setToolTip(
+            "Pause mpv and snapshot the current frame into all zone canvases.")
+        for btn in (self._play_btn, self._pause_btn, self._capture_btn):
+            btn.setEnabled(False)
+        file_bar.addWidget(self._select_btn)
+        file_bar.addWidget(self._video_label, 1)
+        file_bar.addWidget(self._play_btn)
+        file_bar.addWidget(self._pause_btn)
+        file_bar.addWidget(self._capture_btn)
+        root.addLayout(file_bar)
+
+        # ---- Transport / scrub controls row ----
+        transport_bar = QHBoxLayout()
+
+        # Play-from-beginning button
+        self._beg_btn = QPushButton("⏮  Beginning")
+        self._beg_btn.setToolTip("Seek to position 0 and start playback.")
+        self._beg_btn.clicked.connect(self._play_from_beginning)
+        self._beg_btn.setEnabled(False)
+
+        # Frame-step buttons
+        self._frame_back_btn = QPushButton("◀  Frame Back")
+        self._frame_back_btn.setToolTip("Step exactly one frame backward (works while paused).")
+        self._frame_back_btn.clicked.connect(self._frame_back)
+        self._frame_back_btn.setEnabled(False)
+
+        self._frame_fwd_btn = QPushButton("Frame Forward  ▶")
+        self._frame_fwd_btn.setToolTip("Step exactly one frame forward (works while paused).")
+        self._frame_fwd_btn.clicked.connect(self._frame_forward)
+        self._frame_fwd_btn.setEnabled(False)
+
+        # Scrub slider with MM:SS labels either side
+        self._mz_pos_label = QLabel("00:00")
+        self._mz_pos_label.setMinimumWidth(42)
+        self._mz_pos_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        self._mz_scrub_slider = QSlider(Qt.Orientation.Horizontal)
+        self._mz_scrub_slider.setRange(0, 1000)
+        self._mz_scrub_slider.setValue(0)
+        self._mz_scrub_slider.setEnabled(False)
+        self._mz_scrub_slider.setToolTip("Drag to jump to any position in the video.")
+        self._mz_scrub_slider.sliderMoved.connect(self._on_mz_scrub_moved)
+        self._mz_scrub_slider.sliderReleased.connect(self._on_mz_scrub_released)
+
+        self._mz_dur_label = QLabel("00:00")
+        self._mz_dur_label.setMinimumWidth(42)
+        self._mz_dur_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+        transport_bar.addWidget(self._beg_btn)
+        transport_bar.addWidget(self._frame_back_btn)
+        transport_bar.addWidget(self._frame_fwd_btn)
+        transport_bar.addSpacing(8)
+        transport_bar.addWidget(self._mz_pos_label)
+        transport_bar.addWidget(self._mz_scrub_slider, 1)
+        transport_bar.addWidget(self._mz_dur_label)
+        root.addLayout(transport_bar)
+
+        ext_bar = QHBoxLayout()
+        ext_bar.addWidget(QLabel("External preview:"))
+        self._ext_source_combo = QComboBox()
+        self._ext_source_combo.addItems(["Frame (captured/restored)", "Video (selected source)"])
+        self._ext_source_combo.setToolTip(
+            "Choose what to preview on the final-output display selected in the main window.\n"
+            "Frame mode loops the captured/restored snapshot. Video mode plays the selected source video.\n"
+            "This preview is separate from actual live playback.")
+        self._ext_source_combo.currentIndexChanged.connect(self._on_external_source_mode_changed)
+        self._ext_toggle_btn = QPushButton("Open External Preview")
+        self._ext_toggle_btn.setToolTip(
+            "Open/close a dedicated fullscreen mpv preview on the selected final-output display.\n"
+            "Uses the same composite filter chain as live playback and does not start automatically.")
+        self._ext_toggle_btn.clicked.connect(self._toggle_external_preview)
+        self._ext_live_refresh_btn = QPushButton("Live Refresh")
+        self._ext_live_refresh_btn.setToolTip(
+            "Apply current zone/composite settings to the external preview.\n"
+            "Click to reload the preview once.")
+        self._ext_live_refresh_btn.clicked.connect(self._on_live_refresh_clicked)
+        self._ext_preview_label = QLabel(f"Target display: {self._output_display_num}")
+        self._ext_preview_label.setStyleSheet("color: #888; font-style: italic;")
+        ext_bar.addWidget(self._ext_source_combo)
+        ext_bar.addWidget(self._ext_toggle_btn)
+        ext_bar.addWidget(self._ext_live_refresh_btn)
+        ext_bar.addWidget(self._ext_preview_label)
+        ext_bar.addStretch()
+        root.addLayout(ext_bar)
+        self._update_external_source_availability()
+
+        # ---- Stitch direction ----
+        stitch_bar = QHBoxLayout()
+        stitch_bar.addWidget(QLabel("Stitch direction:"))
+        self._stitch_h = QRadioButton("Horizontal  (zones side-by-side)")
+        self._stitch_v = QRadioButton("Vertical  (zones stacked)")
+        self._stitch_h.setChecked(True)
+        stitch_bar.addWidget(self._stitch_h)
+        stitch_bar.addWidget(self._stitch_v)
+        stitch_bar.addStretch()
+        # Import / Export buttons
+        self._export_btn = QPushButton("⬆  Export State…")
+        self._export_btn.setToolTip(
+            "Export the current editor state (zones, borders, frame snapshot path) to a JSON file.")
+        self._export_btn.clicked.connect(self._export_state)
+        self._import_btn = QPushButton("⬇  Import State…")
+        self._import_btn.setToolTip(
+            "Import a previously exported editor state JSON file to restore all settings.")
+        self._import_btn.clicked.connect(self._import_state)
+        stitch_bar.addWidget(self._export_btn)
+        stitch_bar.addWidget(self._import_btn)
+        root.addLayout(stitch_bar)
+
+        # ---- Tab widget ----
+        self._tabs = QTabWidget()
+
+        # Per-zone state lists
+        self._zone_crop_canvases    = []
+        self._zone_stretch_canvases = []
+        self._zone_stacked          = []
+        self._zone_enable_cbs       = []
+        self._zone_mode_crop_rbs    = []
+        self._zone_mode_stretch_rbs = []
+        self._zone_x_sbs    = []
+        self._zone_y_sbs    = []
+        self._zone_w_sbs    = []
+        self._zone_h_sbs    = []
+        self._zone_sw_sbs   = []
+        self._zone_sh_sbs   = []
+        self._zone_border_sbs = []
+        self._zone_offset_y_sbs = []
+
         for i in range(NUM_ZONES):
-            tab = QWidget()
-            layout = QVBoxLayout(tab)
-            layout.addWidget(QLabel(f"Zone {i + 1}"))
-            layout.addWidget(ZoomCropCanvas(self._cfg["zones"][i], tab))
-            layout.addWidget(StretchCanvas(self._cfg["zones"][i], tab))
-            tabs.addTab(tab, f"Zone {i + 1}")
+            color = _ZONE_COLORS[i]
+            tab_w = QWidget()
+            tl = QVBoxLayout(tab_w)
+            tl.setSpacing(6)
+            tl.setContentsMargins(4, 4, 4, 4)
+
+            # ---- Top bar: enable + mode toggle + reset ----
+            top_bar = QHBoxLayout()
+            enable_cb = QCheckBox(f"Enable Zone {i + 1}")
+            enable_cb.setStyleSheet(f"color: {color}; font-weight: bold;")
+            enable_cb.setChecked(i == 0)
+
+            mode_crop_rb    = QRadioButton("✂  Crop Mode")
+            mode_stretch_rb = QRadioButton("⤢  Stretch Mode")
+            mode_crop_rb.setChecked(True)
+            mode_crop_rb.setToolTip(
+                "Drag the coloured rectangle on the captured frame to define\n"
+                "which region of the source video is used for this zone.")
+            mode_stretch_rb.setToolTip(
+                "Drag the corner/edge handles to set the output size for this zone.\n"
+                "The cropped sub-image is shown stretched to the chosen output size.")
+
+            reset_btn = QPushButton("Reset to Full Frame")
+            reset_btn.clicked.connect(lambda _, zi=i: self._reset_zone(zi))
+
+            top_bar.addWidget(enable_cb)
+            top_bar.addSpacing(16)
+            top_bar.addWidget(QLabel("Mode:"))
+            top_bar.addWidget(mode_crop_rb)
+            top_bar.addWidget(mode_stretch_rb)
+            top_bar.addStretch()
+            top_bar.addWidget(reset_btn)
+            tl.addLayout(top_bar)
+
+            # ---- Canvas (stacked: crop / stretch) + right spinboxes ----
+            body = QHBoxLayout()
+            body.setSpacing(8)
+
+            stacked = QStackedWidget()
+            crop_canvas    = ZoomCropCanvas(color=color)
+            stretch_canvas = StretchCanvas(color=color)
+            stacked.addWidget(crop_canvas)      # index 0
+            stacked.addWidget(stretch_canvas)   # index 1
+            body.addWidget(stacked, 3)
+
+            right = QVBoxLayout()
+            right.setSpacing(4)
+
+            crop_grp = QGroupBox("Source Crop Region")
+            crop_grp.setStyleSheet(f"QGroupBox::title {{ color: {color}; }}")
+            cg = QGridLayout(); cg.setSpacing(4)
+            x_sb  = QSpinBox(); x_sb.setRange(0, 99999);  x_sb.setSuffix(" px");  x_sb.setFixedWidth(110)
+            y_sb  = QSpinBox(); y_sb.setRange(0, 99999);  y_sb.setSuffix(" px");  y_sb.setFixedWidth(110)
+            w_sb  = QSpinBox(); w_sb.setRange(1, 99999);  w_sb.setSuffix(" px");  w_sb.setFixedWidth(110)
+            h_sb  = QSpinBox(); h_sb.setRange(1, 99999);  h_sb.setSuffix(" px");  h_sb.setFixedWidth(110)
+            cg.addWidget(QLabel("X:"),      0, 0); cg.addWidget(x_sb, 0, 1)
+            cg.addWidget(QLabel("Y:"),      1, 0); cg.addWidget(y_sb, 1, 1)
+            cg.addWidget(QLabel("Width:"),  2, 0); cg.addWidget(w_sb, 2, 1)
+            cg.addWidget(QLabel("Height:"), 3, 0); cg.addWidget(h_sb, 3, 1)
+            crop_grp.setLayout(cg)
+
+            scale_grp = QGroupBox("Output Scale (optional stretch)")
+            scale_grp.setStyleSheet(f"QGroupBox::title {{ color: {color}; }}")
+            scale_grp.setToolTip(
+                "Leave at -1 (auto) to preserve aspect ratio.\n"
+                "Set explicit pixel dimensions to force non-uniform stretching.")
+            sg = QGridLayout(); sg.setSpacing(4)
+            sw_sb = QSpinBox(); sw_sb.setRange(-1, 99999); sw_sb.setSpecialValueText("auto")
+            sw_sb.setSuffix(" px"); sw_sb.setFixedWidth(110)
+            sh_sb = QSpinBox(); sh_sb.setRange(-1, 99999); sh_sb.setSpecialValueText("auto")
+            sh_sb.setSuffix(" px"); sh_sb.setFixedWidth(110)
+            sg.addWidget(QLabel("Scale W:"), 0, 0); sg.addWidget(sw_sb, 0, 1)
+            sg.addWidget(QLabel("Scale H:"), 1, 0); sg.addWidget(sh_sb, 1, 1)
+            scale_grp.setLayout(sg)
+
+            border_grp = QGroupBox("Black Border")
+            border_grp.setStyleSheet(f"QGroupBox::title {{ color: {color}; }}")
+            border_grp.setToolTip(
+                "Add a solid black border around this zone's output.\n"
+                "0 = no border.  The border is applied after cropping and scaling.")
+            bg = QGridLayout(); bg.setSpacing(4)
+            border_sb = QSpinBox()
+            border_sb.setRange(0, 500)
+            border_sb.setSuffix(" px")
+            border_sb.setFixedWidth(110)
+            border_sb.setToolTip("Border thickness in pixels (applied to all four sides).")
+            bg.addWidget(QLabel("Thickness:"), 0, 0); bg.addWidget(border_sb, 0, 1)
+            border_grp.setLayout(bg)
+
+            pos_grp = QGroupBox("Final Display Position")
+            pos_grp.setStyleSheet(f"QGroupBox::title {{ color: {color}; }}")
+            pos_grp.setToolTip(
+                "Move this zone's rendered output within the final stitched display.\n"
+                "This does NOT change the source crop rectangle.")
+            pg = QGridLayout(); pg.setSpacing(4)
+            offset_y_sb = QSpinBox()
+            offset_y_sb.setRange(-5000, 5000)
+            offset_y_sb.setSuffix(" px")
+            offset_y_sb.setFixedWidth(110)
+            offset_y_sb.setToolTip(
+                "Vertical offset in the final output (+ down, - up).\n"
+                "Does not affect source crop coordinates.")
+            pg.addWidget(QLabel("Y offset:"), 0, 0); pg.addWidget(offset_y_sb, 0, 1)
+            pos_grp.setLayout(pg)
+
+            right.addWidget(crop_grp)
+            right.addWidget(scale_grp)
+            right.addWidget(border_grp)
+            right.addWidget(pos_grp)
+            right.addStretch()
+            body.addLayout(right, 1)
+            tl.addLayout(body, 1)
+
+            self._tabs.addTab(tab_w, f"Zone {i + 1}")
+
+            # Wire signals (capture zone index in default arg to avoid late-binding)
+            crop_canvas.region_changed.connect(
+                lambda x, y, w, h, zi=i: self._on_crop_changed(zi, x, y, w, h))
+            stretch_canvas.output_changed.connect(
+                lambda sw, sh, zi=i: self._on_stretch_changed(zi, sw, sh))
+            for sb in (x_sb, y_sb, w_sb, h_sb):
+                sb.valueChanged.connect(lambda _, zi=i: self._on_crop_spinbox_changed(zi))
+            sw_sb.valueChanged.connect(lambda _, zi=i: self._on_scale_spinbox_changed(zi))
+            sh_sb.valueChanged.connect(lambda _, zi=i: self._on_scale_spinbox_changed(zi))
+            mode_crop_rb.toggled.connect(
+                lambda checked, st=stacked: st.setCurrentIndex(0) if checked else None)
+            mode_stretch_rb.toggled.connect(
+                lambda checked, st=stacked: st.setCurrentIndex(1) if checked else None)
+
+            # Store per-zone references
+            self._zone_crop_canvases.append(crop_canvas)
+            self._zone_stretch_canvases.append(stretch_canvas)
+            self._zone_stacked.append(stacked)
+            self._zone_enable_cbs.append(enable_cb)
+            self._zone_mode_crop_rbs.append(mode_crop_rb)
+            self._zone_mode_stretch_rbs.append(mode_stretch_rb)
+            self._zone_x_sbs.append(x_sb)
+            self._zone_y_sbs.append(y_sb)
+            self._zone_w_sbs.append(w_sb)
+            self._zone_h_sbs.append(h_sb)
+            self._zone_sw_sbs.append(sw_sb)
+            self._zone_sh_sbs.append(sh_sb)
+            self._zone_border_sbs.append(border_sb)
+            self._zone_offset_y_sbs.append(offset_y_sb)
+
+        # ---- Composite Output tab ----
+        # This tab lets the operator crop and/or stretch the already-stitched zone
+        # composite as a whole (after per-zone transforms are applied).
         comp_tab = QWidget()
         comp_layout = QVBoxLayout(comp_tab)
-        comp_layout.addWidget(QLabel("Composite Output"))
-        tabs.addTab(comp_tab, "Composite")
+        comp_layout.setSpacing(6)
+        comp_layout.setContentsMargins(4, 4, 4, 4)
+
+        comp_top_bar = QHBoxLayout()
+        comp_top_bar.addWidget(QLabel(
+            "<b>Composite Output</b> — crop and/or stretch the full stitched composite "
+            "after all per-zone transforms have been applied."))
+        self._comp_refresh_btn = QPushButton("🔄  Rebuild Composite")
+        self._comp_refresh_btn.setToolTip(
+            "Manually stitch the current zone settings into the composite canvas.\n"
+            "The composite is also rebuilt automatically when this tab is opened\n"
+            "or when any zone/composite control changes (with a short debounce).")
+        self._comp_refresh_btn.clicked.connect(self._rebuild_composite_canvas)
+        comp_top_bar.addStretch()
+        comp_top_bar.addWidget(self._comp_refresh_btn)
+        comp_layout.addLayout(comp_top_bar)
+
+        # Mode toggle: Crop or Stretch
+        comp_mode_bar = QHBoxLayout()
+        self._comp_mode_crop_rb    = QRadioButton("✂  Edit Crop")
+        self._comp_mode_stretch_rb = QRadioButton("⤢  Edit Stretch / Output Size")
+        self._comp_mode_crop_rb.setChecked(True)
+        self._comp_mode_crop_rb.setToolTip(
+            "Show the crop-handle canvas to define which region of the stitched\n"
+            "composite is kept.  This affects the ENTIRE stitched composite,\n"
+            "not an individual zone.")
+        self._comp_mode_stretch_rb.setToolTip(
+            "Show the stretch-handle canvas to set the final output dimensions of\n"
+            "the stitched composite after cropping.  Drag the handles to resize\n"
+            "width and/or height independently (non-uniform stretch).\n"
+            "This scales the ENTIRE stitched composite, not an individual zone.")
+        comp_mode_bar.addWidget(self._comp_mode_crop_rb)
+        comp_mode_bar.addWidget(self._comp_mode_stretch_rb)
+        comp_mode_bar.addStretch()
+        comp_layout.addLayout(comp_mode_bar)
+
+        comp_body = QHBoxLayout()
+        comp_body.setSpacing(8)
+
+        # Stacked canvas — index 0: crop handles, index 1: stretch handles
+        self._comp_stacked = QStackedWidget()
+
+        self._comp_crop_canvas = ZoomCropCanvas(color="#e040fb")
+        self._comp_crop_canvas.setToolTip(
+            "Drag the handles to define the crop rectangle for the ENTIRE stitched composite.\n"
+            "This crop is applied AFTER all per-zone transforms and BEFORE the composite stretch.\n"
+            "Set Width to 0 in the numeric controls to disable cropping (pass-through).")
+        self._comp_crop_canvas.region_changed.connect(self._on_comp_crop_changed)
+
+        self._comp_stretch_canvas = StretchCanvas(color="#e040fb")
+        self._comp_stretch_canvas.setToolTip(
+            "Drag the right/bottom/corner handles to set the final output dimensions\n"
+            "of the ENTIRE stitched composite (after the composite crop step).\n"
+            "Width and height can be set independently for non-uniform stretching.\n"
+            "Set both Scale W and Scale H to -1 (auto) to skip this step.")
+        self._comp_stretch_canvas.output_changed.connect(self._on_comp_stretch_changed)
+
+        self._comp_stacked.addWidget(self._comp_crop_canvas)    # index 0
+        self._comp_stacked.addWidget(self._comp_stretch_canvas) # index 1
+        comp_body.addWidget(self._comp_stacked, 3)
+
+        self._comp_mode_stretch_rb.toggled.connect(
+            lambda checked: self._comp_stacked.setCurrentIndex(1 if checked else 0))
+
+        comp_right = QVBoxLayout()
+        comp_right.setSpacing(4)
+
+        comp_crop_grp = QGroupBox("Whole-Composite Crop  (entire stitched composite)")
+        comp_crop_grp.setStyleSheet("QGroupBox::title { color: #e040fb; }")
+        comp_crop_grp.setToolTip(
+            "Crop the stitched composite image. Set Width to 0 to disable (pass-through).\n"
+            "Applies to the ENTIRE composite, not an individual zone.")
+        ccg = QGridLayout(); ccg.setSpacing(4)
+        self._comp_x_sb  = QSpinBox(); self._comp_x_sb.setRange(0, 99999);  self._comp_x_sb.setSuffix(" px"); self._comp_x_sb.setFixedWidth(110)
+        self._comp_y_sb  = QSpinBox(); self._comp_y_sb.setRange(0, 99999);  self._comp_y_sb.setSuffix(" px"); self._comp_y_sb.setFixedWidth(110)
+        self._comp_w_sb  = QSpinBox(); self._comp_w_sb.setRange(0, 99999);  self._comp_w_sb.setSuffix(" px"); self._comp_w_sb.setFixedWidth(110)
+        self._comp_w_sb.setSpecialValueText("Full (no crop)")
+        self._comp_h_sb  = QSpinBox(); self._comp_h_sb.setRange(0, 99999);  self._comp_h_sb.setSuffix(" px"); self._comp_h_sb.setFixedWidth(110)
+        self._comp_h_sb.setSpecialValueText("Full (no crop)")
+        ccg.addWidget(QLabel("X:"),      0, 0); ccg.addWidget(self._comp_x_sb, 0, 1)
+        ccg.addWidget(QLabel("Y:"),      1, 0); ccg.addWidget(self._comp_y_sb, 1, 1)
+        ccg.addWidget(QLabel("Width:"),  2, 0); ccg.addWidget(self._comp_w_sb, 2, 1)
+        ccg.addWidget(QLabel("Height:"), 3, 0); ccg.addWidget(self._comp_h_sb, 3, 1)
+        comp_crop_grp.setLayout(ccg)
+
+        comp_scale_grp = QGroupBox("Whole-Composite Stretch / Output Size  (entire stitched composite)")
+        comp_scale_grp.setStyleSheet("QGroupBox::title { color: #e040fb; }")
+        comp_scale_grp.setToolTip(
+            "Stretch the ENTIRE stitched composite to exact output dimensions after cropping.\n"
+            "Width and height are set independently — non-uniform stretching is supported.\n"
+            "Set both to -1 (auto) to skip this step and pass the cropped composite unchanged.\n"
+            "Equivalent to mpv's scale= filter applied to the full composite image,\n"
+            "and to the draggable handles in the 'Edit Stretch' canvas view above.")
+        csg = QGridLayout(); csg.setSpacing(4)
+        self._comp_sw_sb = QSpinBox(); self._comp_sw_sb.setRange(-1, 99999); self._comp_sw_sb.setSuffix(" px"); self._comp_sw_sb.setSpecialValueText("auto"); self._comp_sw_sb.setFixedWidth(110)
+        self._comp_sh_sb = QSpinBox(); self._comp_sh_sb.setRange(-1, 99999); self._comp_sh_sb.setSuffix(" px"); self._comp_sh_sb.setSpecialValueText("auto"); self._comp_sh_sb.setFixedWidth(110)
+        self._comp_sw_sb.setToolTip(
+            "Output width of the ENTIRE composite after stretch.\n"
+            "Set to -1 (auto) together with Scale H to skip this step.")
+        self._comp_sh_sb.setToolTip(
+            "Output height of the ENTIRE composite after stretch.\n"
+            "Set to -1 (auto) together with Scale W to skip this step.")
+        csg.addWidget(QLabel("Stretch W:"), 0, 0); csg.addWidget(self._comp_sw_sb, 0, 1)
+        csg.addWidget(QLabel("Stretch H:"), 1, 0); csg.addWidget(self._comp_sh_sb, 1, 1)
+        comp_scale_grp.setLayout(csg)
+
+        self._comp_reset_btn = QPushButton("↺  Reset to Full Composite")
+        self._comp_reset_btn.setToolTip(
+            "Remove the composite crop (pass-through) and clear stretch overrides\n"
+            "for the ENTIRE stitched composite.")
+        self._comp_reset_btn.clicked.connect(self._reset_composite_crop)
+
+        comp_right.addWidget(comp_crop_grp)
+        comp_right.addWidget(comp_scale_grp)
+        comp_right.addWidget(self._comp_reset_btn)
+        comp_right.addStretch()
+        comp_body.addLayout(comp_right, 1)
+        comp_layout.addLayout(comp_body, 1)
+
+        self._tabs.addTab(comp_tab, "Composite Output")
+
+        # Wire composite spinbox signals
+        for sb in (self._comp_x_sb, self._comp_y_sb,
+                   self._comp_w_sb, self._comp_h_sb):
+            sb.valueChanged.connect(self._on_comp_spinbox_changed)
+        for sb in (self._comp_sw_sb, self._comp_sh_sb):
+            sb.valueChanged.connect(self._on_comp_scale_spinbox_changed)
+
+        # ---- Final Preview tab ----
         final_tab = QWidget()
         final_layout = QVBoxLayout(final_tab)
-        final_layout.addWidget(QLabel("Final Preview"))
-        tabs.addTab(final_tab, "Preview")
-        root.addWidget(tabs, 1)
-        button_row = QHBoxLayout()
-        apply_btn = QPushButton("Apply")
-        cancel_btn = QPushButton("Cancel")
-        apply_btn.clicked.connect(self.accept)
-        cancel_btn.clicked.connect(self.reject)
-        button_row.addStretch(1)
-        button_row.addWidget(apply_btn)
-        button_row.addWidget(cancel_btn)
-        root.addLayout(button_row)
+        final_layout.setSpacing(6)
+
+        # Output resolution controls
+        out_res_bar = QHBoxLayout()
+        out_res_bar.addWidget(QLabel("Simulated output resolution:"))
+        self._out_w_sb = QSpinBox()
+        self._out_w_sb.setRange(160, 32768)
+        self._out_w_sb.setValue(1920)
+        self._out_w_sb.setSuffix(" px")
+        self._out_w_sb.setFixedWidth(100)
+        self._out_w_sb.setToolTip("Simulated display canvas width in pixels.")
+        self._out_h_sb = QSpinBox()
+        self._out_h_sb.setRange(120, 32768)
+        self._out_h_sb.setValue(1080)
+        self._out_h_sb.setSuffix(" px")
+        self._out_h_sb.setFixedWidth(100)
+        self._out_h_sb.setToolTip("Simulated display canvas height in pixels.")
+        out_res_bar.addWidget(self._out_w_sb)
+        out_res_bar.addWidget(QLabel("×"))
+        out_res_bar.addWidget(self._out_h_sb)
+        out_res_bar.addSpacing(12)
+        self._out_sim_playback_cb = QCheckBox("Apply output canvas to mpv playback")
+        self._out_sim_playback_cb.setToolTip(
+            "When checked, mpv will pad the final composite into the configured output\n"
+            "canvas during actual playback — matching the preview letterboxing/pillarboxing.\n"
+            "Leave unchecked to keep existing playback behaviour (no padding added).")
+        out_res_bar.addWidget(self._out_sim_playback_cb)
+        out_res_bar.addStretch()
+        final_layout.addLayout(out_res_bar)
+
+        final_top = QHBoxLayout()
+        self._refresh_btn = QPushButton("🔄  Refresh Final Preview")
+        self._refresh_btn.clicked.connect(self._refresh_final_preview)
+        self._stitch_info_label = QLabel()
+        final_top.addWidget(self._refresh_btn)
+        final_top.addStretch()
+        final_top.addWidget(self._stitch_info_label)
+        final_layout.addLayout(final_top)
+        self._final_canvas = QLabel()
+        self._final_canvas.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._final_canvas.setMinimumSize(400, 200)
+        self._final_canvas.setStyleSheet("background: #111; border: 1px solid #444;")
+        self._final_canvas.setText("Capture a frame and click 'Refresh Final Preview'")
+        final_layout.addWidget(self._final_canvas, 1)
+        self._tabs.addTab(final_tab, "Final Preview")
+
+        root.addWidget(self._tabs, 1)
+
+        # ---- Real-time update signal wiring ----
+        # Connect all controls that affect the composite to _schedule_composite_update
+        # so the composite canvas and final preview refresh in real time (with debounce).
+        for cb in self._zone_enable_cbs:
+            cb.stateChanged.connect(self._schedule_composite_update)
+        for rb in self._zone_mode_crop_rbs + self._zone_mode_stretch_rbs:
+            rb.toggled.connect(lambda _: self._schedule_composite_update())
+        for sbs in (self._zone_x_sbs, self._zone_y_sbs, self._zone_w_sbs, self._zone_h_sbs,
+                    self._zone_sw_sbs, self._zone_sh_sbs, self._zone_border_sbs,
+                    self._zone_offset_y_sbs):
+            for sb in sbs:
+                sb.valueChanged.connect(self._schedule_composite_update)
+        self._stitch_h.toggled.connect(lambda _: self._schedule_composite_update())
+        self._stitch_v.toggled.connect(lambda _: self._schedule_composite_update())
+        for sb in (self._comp_x_sb, self._comp_y_sb, self._comp_w_sb, self._comp_h_sb,
+                   self._comp_sw_sb, self._comp_sh_sb, self._out_w_sb, self._out_h_sb):
+            sb.valueChanged.connect(self._schedule_composite_update)
+        self._out_sim_playback_cb.stateChanged.connect(self._schedule_composite_update)
+
+        # Auto-rebuild when switching to Composite Output or Final Preview tabs
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+
+        # ---- Status bar + OK / Cancel ----
+        self._status = QLabel(
+            "Select a video/capture frame to edit. External preview is optional and opens on the selected final-output display.")
+        self._status.setStyleSheet("font-style: italic; color: #888; font-size: 12px;")
+        root.addWidget(self._status)
+
+        btn_row = QHBoxLayout()
+        self._ok_btn = QPushButton("✔  OK — Save Settings")
+        self._ok_btn.setStyleSheet(
+            "background-color: #27ae60; color: white; font-weight: bold; padding: 6px;")
+        self._ok_btn.clicked.connect(self._ok)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.clicked.connect(self._cancel)
+        btn_row.addWidget(self._ok_btn)
+        btn_row.addWidget(self._cancel_btn)
+        root.addLayout(btn_row)
+
+
+    # ------------------------------------------------------------------
+    # Config ↔ UI
+    # ------------------------------------------------------------------
+
+    def _load_config_to_ui(self):
+        self._updating = True
+        direction = self._cfg.get("stack_direction", "horizontal")
+        self._stitch_h.setChecked(direction != "vertical")
+        self._stitch_v.setChecked(direction == "vertical")
+        for i, zone in enumerate(self._cfg["zones"][:NUM_ZONES]):
+            self._zone_enable_cbs[i].setChecked(zone.get("enabled", i == 0))
+            x  = zone.get("crop_x", 0)
+            y  = zone.get("crop_y", 0)
+            w  = max(1, zone.get("crop_w", 1920))
+            h  = max(1, zone.get("crop_h", 1080))
+            sw = zone.get("scale_w", -1)
+            sh = zone.get("scale_h", -1)
+            border = max(0, zone.get("border_px", 0))
+            offset_y = int(zone.get("offset_y", 0))
+            mode   = zone.get("mode", "crop")
+            self._zone_x_sbs[i].setValue(x)
+            self._zone_y_sbs[i].setValue(y)
+            self._zone_w_sbs[i].setValue(w)
+            self._zone_h_sbs[i].setValue(h)
+            self._zone_sw_sbs[i].setValue(sw)
+            self._zone_sh_sbs[i].setValue(sh)
+            self._zone_border_sbs[i].setValue(border)
+            self._zone_offset_y_sbs[i].setValue(offset_y)
+            if mode == "stretch":
+                self._zone_mode_stretch_rbs[i].setChecked(True)
+            else:
+                self._zone_mode_crop_rbs[i].setChecked(True)
+            self._zone_crop_canvases[i].set_region(x, y, w, h)
+            self._zone_stretch_canvases[i].set_output(sw if sw > 0 else w, sh if sh > 0 else h)
+
+        # Load composite output fields
+        out_w  = self._cfg.get("out_w",  -1)
+        out_h  = self._cfg.get("out_h",  -1)
+        self._out_w_sb.setValue(out_w if out_w > 0 else 1920)
+        self._out_h_sb.setValue(out_h if out_h > 0 else 1080)
+        self._out_sim_playback_cb.setChecked(bool(self._cfg.get("out_sim_enabled", False)))
+        self._comp_x_sb.setValue(int(self._cfg.get("comp_crop_x", 0)))
+        self._comp_y_sb.setValue(int(self._cfg.get("comp_crop_y", 0)))
+        self._comp_w_sb.setValue(int(self._cfg.get("comp_crop_w", 0)))
+        self._comp_h_sb.setValue(int(self._cfg.get("comp_crop_h", 0)))
+        self._comp_sw_sb.setValue(int(self._cfg.get("comp_scale_w", -1)))
+        self._comp_sh_sb.setValue(int(self._cfg.get("comp_scale_h", -1)))
+
+        self._updating = False
+
+        # Attempt to reload the persistent frame snapshot
+        saved_path = self._cfg.get("frame_snapshot_path", "")
+        if saved_path and os.path.isfile(saved_path):
+            self._load_frame_from_path(saved_path)
+            self._status.setText(
+                f"Restored saved frame snapshot from '{os.path.basename(saved_path)}'.")
+
+    def _collect_config(self):
+        direction = "vertical" if self._stitch_v.isChecked() else "horizontal"
+        zones = []
+        for i in range(NUM_ZONES):
+            mode = "stretch" if self._zone_mode_stretch_rbs[i].isChecked() else "crop"
+            zones.append({
+                "enabled":   self._zone_enable_cbs[i].isChecked(),
+                "crop_x":    self._zone_x_sbs[i].value(),
+                "crop_y":    self._zone_y_sbs[i].value(),
+                "crop_w":    self._zone_w_sbs[i].value(),
+                "crop_h":    self._zone_h_sbs[i].value(),
+                "scale_w":   self._zone_sw_sbs[i].value(),
+                "scale_h":   self._zone_sh_sbs[i].value(),
+                "border_px": self._zone_border_sbs[i].value(),
+                "offset_y":  self._zone_offset_y_sbs[i].value(),
+                "mode":      mode,
+            })
+        snapshot_path = self._cfg.get("frame_snapshot_path", "")
+        out_sim = self._out_sim_playback_cb.isChecked()
+        return {
+            "zones": zones,
+            "stack_direction": direction,
+            "frame_snapshot_path": snapshot_path,
+            # Composite output / output simulation fields
+            "out_w":          self._out_w_sb.value(),
+            "out_h":          self._out_h_sb.value(),
+            "out_sim_enabled": out_sim,
+            "comp_crop_x":    self._comp_x_sb.value(),
+            "comp_crop_y":    self._comp_y_sb.value(),
+            "comp_crop_w":    self._comp_w_sb.value(),
+            "comp_crop_h":    self._comp_h_sb.value(),
+            "comp_scale_w":   self._comp_sw_sb.value(),
+            "comp_scale_h":   self._comp_sh_sb.value(),
+        }
 
     def collect_config(self):
-        return _migrate_zoom_config(self._cfg)
+        return _migrate_zoom_config(self.result_config if self.result_config is not None else self._collect_config())
+
+
+    # ------------------------------------------------------------------
+    # Zone signal handlers
+    # ------------------------------------------------------------------
+
+    def _on_crop_changed(self, zi, x, y, w, h):
+        """Canvas selection changed → update spinboxes and stretch canvas."""
+        if self._updating:
+            return
+        self._updating = True
+        self._zone_x_sbs[zi].setValue(x)
+        self._zone_y_sbs[zi].setValue(y)
+        self._zone_w_sbs[zi].setValue(max(1, w))
+        self._zone_h_sbs[zi].setValue(max(1, h))
+        self._updating = False
+        self._sync_stretch_canvas(zi)
+        self._schedule_composite_update()
+
+    def _on_stretch_changed(self, zi, sw, sh):
+        """Stretch canvas handles moved → update scale spinboxes."""
+        if self._updating:
+            return
+        self._updating = True
+        self._zone_sw_sbs[zi].setValue(sw)
+        self._zone_sh_sbs[zi].setValue(sh)
+        self._updating = False
+        self._schedule_composite_update()
+
+    def _on_crop_spinbox_changed(self, zi):
+        """Crop spinbox changed → update crop canvas and stretch canvas source."""
+        if self._updating:
+            return
+        self._zone_crop_canvases[zi].set_region(
+            self._zone_x_sbs[zi].value(),
+            self._zone_y_sbs[zi].value(),
+            self._zone_w_sbs[zi].value(),
+            self._zone_h_sbs[zi].value(),
+        )
+        self._sync_stretch_canvas(zi)
+
+    def _on_scale_spinbox_changed(self, zi):
+        """Scale spinbox changed → update stretch canvas output dimensions."""
+        if self._updating:
+            return
+        sw = self._zone_sw_sbs[zi].value()
+        sh = self._zone_sh_sbs[zi].value()
+        cw = self._zone_w_sbs[zi].value()
+        ch = self._zone_h_sbs[zi].value()
+        self._zone_stretch_canvases[zi].set_output(sw if sw > 0 else cw, sh if sh > 0 else ch)
+
+    def _sync_stretch_canvas(self, zi):
+        """Push the current crop region into the stretch canvas so it shows the right sub-image."""
+        self._zone_stretch_canvases[zi].set_source(
+            self._full_pixmap,
+            self._zone_x_sbs[zi].value(),
+            self._zone_y_sbs[zi].value(),
+            self._zone_w_sbs[zi].value(),
+            self._zone_h_sbs[zi].value(),
+        )
+
+    def _reset_zone(self, zi):
+        """Reset this zone's crop to the full captured frame (or 1920×1080)."""
+        w = self._zone_crop_canvases[zi].source_w or 1920
+        h = self._zone_crop_canvases[zi].source_h or 1080
+        self._zone_crop_canvases[zi].set_region(0, 0, w, h)
+        self._on_crop_changed(zi, 0, 0, w, h)
+
+    # ------------------------------------------------------------------
+    # Composite Output canvas handlers
+    # ------------------------------------------------------------------
+
+    def _on_comp_crop_changed(self, x, y, w, h):
+        """Composite canvas crop changed → update composite spinboxes."""
+        if self._updating:
+            return
+        self._updating = True
+        self._comp_x_sb.setValue(x)
+        self._comp_y_sb.setValue(y)
+        self._comp_w_sb.setValue(max(1, w))
+        self._comp_h_sb.setValue(max(1, h))
+        self._updating = False
+        self._schedule_composite_update()
+
+    def _on_comp_spinbox_changed(self):
+        """Composite crop spinboxes changed → update canvas selection."""
+        if self._updating:
+            return
+        cw = self._comp_w_sb.value()
+        ch = self._comp_h_sb.value()
+        if cw > 0 and ch > 0:
+            self._comp_crop_canvas.set_region(
+                self._comp_x_sb.value(),
+                self._comp_y_sb.value(),
+                cw, ch,
+            )
+        self._schedule_composite_update()
+
+    def _on_comp_scale_spinbox_changed(self):
+        """Composite stretch spinboxes changed → update the stretch canvas output dimensions."""
+        if self._updating:
+            return
+        sw = self._comp_sw_sb.value()
+        sh = self._comp_sh_sb.value()
+        # Use composite source dimensions as fallback when value is -1
+        src_w, src_h = self._comp_stretch_canvas.get_source_size()
+        self._comp_stretch_canvas.set_output(
+            sw if sw > 0 else src_w,
+            sh if sh > 0 else src_h,
+        )
+        self._schedule_composite_update()
+
+    def _on_comp_stretch_changed(self, sw, sh):
+        """Stretch canvas handles moved → update composite scale spinboxes."""
+        if self._updating:
+            return
+        self._updating = True
+        self._comp_sw_sb.setValue(sw)
+        self._comp_sh_sb.setValue(sh)
+        self._updating = False
+        self._schedule_composite_update()
+
+    # ------------------------------------------------------------------
+    # Real-time composite update scheduling
+    # ------------------------------------------------------------------
+
+    def _schedule_composite_update(self, *_args):
+        """Schedule a debounced composite update (handles spurious signal args)."""
+        if self._updating:
+            return
+        self._update_timer.start()
+
+    def _do_composite_update(self):
+        """Debounced handler: rebuild composite canvases and refresh the final preview."""
+        current = self._tabs.currentIndex()
+        if current == self._COMP_TAB_INDEX:
+            self._rebuild_composite_canvas()
+        elif current == self._FINAL_TAB_INDEX:
+            self._refresh_final_preview()
+
+    def _on_tab_changed(self, index):
+        """Auto-rebuild when the user switches to Composite Output or Final Preview."""
+        if index == self._COMP_TAB_INDEX:
+            self._rebuild_composite_canvas()
+        elif index == self._FINAL_TAB_INDEX:
+            self._refresh_final_preview()
+
+    def _reset_composite_crop(self):
+        """Reset composite crop to full composite (pass-through) and clear scale."""
+        self._comp_x_sb.setValue(0)
+        self._comp_y_sb.setValue(0)
+        w = self._comp_crop_canvas.source_w or 0
+        h = self._comp_crop_canvas.source_h or 0
+        self._comp_w_sb.setValue(0)   # 0 = no crop (full composite)
+        self._comp_h_sb.setValue(0)
+        if w > 0 and h > 0:
+            self._comp_crop_canvas.set_region(0, 0, w, h)
+        self._comp_sw_sb.setValue(-1)
+        self._comp_sh_sb.setValue(-1)
+
+    def _rebuild_composite_canvas(self):
+        """Stitch zones and load the composite into the composite crop and stretch canvases."""
+        if not self._full_pixmap or self._full_pixmap.isNull():
+            self._status.setText("Capture a frame first before rebuilding the composite canvas.")
+            return
+        composite = self._build_composite_pixmap()
+        if composite is None or composite.isNull():
+            self._status.setText("No enabled zones — composite canvas cannot be built.")
+            return
+        # Save composite to a temp file and load via load_frame
+        tmp_path = os.path.join(self._temp_dir, "composite_preview.png")
+        composite.save(tmp_path)
+        self._comp_crop_canvas.load_frame(tmp_path)
+        # Restore crop region from spinboxes (if valid)
+        cw = self._comp_w_sb.value()
+        ch = self._comp_h_sb.value()
+        if cw > 0 and ch > 0:
+            self._comp_crop_canvas.set_region(
+                self._comp_x_sb.value(),
+                self._comp_y_sb.value(),
+                cw, ch,
+            )
+        else:
+            # Full composite — set to whole image
+            self._comp_crop_canvas.set_region(
+                0, 0, composite.width(), composite.height())
+
+        # Update the stretch canvas with the composite as the source image
+        sw = self._comp_sw_sb.value()
+        sh = self._comp_sh_sb.value()
+        out_w = sw if sw > 0 else composite.width()
+        out_h = sh if sh > 0 else composite.height()
+        self._comp_stretch_canvas.set_source(
+            composite, 0, 0, composite.width(), composite.height())
+        self._comp_stretch_canvas.set_output(out_w, out_h)
+
+        self._status.setText(
+            f"Composite canvas rebuilt  ({composite.width()} × {composite.height()} px). "
+            "Switch to 'Edit Crop' or 'Edit Stretch' to adjust the composite output.")
+
+    def _build_composite_pixmap(self, cfg=None):
+        """Build and return the stitched composite QPixmap from current zone settings.
+
+        Applies per-zone crop, optional scale, border, and offset_y then stitches
+        according to the current stitch direction.  Returns None if no zones are enabled.
+
+        *cfg* may be a pre-collected config dict (to avoid a duplicate
+        :meth:`_collect_config` call when the caller already has one).
+        """
+        if not self._full_pixmap or self._full_pixmap.isNull():
+            return None
+        if cfg is None:
+            cfg = self._collect_config()
+        zones = [z for z in cfg["zones"] if z.get("enabled") and z.get("crop_w", 0) > 0]
+        if not zones:
+            return None
+
+        direction = cfg.get("stack_direction", "horizontal")
+        pieces = []
+        for z in zones:
+            cx, cy = max(0, z["crop_x"]), max(0, z["crop_y"])
+            cw, ch = max(1, z["crop_w"]), max(1, z["crop_h"])
+            sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
+            border = z.get("border_px", 0)
+            offset_y = int(z.get("offset_y", 0))
+            pm = self._full_pixmap.copy(cx, cy, cw, ch)
+            if sw > 0 and sh > 0:
+                pm = pm.scaled(sw, sh,
+                               Qt.AspectRatioMode.IgnoreAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+            if border > 0:
+                bordered = QPixmap(pm.width() + 2 * border, pm.height() + 2 * border)
+                bordered.fill(QColor("black"))
+                bp = QPainter(bordered)
+                bp.drawPixmap(border, border, pm)
+                bp.end()
+                pm = bordered
+            if offset_y != 0:
+                # Match mpv filter: pad then crop to keep dimensions constant
+                abs_off = abs(offset_y)
+                pad_y   = max(offset_y, 0)
+                crop_y  = max(-offset_y, 0)
+                taller = QPixmap(pm.width(), pm.height() + abs_off)
+                taller.fill(QColor("black"))
+                tp = QPainter(taller)
+                tp.drawPixmap(0, pad_y, pm)
+                tp.end()
+                # Crop back to original height
+                pm = taller.copy(0, crop_y, pm.width(), pm.height())
+            pieces.append(pm)
+
+        if direction == "vertical":
+            total_w = max(p.width() for p in pieces)
+            total_h = sum(p.height() for p in pieces)
+        else:
+            total_w = sum(p.width() for p in pieces)
+            total_h = max(p.height() for p in pieces)
+
+        result = QPixmap(total_w, total_h)
+        result.fill(QColor("#000000"))
+        painter = QPainter(result)
+        off = 0
+        for pm in pieces:
+            if direction == "vertical":
+                painter.drawPixmap(0, off, pm)
+                off += pm.height()
+            else:
+                painter.drawPixmap(off, 0, pm)
+                off += pm.width()
+        painter.end()
+        return result
+
+    # ------------------------------------------------------------------
+    # Final preview compositing
+    # ------------------------------------------------------------------
+
+    def _refresh_final_preview(self):
+        if not self._full_pixmap or self._full_pixmap.isNull():
+            self._final_canvas.setText("No frame captured yet.")
+            return
+
+        cfg = self._collect_config()
+
+        # Step 1: build zone composite (pass cfg so we don't call _collect_config twice)
+        result = self._build_composite_pixmap(cfg)
+        if result is None or result.isNull():
+            self._final_canvas.setText("No zones are currently enabled.")
+            return
+
+        direction = cfg.get("stack_direction", "horizontal")
+        n_zones = sum(1 for z in cfg["zones"] if z.get("enabled") and z.get("crop_w", 0) > 0)
+
+        composite_w = result.width()
+        composite_h = result.height()
+
+        # Step 2: whole-composite crop
+        comp_crop_w = int(cfg.get("comp_crop_w", 0))
+        comp_crop_h = int(cfg.get("comp_crop_h", 0))
+        comp_crop_x = int(cfg.get("comp_crop_x", 0))
+        comp_crop_y = int(cfg.get("comp_crop_y", 0))
+        if comp_crop_w > 0 and comp_crop_h > 0:
+            # Clamp to composite bounds
+            cx = max(0, min(comp_crop_x, composite_w - 1))
+            cy = max(0, min(comp_crop_y, composite_h - 1))
+            cw = min(comp_crop_w, composite_w - cx)
+            ch = min(comp_crop_h, composite_h - cy)
+            if cw > 0 and ch > 0:
+                result = result.copy(cx, cy, cw, ch)
+
+
+        # Step 3: whole-composite scale
+        comp_sw = int(cfg.get("comp_scale_w", -1))
+        comp_sh = int(cfg.get("comp_scale_h", -1))
+        if comp_sw > 0 and comp_sh > 0:
+            result = result.scaled(comp_sw, comp_sh,
+                                   Qt.AspectRatioMode.IgnoreAspectRatio,
+                                   Qt.TransformationMode.SmoothTransformation)
+
+        # Step 4: place in output canvas (letterbox/pillarbox)
+        out_w = self._out_w_sb.value()
+        out_h = self._out_h_sb.value()
+        display_w = result.width()
+        display_h = result.height()
+
+        canvas = QPixmap(out_w, out_h)
+        canvas.fill(QColor("black"))
+        cp = QPainter(canvas)
+        # Centre the composite in the output canvas
+        ox = (out_w - display_w) // 2
+        oy = (out_h - display_h) // 2
+        cp.drawPixmap(ox, oy, result)
+        cp.end()
+
+        # Step 5: scale the output canvas to fit the preview label
+        label_size = self._final_canvas.size()
+        scaled = canvas.scaled(label_size,
+                               Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+        self._final_canvas.setPixmap(scaled)
+
+        dir_txt = "vertical" if direction == "vertical" else "horizontal"
+        crop_info = (f"  |  Comp crop: {comp_crop_w}×{comp_crop_h}"
+                     if comp_crop_w > 0 and comp_crop_h > 0 else "")
+        scale_info = (f"  |  Comp scale: {comp_sw}×{comp_sh}"
+                      if comp_sw > 0 and comp_sh > 0 else "")
+        self._stitch_info_label.setText(
+            f"Stitch: {dir_txt}  |  {n_zones} zone(s)  |  "
+            f"Composite: {composite_w}×{composite_h} px"
+            f"{crop_info}{scale_info}  |  "
+            f"Output canvas: {out_w}×{out_h} px")
+
+
+    # ------------------------------------------------------------------
+    # Video / mpv control
+    # ------------------------------------------------------------------
+
+    def _select_video(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Test Video", _DEFAULT_DIALOG_DIR,
+            "Media Files (*.mov *.mp4 *.avi *.mkv *.wmv *.m4v);;All Files (*)"
+        )
+        if not path:
+            return
+        self._selected_video_path = path
+        self._update_external_source_availability()
+        self._video_label.setText(os.path.basename(path))
+        self._video_label.setStyleSheet("color: #d4d4d4;")
+        self._launch_mpv(path)
+        if self._ext_preview_open and self._is_external_source_video():
+            self._ext_preview_start_pos = 0.0
+            self._open_external_preview()
+
+    def _launch_mpv(self, video_path):
+        self._stop_mpv()
+        self._ipc_path = _make_unique_mpv_pipe_name("mpv_mzoom")
+        cmd = _build_multizone_capture_preview_mpv_command(MPV_PATH, self._ipc_path, video_path)
+        try:
+            self._mpv_process = subprocess.Popen(cmd)
+            for btn in (self._play_btn, self._pause_btn, self._capture_btn,
+                        self._beg_btn, self._frame_back_btn, self._frame_fwd_btn):
+                btn.setEnabled(True)
+            self._mz_scrub_slider.setEnabled(True)
+            # Point the position poller at the new pipe so scrub labels update live.
+            self._pos_poller.set_socket(self._ipc_path)
+            self._status.setText(
+                "mpv opened. Navigate to the desired frame, then click 'Capture Frame'.")
+        except Exception as exc:
+            self._status.setText(f"Error launching mpv: {exc}")
+
+    def _send_ipc(self, command, max_attempts=2):
+        ok, err = _send_mpv_ipc_command(self._ipc_path, command, max_attempts=max_attempts)
+        if not ok:
+            self._status.setText(f"IPC error: {err}")
+        return ok
+
+    def _play(self):
+        self._send_ipc(["set_property", "pause", False])
+        self._ext_preview_paused = False
+        self._apply_external_preview_playback_state()
+        if self._ext_preview_open and self._is_external_source_video():
+            self._send_external_preview_command(["set_property", "pause", False], tolerate_closed=True)
+
+    def _pause(self):
+        self._send_ipc(["set_property", "pause", True])
+        self._snapshot_external_preview_position()
+        self._ext_preview_paused = True
+        self._apply_external_preview_playback_state()
+        if self._ext_preview_open and self._is_external_source_video():
+            self._send_external_preview_command(["set_property", "pause", True], tolerate_closed=True)
+
+    def _capture_frame(self):
+        self._pause()
+        QTimer.singleShot(350, self._do_capture)
+
+    def _do_capture(self):
+        safe_path = self._frame_path
+        self._send_ipc(["screenshot-to-file", safe_path, "video"])
+        QTimer.singleShot(600, self._load_frame)
+
+    def _load_frame(self):
+        if not os.path.exists(self._frame_path):
+            self._status.setText("Frame capture failed — is mpv still running?")
+            return
+        # Save a persistent copy to the local project directory
+        try:
+            shutil.copy(self._frame_path, ZOOM_FRAME_SNAPSHOT)
+            self._cfg["frame_snapshot_path"] = os.path.abspath(ZOOM_FRAME_SNAPSHOT)
+        except OSError:
+            self._cfg["frame_snapshot_path"] = self._frame_path
+        self._load_frame_from_path(self._frame_path)
+        pm = self._full_pixmap
+        if pm and not pm.isNull():
+            self._status.setText(
+                f"Frame captured ({pm.width()} × {pm.height()} px) and saved to "
+                f"'{ZOOM_FRAME_SNAPSHOT}'. "
+                "Drag each zone's coloured rectangle to define its crop region.")
+
+    def _load_frame_from_path(self, path):
+        """Load a frame image from *path* into all zone canvases."""
+        pm = QPixmap(path)
+        if pm.isNull():
+            self._status.setText(f"Could not load frame image from '{path}'.")
+            return
+        self._full_pixmap = pm
+        for i in range(NUM_ZONES):
+            self._zone_crop_canvases[i].load_frame(path)
+            # Restore the previously configured crop region after loading
+            self._zone_crop_canvases[i].set_region(
+                self._zone_x_sbs[i].value(),
+                self._zone_y_sbs[i].value(),
+                self._zone_w_sbs[i].value(),
+                self._zone_h_sbs[i].value(),
+            )
+            self._sync_stretch_canvas(i)
+        # Rebuild composite canvases automatically whenever a new frame is loaded
+        self._schedule_composite_update()
+
+    def _stop_mpv(self):
+        # Pause position polling before tearing down the IPC pipe.
+        self._pos_poller.set_socket(None)
+        if self._mpv_process and self._mpv_process.poll() is None:
+            if self._ipc_path:
+                _send_mpv_ipc_command(self._ipc_path, ["quit"], max_attempts=2)
+                time.sleep(0.2)
+            self._mpv_process.terminate()
+        self._mpv_process = None
+        self._ipc_path = None
+        # Disable transport controls until a new video is loaded.
+        for btn in (self._beg_btn, self._frame_back_btn, self._frame_fwd_btn):
+            btn.setEnabled(False)
+        self._mz_scrub_slider.setEnabled(False)
+
+    # ------------------------------------------------------------------
+    # Capture-preview transport controls
+    # ------------------------------------------------------------------
+
+    def _on_mz_position_updated(self, pos: float, dur: float):
+        """Slot connected to PositionPoller.position_updated for the capture-preview mpv.
+
+        Updates the scrub slider and MM:SS labels.  Blocked while the user is
+        dragging the handle to prevent the slider jumping back to the poll value.
+        """
+        self._mz_pos = pos
+        self._mz_dur = dur
+        if not self._mz_slider_dragging:
+            if dur > 0:
+                slider_val = int((pos / dur) * 1000)
+                self._mz_scrub_slider.blockSignals(True)
+                self._mz_scrub_slider.setValue(slider_val)
+                self._mz_scrub_slider.blockSignals(False)
+            self._mz_pos_label.setText(_mz_format_duration(pos))
+            self._mz_dur_label.setText(_mz_format_duration(dur))
+
+    def _on_mz_scrub_moved(self, value: int):
+        """Called continuously while the user drags the scrub-slider handle.
+
+        Updates the position label live so the operator sees where they are
+        landing; the actual seek is deferred to sliderReleased.
+        """
+        self._mz_slider_dragging = True
+        if self._mz_dur > 0:
+            pos = (value / 1000.0) * self._mz_dur
+            self._mz_pos_label.setText(_mz_format_duration(pos))
+
+    def _on_mz_scrub_released(self):
+        """Called when the user releases the scrub-slider handle.
+
+        Issues an absolute seek to the chosen position.  ``hr-seek yes``
+        ensures frame-accurate positioning so the mpv window shows the exact
+        frame at the new position even while paused.
+        """
+        if not self._mz_slider_dragging:
+            return
+        self._mz_slider_dragging = False
+        if not self._ipc_path or self._mz_dur <= 0:
+            return
+        value = self._mz_scrub_slider.value()
+        pos = (value / 1000.0) * self._mz_dur
+        # Use "exact" flag for frame-accurate positioning so the mpv window
+        # shows the precise frame even while paused (equivalent to hr-seek).
+        self._send_ipc(["seek", pos, "absolute", "exact"])
+
+    def _play_from_beginning(self):
+        """Seek to position 0 and start playback."""
+        self._send_ipc(["seek", 0, "absolute"])
+        self._send_ipc(["set_property", "pause", False])
+        self._ext_preview_paused = False
+        self._apply_external_preview_playback_state()
+
+    def _frame_forward(self):
+        """Advance exactly one frame using mpv's native frame-step command.
+
+        mpv pauses playback as a side-effect of frame-step, which is the desired
+        behaviour here (the operator is locating a precise frame for capture).
+        We update ``_ext_preview_paused`` accordingly so the external-preview
+        logic stays consistent.
+        """
+        self._send_ipc(["frame-step"])
+        # mpv pauses automatically after frame-step.
+        self._ext_preview_paused = True
+        self._apply_external_preview_playback_state()
+
+    def _frame_back(self):
+        """Step exactly one frame backward using mpv's frame-back-step command.
+
+        Like frame-step, mpv pauses as a side-effect, which is desired.
+        """
+        self._send_ipc(["frame-back-step"])
+        self._ext_preview_paused = True
+        self._apply_external_preview_playback_state()
+
+    def _is_external_source_video(self):
+        return self._ext_source_combo.currentIndex() == 1
+
+    def _update_external_source_availability(self):
+        model = self._ext_source_combo.model()
+        video_item = model.item(1)
+        has_video = bool(self._selected_video_path)
+        if video_item is not None:
+            video_item.setEnabled(has_video)
+        if not has_video and self._ext_source_combo.currentIndex() == 1:
+            self._ext_source_combo.setCurrentIndex(0)
+
+    def _on_external_source_mode_changed(self, _index):
+        if self._ext_preview_open:
+            self._open_external_preview()
+
+    def _toggle_external_preview(self):
+        if self._ext_preview_open:
+            self._close_external_preview("External preview closed.")
+            return
+        self._open_external_preview()
+
+    def _get_external_preview_frame_path(self):
+        if self._cfg.get("frame_snapshot_path") and os.path.isfile(self._cfg["frame_snapshot_path"]):
+            return self._cfg["frame_snapshot_path"]
+        if os.path.isfile(self._frame_path):
+            return self._frame_path
+        return None
+
+    def _get_external_preview_source_path(self):
+        if self._is_external_source_video():
+            return self._selected_video_path
+        return self._get_external_preview_frame_path()
+
+    def _send_external_preview_command(self, command, max_attempts=2, tolerate_closed=False):
+        if self._ext_preview_process and self._ext_preview_process.poll() is not None:
+            if not tolerate_closed:
+                self._close_external_preview("External preview was closed.")
+            return False
+        ok, err = _send_mpv_ipc_command(self._ext_preview_ipc_path, command, max_attempts=max_attempts)
+        if not ok and not tolerate_closed:
+            self._status.setText(f"External preview IPC error: {err}")
+        return ok
+
+    def _snapshot_external_preview_position(self):
+        if self._is_external_source_video() and not self._ext_preview_paused and self._ext_preview_wall_start is not None:
+            self._ext_preview_start_pos = max(0.0, time.time() - self._ext_preview_wall_start)
+
+    def _apply_external_preview_playback_state(self):
+        if self._is_external_source_video() and not self._ext_preview_paused:
+            self._ext_preview_wall_start = time.time() - max(0.0, self._ext_preview_start_pos)
+        else:
+            self._ext_preview_wall_start = None
+
+    def _update_external_preview_button(self):
+        self._ext_toggle_btn.setText("Close External Preview" if self._ext_preview_open else "Open External Preview")
+
+    def _open_external_preview(self):
+        self._snapshot_external_preview_position()
+        source_path = self._get_external_preview_source_path()
+        if self._is_external_source_video() and not source_path:
+            self._status.setText("Select a source video before opening Video external preview.")
+            return
+        if not self._is_external_source_video() and not source_path:
+            self._status.setText("Capture or restore a frame before opening Frame external preview.")
+            return
+
+        self._close_external_preview()
+        self._ext_preview_ipc_path = _make_unique_mpv_pipe_name("mpv_mzoom_external")
+        self._ext_preview_source_path = source_path
+        vf_str = _build_vf_for_zones(self._collect_config())
+        self._ext_preview_vf = vf_str or ""
+
+        cmd = _build_external_preview_mpv_command(
+            MPV_PATH,
+            self._ext_preview_ipc_path,
+            self._output_display_num,
+            source_path,
+            is_video_source=self._is_external_source_video(),
+            paused=self._ext_preview_paused,
+            vf_str=self._ext_preview_vf,
+        )
+
+        try:
+            self._ext_preview_process = subprocess.Popen(cmd)
+        except Exception as exc:
+            self._ext_preview_process = None
+            self._ext_preview_ipc_path = None
+            self._status.setText(f"Could not open external preview mpv: {exc}")
+            return
+
+        self._ext_preview_open = True
+        self._ext_preview_start_pos = max(0.0, self._ext_preview_start_pos)
+        self._apply_external_preview_playback_state()
+        self._update_external_preview_button()
+        src_label = "video" if self._is_external_source_video() else "captured frame"
+        self._status.setText(
+            f"External preview opened on display {self._output_display_num} using {src_label}. "
+            "This is a separate preview process from live playback.")
+        if self._is_external_source_video() and self._ext_preview_start_pos > 0:
+            QTimer.singleShot(
+                300,
+                lambda: self._send_external_preview_command(
+                    ["set_property", "time-pos", max(0.0, self._ext_preview_start_pos)],
+                    max_attempts=8,
+                    tolerate_closed=True))
+
+    def _close_external_preview(self, status_text=None):
+        self._snapshot_external_preview_position()
+        if self._ext_preview_process and self._ext_preview_process.poll() is None:
+            self._send_external_preview_command(["quit"], max_attempts=2, tolerate_closed=True)
+            try:
+                self._ext_preview_process.wait(timeout=0.2)
+            except subprocess.TimeoutExpired:
+                self._ext_preview_process.terminate()
+        self._ext_preview_process = None
+        self._ext_preview_ipc_path = None
+        self._ext_preview_open = False
+        self._ext_preview_source_path = None
+        self._ext_preview_vf = None
+        self._ext_preview_wall_start = None
+        self._update_external_preview_button()
+        if status_text:
+            self._status.setText(status_text)
+
+    def _on_live_refresh_clicked(self):
+        """Manually reload external preview using current settings."""
+        if not self._ext_preview_open:
+            self._status.setText("External preview is not open.")
+            return
+        self._open_external_preview()
+
+    # ------------------------------------------------------------------
+    # Dialog accept / reject
+    # ------------------------------------------------------------------
+
+    def _ok(self):
+        self.result_config = self._collect_config()
+        self._close_external_preview()
+        self._stop_mpv()
+        self.accept()
+
+    def _cancel(self):
+        self._close_external_preview()
+        self._stop_mpv()
+        self.reject()
+
+    def closeEvent(self, event):
+        self._close_external_preview()
+        self._stop_mpv()
+        # Stop the position-poller thread so it is not leaked when the dialog closes.
+        self._pos_poller.stop()
+        self._pos_poller.wait()
+        try:
+            shutil.rmtree(self._temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+    # ------------------------------------------------------------------
+    # Import / Export
+    # ------------------------------------------------------------------
+
+    def _export_state(self):
+        """Export the current editor state (zones, borders, snapshot path) to a JSON file."""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Editor State", os.path.join(_DEFAULT_DIALOG_DIR, "zoom_editor_state.json"),
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if not path:
+            return
+        state = self._collect_config()
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=4)
+            self._status.setText(f"Editor state exported to '{os.path.basename(path)}'.")
+        except OSError as exc:
+            self._status.setText(f"Export failed: {exc}")
+
+    def _import_state(self):
+        """Import a previously exported editor state JSON file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Editor State", _DEFAULT_DIALOG_DIR,
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            self._status.setText(f"Import failed: {exc}")
+            return
+        self._cfg = _migrate_zoom_config(raw)
+        self._load_config_to_ui()
+        # Rebuild composite preview immediately after importing state
+        self._schedule_composite_update()
+        self._status.setText(
+            f"Editor state imported from '{os.path.basename(path)}'.")
 
 
 class Switch(QAbstractButton):
@@ -1750,16 +3692,16 @@ class LiveControllerMac(QWidget):
         self.table.setColumnCount(10)
         self.table.setHorizontalHeaderLabels(["Key", "Name", "Lnk", "BPM", "C", "R1", "R2", "Syn", "Secs", "Del"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setMinimumSectionSize(10)
+        self.table.horizontalHeader().setMinimumSectionSize(20)
         self.table.setColumnWidth(0, 42)
-        self.table.setColumnWidth(2, 36)
-        self.table.setColumnWidth(3, 44)
-        self.table.setColumnWidth(4, 28)
-        self.table.setColumnWidth(5, 30)
-        self.table.setColumnWidth(6, 30)
-        self.table.setColumnWidth(7, 34)
-        self.table.setColumnWidth(8, 46)
-        self.table.setColumnWidth(9, 36)
+        self.table.setColumnWidth(2, 40)
+        self.table.setColumnWidth(3, 66)
+        self.table.setColumnWidth(4, 34)
+        self.table.setColumnWidth(5, 36)
+        self.table.setColumnWidth(6, 36)
+        self.table.setColumnWidth(7, 38)
+        self.table.setColumnWidth(8, 50)
+        self.table.setColumnWidth(9, 40)
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(False)
         self.table.setAlternatingRowColors(True)
@@ -2007,6 +3949,7 @@ class LiveControllerMac(QWidget):
         self.zoom_status_label.setStyleSheet("font-size: 10px; color: #636366;")
         self.zoom_button = QPushButton("Configure…")
         self.zoom_button.clicked.connect(self.open_zoom_dialog)
+        self.apply_zoom_checkbox.toggled.connect(self._update_zoom_status_label)
         zoom_layout.addWidget(self.apply_zoom_checkbox)
         zoom_layout.addWidget(self.zoom_button)
         zoom_layout.addWidget(self.zoom_status_label, 1)
@@ -2292,8 +4235,8 @@ class LiveControllerMac(QWidget):
         controls_widget = QWidget()
         controls_widget.setLayout(controls_area)
 
-        main_layout.addWidget(self.table, 1)
-        main_layout.addWidget(controls_widget, 1)
+        main_layout.addWidget(self.table, 3)
+        main_layout.addWidget(controls_widget, 2)
 
         # Trust warning banner — hidden until Accessibility permission is missing.
         self.trust_banner = QWidget()
@@ -2339,8 +4282,7 @@ class LiveControllerMac(QWidget):
         self.toggle_live_mode()
         self.populate_table()
         self._on_loop_bar_changed()
-        if self.zoom_config:
-            self.zoom_status_label.setText("Configured")
+        self._update_zoom_status_label()
         self.apply_overlay_styles()
 
     # ------------------------------------------------------------------ #
@@ -2922,7 +4864,7 @@ class LiveControllerMac(QWidget):
                 bpm_spin = QSpinBox()
                 bpm_spin.setRange(40, 280)
                 bpm_spin.setValue(int(item.get('bpm', 120)))
-                bpm_spin.setFixedWidth(46)
+                bpm_spin.setFixedWidth(66)
                 bpm_spin.valueChanged.connect(lambda value, r=i: self.update_bpm(value, r))
                 self.table.setCellWidget(i, 3, bpm_spin)
 
@@ -3957,12 +5899,48 @@ class LiveControllerMac(QWidget):
         except Exception as exc:
             self._debug_log(f"Zoom config save failed: {exc}")
 
+    def _update_zoom_status_label(self):
+        cfg = _migrate_zoom_config(self.zoom_config)
+        enabled_zones = [
+            z for z in cfg.get("zones", [])
+            if z.get("enabled") and z.get("crop_w", 0) > 0 and z.get("crop_h", 0) > 0
+        ]
+        apply_enabled = self.apply_zoom_checkbox.isChecked()
+        if not enabled_zones:
+            self.zoom_status_label.setText("Not configured" if not apply_enabled else "Apply enabled — not configured")
+            color = "#636366" if not apply_enabled else "#ff9f0a"
+            self.zoom_status_label.setStyleSheet(f"font-size: 10px; color: {color};")
+            return
+        if not apply_enabled:
+            suffix = "s" if len(enabled_zones) != 1 else ""
+            self.zoom_status_label.setText(f"Configured ({len(enabled_zones)} zone{suffix}) — Apply off")
+            self.zoom_status_label.setStyleSheet("font-size: 10px; color: #636366; font-style: italic;")
+            return
+        direction = cfg.get("stack_direction", "horizontal")
+        parts = []
+        for idx, z in enumerate(enabled_zones):
+            cw, ch = z.get("crop_w", 0), z.get("crop_h", 0)
+            sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
+            border = z.get("border_px", 0)
+            offset_y = int(z.get("offset_y", 0))
+            scale_txt = f"→{sw}×{sh}" if sw > 0 and sh > 0 else ""
+            border_txt = f" +{border}b" if border > 0 else ""
+            offset_txt = f" y{offset_y:+d}" if offset_y != 0 else ""
+            parts.append(f"Z{idx + 1}:{cw}×{ch}{scale_txt}{border_txt}{offset_txt}")
+        dir_sym = "↔" if direction != "vertical" else "↕"
+        self.zoom_status_label.setText(f"{dir_sym} " + "  ".join(parts))
+        self.zoom_status_label.setStyleSheet("font-size: 10px; color: #30d158; font-style: italic;")
+
     def open_zoom_dialog(self):
-        dialog = MultiZoomScaleDialog(self.zoom_config, self)
+        try:
+            output_display_num = int(self.display_combo.currentText())
+        except (TypeError, ValueError):
+            output_display_num = DEFAULT_VIDEO_SCREEN_NUMBER
+        dialog = MultiZoomScaleDialog(self.zoom_config, output_display_num=output_display_num, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.zoom_config = dialog.collect_config()
+            self.zoom_config = dialog.result_config if dialog.result_config is not None else dialog.collect_config()
             self.save_zoom_config()
-            self.zoom_status_label.setText("Configured")
+            self._update_zoom_status_label()
             QMessageBox.information(
                 self,
                 "Restart Recommended",
