@@ -389,18 +389,6 @@ class MidiTestWorker(QThread):
 
 NUM_ZONES = 5
 _ZONE_COLORS = ["#00e676", "#ff9800", "#2196f3", "#e040fb", "#ffeb3b"]  # Green, Orange, Blue, Purple, Yellow per zone
-_OUTPUT_RESOLUTION_PRESETS = [
-    ("1920 × 1080", 1920, 1080),
-    ("3840 × 2160", 3840, 2160),
-    ("1280 × 720", 1280, 720),
-    ("2560 × 1440", 2560, 1440),
-    ("1024 × 768", 1024, 768),
-    ("1920 × 1200", 1920, 1200),
-    ("3840 × 1080", 3840, 1080),
-    ("1080 × 1920", 1080, 1920),
-    ("512 × 512", 512, 512),
-    ("640 × 480", 640, 480),
-]
 
 
 def _default_zone():
@@ -410,7 +398,6 @@ def _default_zone():
         "crop_x": 0, "crop_y": 0, "crop_w": 1920, "crop_h": 1080,
         "scale_w": -1, "scale_h": -1,
         "border_px": 0,
-        "place_x": 0, "place_y": 0,
         "offset_y": 0,
         "mode": "crop",
     }
@@ -432,7 +419,6 @@ def _migrate_zoom_config(cfg):
         d.setdefault("out_w", -1)
         d.setdefault("out_h", -1)
         d.setdefault("out_sim_enabled", False)
-        d.setdefault("free_placement_enabled", False)
         d.setdefault("comp_crop_x", 0)
         d.setdefault("comp_crop_y", 0)
         d.setdefault("comp_crop_w", 0)
@@ -446,7 +432,6 @@ def _migrate_zoom_config(cfg):
         result = {"zones": zones, "stack_direction": "horizontal",
                   "frame_snapshot_path": "",
                   "out_w": 1920, "out_h": 1080, "out_sim_enabled": False,
-                  "free_placement_enabled": False,
                   "comp_crop_x": 0, "comp_crop_y": 0,
                   "comp_crop_w": 0, "comp_crop_h": 0,
                   "comp_scale_w": -1, "comp_scale_h": -1}
@@ -458,8 +443,6 @@ def _migrate_zoom_config(cfg):
         # Ensure every existing zone has the newer fields
         for z in zones:
             z.setdefault("border_px", 0)
-            z.setdefault("place_x", 0)
-            z.setdefault("place_y", 0)
             z.setdefault("offset_y", 0)
             z.setdefault("mode", "crop")
         result = {
@@ -468,7 +451,7 @@ def _migrate_zoom_config(cfg):
             "frame_snapshot_path": cfg.get("frame_snapshot_path", ""),
         }
         # Copy composite/output fields, backfilling absent ones as no-ops
-        for k in ("out_w", "out_h", "out_sim_enabled", "free_placement_enabled",
+        for k in ("out_w", "out_h", "out_sim_enabled",
                   "comp_crop_x", "comp_crop_y", "comp_crop_w", "comp_crop_h",
                   "comp_scale_w", "comp_scale_h"):
             if k in cfg:
@@ -485,8 +468,6 @@ def _migrate_zoom_config(cfg):
         "scale_w": cfg.get("scale_w", -1),
         "scale_h": cfg.get("scale_h", -1),
         "border_px": 0,
-        "place_x": 0,
-        "place_y": 0,
         "offset_y": 0,
         "mode": "crop",
     }
@@ -563,67 +544,19 @@ def _build_vf_for_zones(zoom_config):
     out_h = int(migrated.get("out_h", -1))
     out_sim_enabled = bool(migrated.get("out_sim_enabled", False))
 
-    def _composite_suffix(skip_pad=False):
+    def _composite_suffix():
         """Build filter suffix to apply after zone stacking (no leading comma)."""
         parts = []
         if comp_crop_w > 0 and comp_crop_h > 0:
             parts.append(f"crop={comp_crop_w}:{comp_crop_h}:{comp_crop_x}:{comp_crop_y}")
         if comp_scale_w > 0 and comp_scale_h > 0:
             parts.append(f"scale={comp_scale_w}:{comp_scale_h}")
-        if (not skip_pad) and out_sim_enabled and out_w > 0 and out_h > 0:
+        if out_sim_enabled and out_w > 0 and out_h > 0:
             # Pad composite into the output canvas, centred, with black bars
             parts.append(
                 f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:black"
             )
         return "," + ",".join(parts) if parts else ""
-
-    free_placement_enabled = bool(migrated.get("free_placement_enabled", False))
-    if free_placement_enabled and out_w > 0 and out_h > 0:
-        n = len(enabled)
-
-        if n == 1:
-            # Single zone: apply crop/scale/etc. then pad to canvas with black fill,
-            # placing the zone at (place_x, place_y).  No split needed.
-            z = enabled[0]
-            px = max(0, int(z.get('place_x', 0)))
-            py = max(0, int(z.get('place_y', 0)))
-            return (
-                f"lavfi=[{_zone_vf(z)},pad={out_w}:{out_h}:{px}:{py}:black"
-                f"{_composite_suffix(skip_pad=True)},setsar=1]"
-            )
-
-        # Multiple zones: split the source once per zone, place zone 0 on a black
-        # canvas via pad, then overlay remaining zones in order.
-        # Using pad (rather than a split-derived drawbox canvas) avoids pixel-format
-        # and SAR issues that can cause the graph to be silently rejected by ffmpeg.
-        split_tags = "".join(f"[z{i}]" for i in range(n))
-        split_part = f"split={n}{split_tags}"
-
-        z0 = enabled[0]
-        px0 = max(0, int(z0.get('place_x', 0)))
-        py0 = max(0, int(z0.get('place_y', 0)))
-        zone0_part = f"[z0]{_zone_vf(z0)},pad={out_w}:{out_h}:{px0}:{py0}:black[canvas]"
-
-        zone_parts = [f"[z{i}]{_zone_vf(enabled[i])}[c{i}]" for i in range(1, n)]
-
-        overlay_parts = []
-        current = "[canvas]"
-        for i in range(1, n):
-            z = enabled[i]
-            px = max(0, int(z.get('place_x', 0)))
-            py = max(0, int(z.get('place_y', 0)))
-            if i == n - 1:
-                overlay_parts.append(
-                    f"{current}[c{i}]overlay=x={px}:y={py}"
-                    f"{_composite_suffix(skip_pad=True)},setsar=1"
-                )
-            else:
-                next_out = f"[o{i}]"
-                overlay_parts.append(f"{current}[c{i}]overlay=x={px}:y={py}{next_out}")
-                current = next_out
-
-        graph = ";".join([split_part, zone0_part] + zone_parts + overlay_parts)
-        return f"lavfi=[{graph}]"
 
     # setsar=1 is appended to every filter graph so that mpv uses the composite's
     # own pixel dimensions for display-aspect-ratio calculations, rather than
@@ -709,7 +642,6 @@ def _build_external_preview_mpv_command(
         "--no-osc",
         "--no-input-default-bindings",
         "--really-quiet",
-        "--msg-level=vf=warn,lavfi=warn",
         "--keep-open=yes",
     ]
     if is_video_source:
@@ -887,7 +819,6 @@ class MidiSyncWorker(QThread):
                 "--no-input-default-bindings",
                 "--no-border",
                 "--really-quiet",
-                "--msg-level=vf=warn,lavfi=warn",
                 "--video-sync=audio",
                 "--keep-open=no",
                 self.video_file
@@ -899,8 +830,6 @@ class MidiSyncWorker(QThread):
         if not is_audio_only:
             vf_str = _build_vf_for_zones(self.zoom_config)
             if vf_str:
-                print(f"[playback] vf: {vf_str}")
-                self.status_update.emit(f"Video filter: {vf_str}")
                 mpv_cmd.insert(-1, f"--vf={vf_str}")
         
         try:
@@ -1969,244 +1898,6 @@ class StretchCanvas(QWidget):
         self.update()
 
 
-class ZonePlacementCanvas(QWidget):
-    """Canvas for free-positioning zones on an output canvas via drag.
-
-    The canvas treats the configured output resolution as its source coordinate
-    space.  A simple scale + offset transform maps those source pixels into the
-    widget so dragged positions remain exact regardless of letterboxing.
-    """
-
-    zone_moved = pyqtSignal(int, int, int)  # zone_index, new_x, new_y
-
-    def __init__(self, out_w=1920, out_h=1080, parent=None):
-        super().__init__(parent)
-        self._out_w = max(1, int(out_w))
-        self._out_h = max(1, int(out_h))
-        self._pixmaps = {}
-        self._active_zones = set()
-        self._positions = [(0, 0) for _ in range(NUM_ZONES)]
-        self._sizes = [(160, 90) for _ in range(NUM_ZONES)]
-        self._snap_to_edges = False
-        self._scale = 1.0
-        self._offset_x = 0.0
-        self._offset_y = 0.0
-        self._drag_zone = None
-        self._drag_anchor = (0, 0)
-        self._drag_text = ""
-        self._last_mouse_pos = QPoint()
-        self.setMinimumSize(640, 360)
-        self.setMouseTracking(True)
-        self._update_transform()
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def set_output_size(self, out_w, out_h):
-        self._out_w = max(1, int(out_w))
-        self._out_h = max(1, int(out_h))
-        self._update_transform()
-        self.update()
-
-    def set_pixmaps(self, pixmaps_by_zone_index):
-        self._pixmaps = dict(pixmaps_by_zone_index or {})
-        self._active_zones = set(self._pixmaps.keys())
-        self.update()
-
-    def set_positions(self, positions):
-        items = list(positions or [])
-        while len(items) < NUM_ZONES:
-            items.append((0, 0))
-        self._positions = [(int(x), int(y)) for x, y in items[:NUM_ZONES]]
-        self.update()
-
-    def set_zone_sizes(self, sizes):
-        items = list(sizes or [])
-        while len(items) < NUM_ZONES:
-            items.append((160, 90))
-        self._sizes = [(max(1, int(w)), max(1, int(h))) for w, h in items[:NUM_ZONES]]
-        self.update()
-
-    def set_snap_to_edges(self, enabled):
-        self._snap_to_edges = bool(enabled)
-        self.update()
-
-    # ------------------------------------------------------------------
-    # Coordinate helpers
-    # ------------------------------------------------------------------
-
-    def _update_transform(self):
-        sx = self.width() / max(1, self._out_w)
-        sy = self.height() / max(1, self._out_h)
-        self._scale = min(sx, sy)
-        self._offset_x = (self.width() - self._out_w * self._scale) / 2.0
-        self._offset_y = (self.height() - self._out_h * self._scale) / 2.0
-
-    def _to_widget(self, sx, sy):
-        return QPoint(int(sx * self._scale + self._offset_x),
-                      int(sy * self._scale + self._offset_y))
-
-    def _to_canvas(self, wx, wy):
-        sx = (wx - self._offset_x) / max(1e-6, self._scale)
-        sy = (wy - self._offset_y) / max(1e-6, self._scale)
-        return int(sx), int(sy)
-
-    def _canvas_rect(self):
-        return QRect(int(self._offset_x), int(self._offset_y),
-                     int(self._out_w * self._scale), int(self._out_h * self._scale))
-
-    def _zone_size(self, zone_index):
-        pm = self._pixmaps.get(zone_index)
-        if pm and not pm.isNull():
-            return pm.width(), pm.height()
-        return self._sizes[zone_index]
-
-    def _zone_canvas_rect(self, zone_index):
-        x, y = self._positions[zone_index]
-        w, h = self._zone_size(zone_index)
-        return QRect(int(x), int(y), max(1, int(w)), max(1, int(h)))
-
-    def _zone_widget_rect(self, zone_index):
-        src_rect = self._zone_canvas_rect(zone_index)
-        tl = self._to_widget(src_rect.x(), src_rect.y())
-        br = self._to_widget(src_rect.x() + src_rect.width(), src_rect.y() + src_rect.height())
-        return QRect(tl.x(), tl.y(), max(1, br.x() - tl.x()), max(1, br.y() - tl.y()))
-
-    def _hit_zone(self, pos):
-        for zone_index in range(NUM_ZONES - 1, -1, -1):
-            if zone_index not in self._active_zones:
-                continue
-            if self._zone_widget_rect(zone_index).contains(pos):
-                return zone_index
-        return None
-
-    def _clamp_position(self, zone_index, x, y):
-        w, h = self._zone_size(zone_index)
-        keep_w = min(10, w)
-        keep_h = min(10, h)
-        min_x = -(w - keep_w)
-        max_x = self._out_w - keep_w
-        min_y = -(h - keep_h)
-        max_y = self._out_h - keep_h
-        return max(min_x, min(int(x), max_x)), max(min_y, min(int(y), max_y))
-
-    def _snap_position(self, zone_index, x, y):
-        if not self._snap_to_edges:
-            return x, y
-        w, h = self._zone_size(zone_index)
-        if abs(x) <= 8:
-            x = 0
-        elif abs((x + w) - self._out_w) <= 8:
-            x = self._out_w - w
-        if abs(y) <= 8:
-            y = 0
-        elif abs((y + h) - self._out_h) <= 8:
-            y = self._out_h - h
-        return x, y
-
-    # ------------------------------------------------------------------
-    # Paint
-    # ------------------------------------------------------------------
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#1e1e1e"))
-
-        canvas_rect = self._canvas_rect()
-        painter.fillRect(canvas_rect, QColor("black"))
-        painter.setPen(QPen(QColor("#555"), 1))
-        painter.drawRect(canvas_rect)
-
-        for zone_index in range(NUM_ZONES):
-            if zone_index not in self._active_zones:
-                continue
-            rect = self._zone_widget_rect(zone_index)
-            color = QColor(_ZONE_COLORS[zone_index])
-            pm = self._pixmaps.get(zone_index)
-
-            painter.save()
-            painter.setClipRect(canvas_rect)
-            if pm and not pm.isNull():
-                painter.drawPixmap(rect, pm)
-            else:
-                painter.fillRect(rect, QColor(color.red(), color.green(), color.blue(), 120))
-            painter.restore()
-
-            painter.setPen(QPen(color, 2))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(rect)
-
-            label_text = f"Z{zone_index + 1}"
-            fm = painter.fontMetrics()
-            tw = fm.horizontalAdvance(label_text) + 10
-            th = fm.height() + 4
-            tx = max(canvas_rect.left() + 2, min(rect.left() + 4, canvas_rect.right() - tw - 2))
-            ty = max(canvas_rect.top() + 2, min(rect.top() + 4, canvas_rect.bottom() - th - 2))
-            painter.fillRect(tx, ty, tw, th, QColor(0, 0, 0, 190))
-            painter.setPen(color)
-            painter.drawText(tx + 5, ty + th - 4, label_text)
-
-        if self._drag_text:
-            fm = painter.fontMetrics()
-            tw = fm.horizontalAdvance(self._drag_text) + 10
-            th = fm.height() + 6
-            tx = max(2, min(self.width() - tw - 2, self._last_mouse_pos.x() + 16))
-            ty = max(2, min(self.height() - th - 2, self._last_mouse_pos.y() - th // 2))
-            painter.fillRect(tx, ty, tw, th, QColor(0, 0, 0, 210))
-            painter.setPen(QColor("#d4d4d4"))
-            painter.drawText(tx + 5, ty + th - 4, self._drag_text)
-
-    # ------------------------------------------------------------------
-    # Mouse interaction
-    # ------------------------------------------------------------------
-
-    def mousePressEvent(self, event):
-        if event.button() != Qt.MouseButton.LeftButton:
-            return
-        self._last_mouse_pos = event.pos()
-        zone_index = self._hit_zone(event.pos())
-        if zone_index is None:
-            return
-        self._drag_zone = zone_index
-        sx, sy = self._to_canvas(event.pos().x(), event.pos().y())
-        zx, zy = self._positions[zone_index]
-        self._drag_anchor = (sx - zx, sy - zy)
-        self.setCursor(Qt.CursorShape.SizeAllCursor)
-
-    def mouseMoveEvent(self, event):
-        self._last_mouse_pos = event.pos()
-        if self._drag_zone is None:
-            self.setCursor(Qt.CursorShape.SizeAllCursor
-                           if self._hit_zone(event.pos()) is not None
-                           else Qt.CursorShape.ArrowCursor)
-            return
-        sx, sy = self._to_canvas(event.pos().x(), event.pos().y())
-        ax, ay = self._drag_anchor
-        new_x, new_y = sx - ax, sy - ay
-        new_x, new_y = self._snap_position(self._drag_zone, new_x, new_y)
-        new_x, new_y = self._clamp_position(self._drag_zone, new_x, new_y)
-        self._positions[self._drag_zone] = (new_x, new_y)
-        self._drag_text = f"Z{self._drag_zone + 1}  X:{new_x}  Y:{new_y}"
-        self.update()
-
-    def mouseReleaseEvent(self, event):
-        if event.button() != Qt.MouseButton.LeftButton or self._drag_zone is None:
-            return
-        zone_index = self._drag_zone
-        x, y = self._positions[zone_index]
-        self._drag_zone = None
-        self._drag_text = ""
-        self.setCursor(Qt.CursorShape.ArrowCursor)
-        self.update()
-        self.zone_moved.emit(zone_index, x, y)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._update_transform()
-        self.update()
-
-
 # ---------------------------------------------------------------------------
 # MultiZoomScaleDialog — multi-zone crop/stretch compositor dialog
 # ---------------------------------------------------------------------------
@@ -2214,23 +1905,22 @@ class ZonePlacementCanvas(QWidget):
 class MultiZoomScaleDialog(QDialog):
     """Multi-zone crop/stretch configuration dialog.
 
-    Up to 5 independent crop zones can be configured and enabled; the enabled
+    Up to 3 independent crop zones can be configured and enabled; the enabled
     zones are stitched (horizontally or vertically) to produce the final output
-    image sent to mpv, or freely placed at absolute output-canvas coordinates.
+    image sent to mpv.
 
     Per-zone the user can toggle between:
       • Crop mode   — drag the coloured rectangle on the full source frame.
       • Stretch mode — drag handles to set output scale dimensions; the
                        cropped sub-image is previewed stretched in real-time.
 
-    Dedicated tabs expose the stitched composite, absolute zone placement, and
-    a final-output preview so the operator can edit each stage independently.
+    A *Final Preview* tab composites all enabled zones into one image showing
+    exactly how the final stitched output will look.
     """
 
     # Tab indices — zone tabs occupy 0 … NUM_ZONES-1
     _COMP_TAB_INDEX  = NUM_ZONES      # "Composite Output"
-    _DRAG_TAB_INDEX  = NUM_ZONES + 1  # "Zone Drag"
-    _FINAL_TAB_INDEX = NUM_ZONES + 2  # "Final Preview"
+    _FINAL_TAB_INDEX = NUM_ZONES + 1  # "Final Preview"
 
     def __init__(self, current_config, output_display_num=DEFAULT_VIDEO_SCREEN_NUMBER, parent=None):
         super().__init__(parent)
@@ -2431,9 +2121,6 @@ class MultiZoomScaleDialog(QDialog):
         self._zone_sh_sbs   = []
         self._zone_border_sbs = []
         self._zone_offset_y_sbs = []
-        self._zone_place_x_sbs = []
-        self._zone_place_y_sbs = []
-        self._zone_place_size_labels = []
 
         for i in range(NUM_ZONES):
             color = _ZONE_COLORS[i]
@@ -2714,11 +2401,12 @@ class MultiZoomScaleDialog(QDialog):
         for sb in (self._comp_sw_sb, self._comp_sh_sb):
             sb.valueChanged.connect(self._on_comp_scale_spinbox_changed)
 
-        # ---- Shared output resolution widgets used by Final Preview + Zone Drag ----
+        # ---- Final Preview tab ----
         final_tab = QWidget()
         final_layout = QVBoxLayout(final_tab)
         final_layout.setSpacing(6)
 
+        # Output resolution controls
         out_res_bar = QHBoxLayout()
         out_res_bar.addWidget(QLabel("Simulated output resolution:"))
         self._out_w_sb = QSpinBox()
@@ -2748,9 +2436,6 @@ class MultiZoomScaleDialog(QDialog):
 
         final_top = QHBoxLayout()
         self._refresh_btn = QPushButton("🔄  Refresh Final Preview")
-        self._refresh_btn.setToolTip(
-            "Rebuild the fully composited preview shown on this tab using the current\n"
-            "zone, composite, and output-canvas settings.")
         self._refresh_btn.clicked.connect(self._refresh_final_preview)
         self._stitch_info_label = QLabel()
         final_top.addWidget(self._refresh_btn)
@@ -2761,143 +2446,8 @@ class MultiZoomScaleDialog(QDialog):
         self._final_canvas.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._final_canvas.setMinimumSize(400, 200)
         self._final_canvas.setStyleSheet("background: #111; border: 1px solid #444;")
-        self._final_canvas.setToolTip(
-            "Preview of the final output canvas after zone compositing, whole-composite\n"
-            "crop/stretch, and simulated output-resolution placement.")
         self._final_canvas.setText("Capture a frame and click 'Refresh Final Preview'")
         final_layout.addWidget(self._final_canvas, 1)
-
-        # ---- Zone Drag tab ----
-        drag_tab = QWidget()
-        drag_layout = QVBoxLayout(drag_tab)
-        drag_layout.setSpacing(6)
-        drag_layout.setContentsMargins(4, 4, 4, 4)
-
-        drag_top = QVBoxLayout()
-        drag_mode_bar = QHBoxLayout()
-        self._free_place_cb = QCheckBox("Enable free zone placement (overrides stitch direction)")
-        self._free_place_cb.setToolTip(
-            "When enabled, zones are placed at absolute X/Y positions on the output canvas\n"
-            "rather than being stitched side-by-side or stacked. The stitch direction radio buttons\n"
-            "are ignored in this mode.")
-        self._free_place_hint_label = QLabel("")
-        self._free_place_hint_label.setStyleSheet("color: #00b894; font-style: italic;")
-        self._free_place_hint_label.setToolTip(
-            "Indicates whether free placement is active and the stitch-direction controls are ignored.")
-        drag_mode_bar.addWidget(self._free_place_cb)
-        drag_mode_bar.addStretch()
-        drag_mode_bar.addWidget(self._free_place_hint_label)
-        drag_top.addLayout(drag_mode_bar)
-
-        drag_res_bar = QHBoxLayout()
-        drag_res_bar.addWidget(QLabel("Canvas resolution:"))
-        self._drag_out_preset_combo = QComboBox()
-        for label, _pw, _ph in _OUTPUT_RESOLUTION_PRESETS:
-            self._drag_out_preset_combo.addItem(label)
-        self._drag_out_preset_combo.addItem("Custom…")
-        self._drag_out_preset_combo.setToolTip(
-            "Choose a common output-canvas size for free placement.\n"
-            "This stays synchronised with the Final Preview resolution controls.")
-        self._drag_out_w_sb = QSpinBox()
-        self._drag_out_w_sb.setRange(160, 32768)
-        self._drag_out_w_sb.setValue(1920)
-        self._drag_out_w_sb.setSuffix(" px")
-        self._drag_out_w_sb.setFixedWidth(100)
-        self._drag_out_w_sb.setToolTip(
-            "Free-placement canvas width in pixels. Kept in sync with Final Preview.")
-        self._drag_out_h_sb = QSpinBox()
-        self._drag_out_h_sb.setRange(120, 32768)
-        self._drag_out_h_sb.setValue(1080)
-        self._drag_out_h_sb.setSuffix(" px")
-        self._drag_out_h_sb.setFixedWidth(100)
-        self._drag_out_h_sb.setToolTip(
-            "Free-placement canvas height in pixels. Kept in sync with Final Preview.")
-        self._drag_canvas_size_label = QLabel("")
-        self._drag_canvas_size_label.setStyleSheet("color: #888; font-style: italic;")
-        self._drag_canvas_size_label.setToolTip(
-            "Read-only reminder of the current shared output-canvas dimensions.")
-        drag_res_bar.addWidget(self._drag_out_preset_combo)
-        drag_res_bar.addWidget(self._drag_out_w_sb)
-        drag_res_bar.addWidget(QLabel("×"))
-        drag_res_bar.addWidget(self._drag_out_h_sb)
-        drag_res_bar.addSpacing(10)
-        drag_res_bar.addWidget(self._drag_canvas_size_label)
-        drag_res_bar.addStretch()
-        drag_top.addLayout(drag_res_bar)
-        drag_layout.addLayout(drag_top)
-
-        drag_body = QHBoxLayout()
-        drag_body.setSpacing(8)
-        self._zone_drag_canvas = ZonePlacementCanvas()
-        self._zone_drag_canvas.setToolTip(
-            "Drag enabled zones to absolute X/Y positions on the output canvas.\n"
-            "Positions are stored in output pixels and applied during preview/playback.")
-        drag_body.addWidget(self._zone_drag_canvas, 3)
-
-        drag_right = QVBoxLayout()
-        drag_right.setSpacing(6)
-        place_grp = QGroupBox("Zone Positions")
-        place_grp.setToolTip(
-            "Numerically edit each zone's absolute position on the output canvas.\n"
-            "Values are output pixels measured from the top-left of the canvas.")
-        place_grid = QGridLayout()
-        place_grid.setSpacing(4)
-        place_grid.addWidget(QLabel(""), 0, 0)
-        place_grid.addWidget(QLabel("Zone"), 0, 1)
-        place_grid.addWidget(QLabel("X"), 0, 2)
-        place_grid.addWidget(QLabel("Y"), 0, 3)
-        place_grid.addWidget(QLabel("Size"), 0, 4)
-        for i in range(NUM_ZONES):
-            color = _ZONE_COLORS[i]
-            swatch = QLabel()
-            swatch.setFixedSize(14, 14)
-            swatch.setStyleSheet(f"background: {color}; border: 1px solid #666;")
-            swatch.setToolTip(f"Zone {i + 1} colour swatch.")
-            name_label = QLabel(f"Zone {i + 1}")
-            name_label.setStyleSheet(f"color: {color}; font-weight: bold;")
-            name_label.setToolTip(f"Controls for Zone {i + 1}.")
-            px_sb = QSpinBox()
-            px_sb.setRange(-10000, 32768)
-            px_sb.setFixedWidth(92)
-            px_sb.setSuffix(" px")
-            px_sb.setToolTip(f"Absolute X position for Zone {i + 1} on the output canvas.")
-            py_sb = QSpinBox()
-            py_sb.setRange(-10000, 32768)
-            py_sb.setFixedWidth(92)
-            py_sb.setSuffix(" px")
-            py_sb.setToolTip(f"Absolute Y position for Zone {i + 1} on the output canvas.")
-            size_label = QLabel("—")
-            size_label.setStyleSheet("color: #888; font-family: monospace;")
-            size_label.setToolTip(
-                f"Current rendered size of Zone {i + 1} after crop/scale/border transforms.")
-            self._zone_place_x_sbs.append(px_sb)
-            self._zone_place_y_sbs.append(py_sb)
-            self._zone_place_size_labels.append(size_label)
-            place_grid.addWidget(swatch, i + 1, 0)
-            place_grid.addWidget(name_label, i + 1, 1)
-            place_grid.addWidget(px_sb, i + 1, 2)
-            place_grid.addWidget(py_sb, i + 1, 3)
-            place_grid.addWidget(size_label, i + 1, 4)
-        place_grp.setLayout(place_grid)
-
-        drag_btn_row = QHBoxLayout()
-        self._zone_drag_reset_btn = QPushButton("Reset positions")
-        self._zone_drag_reset_btn.setToolTip(
-            "Reset all zone free-placement positions to X=0, Y=0.")
-        self._zone_drag_snap_cb = QCheckBox("Snap to canvas edges")
-        self._zone_drag_snap_cb.setToolTip(
-            "When enabled, dragged zones snap to canvas edges when moved within 8 pixels.")
-        drag_btn_row.addWidget(self._zone_drag_reset_btn)
-        drag_btn_row.addWidget(self._zone_drag_snap_cb)
-        drag_btn_row.addStretch()
-
-        drag_right.addWidget(place_grp)
-        drag_right.addLayout(drag_btn_row)
-        drag_right.addStretch()
-        drag_body.addLayout(drag_right, 1)
-        drag_layout.addLayout(drag_body, 1)
-
-        self._tabs.addTab(drag_tab, "Zone Drag")
         self._tabs.addTab(final_tab, "Final Preview")
 
         root.addWidget(self._tabs, 1)
@@ -2914,25 +2464,14 @@ class MultiZoomScaleDialog(QDialog):
                     self._zone_offset_y_sbs):
             for sb in sbs:
                 sb.valueChanged.connect(self._schedule_composite_update)
-        for sb in self._zone_place_x_sbs + self._zone_place_y_sbs:
-            sb.valueChanged.connect(self._on_zone_place_spinbox_changed)
         self._stitch_h.toggled.connect(lambda _: self._schedule_composite_update())
         self._stitch_v.toggled.connect(lambda _: self._schedule_composite_update())
         for sb in (self._comp_x_sb, self._comp_y_sb, self._comp_w_sb, self._comp_h_sb,
                    self._comp_sw_sb, self._comp_sh_sb, self._out_w_sb, self._out_h_sb):
             sb.valueChanged.connect(self._schedule_composite_update)
         self._out_sim_playback_cb.stateChanged.connect(self._schedule_composite_update)
-        self._free_place_cb.toggled.connect(self._on_free_placement_toggled)
-        self._drag_out_preset_combo.currentIndexChanged.connect(self._on_drag_resolution_preset_changed)
-        self._drag_out_w_sb.valueChanged.connect(self._on_drag_resolution_spinboxes_changed)
-        self._drag_out_h_sb.valueChanged.connect(self._on_drag_resolution_spinboxes_changed)
-        self._out_w_sb.valueChanged.connect(self._on_final_resolution_spinboxes_changed)
-        self._out_h_sb.valueChanged.connect(self._on_final_resolution_spinboxes_changed)
-        self._zone_drag_canvas.zone_moved.connect(self._on_zone_canvas_moved)
-        self._zone_drag_snap_cb.toggled.connect(self._zone_drag_canvas.set_snap_to_edges)
-        self._zone_drag_reset_btn.clicked.connect(self._reset_zone_positions)
 
-        # Auto-rebuild when switching to Composite Output, Zone Drag, or Final Preview tabs
+        # Auto-rebuild when switching to Composite Output or Final Preview tabs
         self._tabs.currentChanged.connect(self._on_tab_changed)
 
         # ---- Status bar + OK / Cancel ----
@@ -2971,8 +2510,6 @@ class MultiZoomScaleDialog(QDialog):
             sw = zone.get("scale_w", -1)
             sh = zone.get("scale_h", -1)
             border = max(0, zone.get("border_px", 0))
-            place_x = int(zone.get("place_x", 0))
-            place_y = int(zone.get("place_y", 0))
             offset_y = int(zone.get("offset_y", 0))
             mode   = zone.get("mode", "crop")
             self._zone_x_sbs[i].setValue(x)
@@ -2982,8 +2519,6 @@ class MultiZoomScaleDialog(QDialog):
             self._zone_sw_sbs[i].setValue(sw)
             self._zone_sh_sbs[i].setValue(sh)
             self._zone_border_sbs[i].setValue(border)
-            self._zone_place_x_sbs[i].setValue(place_x)
-            self._zone_place_y_sbs[i].setValue(place_y)
             self._zone_offset_y_sbs[i].setValue(offset_y)
             if mode == "stretch":
                 self._zone_mode_stretch_rbs[i].setChecked(True)
@@ -2997,10 +2532,7 @@ class MultiZoomScaleDialog(QDialog):
         out_h  = self._cfg.get("out_h",  -1)
         self._out_w_sb.setValue(out_w if out_w > 0 else 1920)
         self._out_h_sb.setValue(out_h if out_h > 0 else 1080)
-        self._drag_out_w_sb.setValue(self._out_w_sb.value())
-        self._drag_out_h_sb.setValue(self._out_h_sb.value())
         self._out_sim_playback_cb.setChecked(bool(self._cfg.get("out_sim_enabled", False)))
-        self._free_place_cb.setChecked(bool(self._cfg.get("free_placement_enabled", False)))
         self._comp_x_sb.setValue(int(self._cfg.get("comp_crop_x", 0)))
         self._comp_y_sb.setValue(int(self._cfg.get("comp_crop_y", 0)))
         self._comp_w_sb.setValue(int(self._cfg.get("comp_crop_w", 0)))
@@ -3009,9 +2541,6 @@ class MultiZoomScaleDialog(QDialog):
         self._comp_sh_sb.setValue(int(self._cfg.get("comp_scale_h", -1)))
 
         self._updating = False
-        self._sync_output_resolution_controls(from_final=True)
-        self._update_free_placement_state()
-        self._refresh_zone_drag_canvas()
 
         # Attempt to reload the persistent frame snapshot
         saved_path = self._cfg.get("frame_snapshot_path", "")
@@ -3034,8 +2563,6 @@ class MultiZoomScaleDialog(QDialog):
                 "scale_w":   self._zone_sw_sbs[i].value(),
                 "scale_h":   self._zone_sh_sbs[i].value(),
                 "border_px": self._zone_border_sbs[i].value(),
-                "place_x":   self._zone_place_x_sbs[i].value(),
-                "place_y":   self._zone_place_y_sbs[i].value(),
                 "offset_y":  self._zone_offset_y_sbs[i].value(),
                 "mode":      mode,
             })
@@ -3049,7 +2576,6 @@ class MultiZoomScaleDialog(QDialog):
             "out_w":          self._out_w_sb.value(),
             "out_h":          self._out_h_sb.value(),
             "out_sim_enabled": out_sim,
-            "free_placement_enabled": self._free_place_cb.isChecked(),
             "comp_crop_x":    self._comp_x_sb.value(),
             "comp_crop_y":    self._comp_y_sb.value(),
             "comp_crop_w":    self._comp_w_sb.value(),
@@ -3057,159 +2583,6 @@ class MultiZoomScaleDialog(QDialog):
             "comp_scale_w":   self._comp_sw_sb.value(),
             "comp_scale_h":   self._comp_sh_sb.value(),
         }
-
-    def _sync_output_resolution_controls(self, *, from_final):
-        """Keep the Final Preview and Zone Drag output-resolution controls in sync."""
-        if self._updating:
-            return
-        self._updating = True
-        if from_final:
-            width = self._out_w_sb.value()
-            height = self._out_h_sb.value()
-            self._drag_out_w_sb.setValue(width)
-            self._drag_out_h_sb.setValue(height)
-        else:
-            width = self._drag_out_w_sb.value()
-            height = self._drag_out_h_sb.value()
-            self._out_w_sb.setValue(width)
-            self._out_h_sb.setValue(height)
-        preset_index = len(_OUTPUT_RESOLUTION_PRESETS)
-        for i, (_label, pw, ph) in enumerate(_OUTPUT_RESOLUTION_PRESETS):
-            if pw == width and ph == height:
-                preset_index = i
-                break
-        self._drag_out_preset_combo.setCurrentIndex(preset_index)
-        self._drag_canvas_size_label.setText(f"Shared canvas: {width} × {height} px")
-        self._updating = False
-        self._zone_drag_canvas.set_output_size(width, height)
-        self._refresh_zone_drag_canvas()
-
-    def _update_free_placement_state(self):
-        enabled = self._free_place_cb.isChecked()
-        self._stitch_h.setEnabled(not enabled)
-        self._stitch_v.setEnabled(not enabled)
-        self._free_place_hint_label.setText(
-            "Free placement active — stitch direction ignored" if enabled else ""
-        )
-
-    def _on_free_placement_toggled(self, _checked):
-        if self._updating:
-            return
-        self._update_free_placement_state()
-        self._schedule_composite_update()
-        self._refresh_zone_drag_canvas()
-
-    def _on_drag_resolution_preset_changed(self, index):
-        if self._updating:
-            return
-        if index < 0 or index >= len(_OUTPUT_RESOLUTION_PRESETS):
-            return
-        _label, width, height = _OUTPUT_RESOLUTION_PRESETS[index]
-        self._updating = True
-        self._drag_out_w_sb.setValue(width)
-        self._drag_out_h_sb.setValue(height)
-        self._updating = False
-        self._sync_output_resolution_controls(from_final=False)
-        self._schedule_composite_update()
-
-    def _on_drag_resolution_spinboxes_changed(self, *_args):
-        self._sync_output_resolution_controls(from_final=False)
-        self._schedule_composite_update()
-
-    def _on_final_resolution_spinboxes_changed(self, *_args):
-        self._sync_output_resolution_controls(from_final=True)
-
-    def _on_zone_place_spinbox_changed(self, *_args):
-        if self._updating:
-            return
-        self._refresh_zone_drag_canvas()
-        self._schedule_composite_update()
-
-    def _on_zone_canvas_moved(self, zone_index, x, y):
-        if self._updating:
-            return
-        self._updating = True
-        self._zone_place_x_sbs[zone_index].setValue(x)
-        self._zone_place_y_sbs[zone_index].setValue(y)
-        self._updating = False
-        self._schedule_composite_update()
-
-    def _reset_zone_positions(self):
-        self._updating = True
-        for i in range(NUM_ZONES):
-            self._zone_place_x_sbs[i].setValue(0)
-            self._zone_place_y_sbs[i].setValue(0)
-        self._updating = False
-        self._refresh_zone_drag_canvas()
-        self._schedule_composite_update()
-
-    def _zone_output_size(self, zone_cfg):
-        """Return the rendered size of one zone after crop, scale, and border steps."""
-        crop_w = max(1, int(zone_cfg.get("crop_w", 1)))
-        crop_h = max(1, int(zone_cfg.get("crop_h", 1)))
-        scale_w = int(zone_cfg.get("scale_w", -1))
-        scale_h = int(zone_cfg.get("scale_h", -1))
-        border = max(0, int(zone_cfg.get("border_px", 0)))
-        out_w = scale_w if scale_w > 0 else crop_w
-        out_h = scale_h if scale_h > 0 else crop_h
-        return out_w + 2 * border, out_h + 2 * border
-
-    def _build_zone_piece_pixmap(self, zone_cfg):
-        """Build the rendered pixmap for a single zone using current source-frame data."""
-        if not self._full_pixmap or self._full_pixmap.isNull():
-            return None
-        cx = max(0, int(zone_cfg.get("crop_x", 0)))
-        cy = max(0, int(zone_cfg.get("crop_y", 0)))
-        cw = max(1, int(zone_cfg.get("crop_w", 1)))
-        ch = max(1, int(zone_cfg.get("crop_h", 1)))
-        sw = int(zone_cfg.get("scale_w", -1))
-        sh = int(zone_cfg.get("scale_h", -1))
-        border = max(0, int(zone_cfg.get("border_px", 0)))
-        offset_y = int(zone_cfg.get("offset_y", 0))
-        pm = self._full_pixmap.copy(cx, cy, cw, ch)
-        if sw > 0 and sh > 0:
-            pm = pm.scaled(sw, sh,
-                           Qt.AspectRatioMode.IgnoreAspectRatio,
-                           Qt.TransformationMode.SmoothTransformation)
-        if border > 0:
-            bordered = QPixmap(pm.width() + 2 * border, pm.height() + 2 * border)
-            bordered.fill(QColor("black"))
-            bp = QPainter(bordered)
-            bp.drawPixmap(border, border, pm)
-            bp.end()
-            pm = bordered
-        if offset_y != 0:
-            # Match the playback filter graph so the drag view previews real placement sizes.
-            abs_off = abs(offset_y)
-            pad_y = max(offset_y, 0)
-            crop_y = max(-offset_y, 0)
-            taller = QPixmap(pm.width(), pm.height() + abs_off)
-            taller.fill(QColor("black"))
-            tp = QPainter(taller)
-            tp.drawPixmap(0, pad_y, pm)
-            tp.end()
-            pm = taller.copy(0, crop_y, pm.width(), pm.height())
-        return pm
-
-    def _refresh_zone_drag_canvas(self):
-        """Refresh the free-placement preview canvas from the current zone settings."""
-        cfg = self._collect_config()
-        self._zone_drag_canvas.set_output_size(cfg.get("out_w", 1920), cfg.get("out_h", 1080))
-        positions = []
-        sizes = []
-        pixmaps = {}
-        for i, zone_cfg in enumerate(cfg["zones"][:NUM_ZONES]):
-            positions.append((int(zone_cfg.get("place_x", 0)), int(zone_cfg.get("place_y", 0))))
-            size_w, size_h = self._zone_output_size(zone_cfg)
-            sizes.append((size_w, size_h))
-            self._zone_place_size_labels[i].setText(f"{size_w} × {size_h}")
-            enabled = zone_cfg.get("enabled") and zone_cfg.get("crop_w", 0) > 0
-            if enabled:
-                pixmaps[i] = self._build_zone_piece_pixmap(zone_cfg)
-        self._zone_drag_canvas.set_zone_sizes(sizes)
-        self._zone_drag_canvas.set_positions(positions)
-        self._zone_drag_canvas.set_pixmaps(pixmaps)
-        self._zone_drag_canvas.set_snap_to_edges(self._zone_drag_snap_cb.isChecked())
 
     # ------------------------------------------------------------------
     # Zone signal handlers
@@ -3346,8 +2719,6 @@ class MultiZoomScaleDialog(QDialog):
         current = self._tabs.currentIndex()
         if current == self._COMP_TAB_INDEX:
             self._rebuild_composite_canvas()
-        elif current == self._DRAG_TAB_INDEX:
-            self._refresh_zone_drag_canvas()
         elif current == self._FINAL_TAB_INDEX:
             self._refresh_final_preview()
 
@@ -3355,8 +2726,6 @@ class MultiZoomScaleDialog(QDialog):
         """Auto-rebuild when the user switches to Composite Output or Final Preview."""
         if index == self._COMP_TAB_INDEX:
             self._rebuild_composite_canvas()
-        elif index == self._DRAG_TAB_INDEX:
-            self._refresh_zone_drag_canvas()
         elif index == self._FINAL_TAB_INDEX:
             self._refresh_final_preview()
 
@@ -3416,9 +2785,8 @@ class MultiZoomScaleDialog(QDialog):
     def _build_composite_pixmap(self, cfg=None):
         """Build and return the stitched composite QPixmap from current zone settings.
 
-        Applies per-zone crop, optional scale, border, and offset_y, then either
-        stitches the zones or places them on an explicit output canvas depending
-        on the current composition mode. Returns None if no zones are enabled.
+        Applies per-zone crop, optional scale, border, and offset_y then stitches
+        according to the current stitch direction.  Returns None if no zones are enabled.
 
         *cfg* may be a pre-collected config dict (to avoid a duplicate
         :meth:`_collect_config` call when the caller already has one).
@@ -3431,29 +2799,39 @@ class MultiZoomScaleDialog(QDialog):
         if not zones:
             return None
 
-        free_placement_enabled = bool(cfg.get("free_placement_enabled", False))
-        out_w = int(cfg.get("out_w", -1))
-        out_h = int(cfg.get("out_h", -1))
-        if free_placement_enabled and out_w > 0 and out_h > 0:
-            result = QPixmap(out_w, out_h)
-            result.fill(QColor("#000000"))
-            painter = QPainter(result)
-            for z in zones:
-                pm = self._build_zone_piece_pixmap(z)
-                if pm and not pm.isNull():
-                    painter.drawPixmap(int(z.get("place_x", 0)), int(z.get("place_y", 0)), pm)
-            painter.end()
-            return result
-
         direction = cfg.get("stack_direction", "horizontal")
         pieces = []
         for z in zones:
-            pm = self._build_zone_piece_pixmap(z)
-            if pm is None or pm.isNull():
-                continue
+            cx, cy = max(0, z["crop_x"]), max(0, z["crop_y"])
+            cw, ch = max(1, z["crop_w"]), max(1, z["crop_h"])
+            sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
+            border = z.get("border_px", 0)
+            offset_y = int(z.get("offset_y", 0))
+            pm = self._full_pixmap.copy(cx, cy, cw, ch)
+            if sw > 0 and sh > 0:
+                pm = pm.scaled(sw, sh,
+                               Qt.AspectRatioMode.IgnoreAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+            if border > 0:
+                bordered = QPixmap(pm.width() + 2 * border, pm.height() + 2 * border)
+                bordered.fill(QColor("black"))
+                bp = QPainter(bordered)
+                bp.drawPixmap(border, border, pm)
+                bp.end()
+                pm = bordered
+            if offset_y != 0:
+                # Match mpv filter: pad then crop to keep dimensions constant
+                abs_off = abs(offset_y)
+                pad_y   = max(offset_y, 0)
+                crop_y  = max(-offset_y, 0)
+                taller = QPixmap(pm.width(), pm.height() + abs_off)
+                taller.fill(QColor("black"))
+                tp = QPainter(taller)
+                tp.drawPixmap(0, pad_y, pm)
+                tp.end()
+                # Crop back to original height
+                pm = taller.copy(0, crop_y, pm.width(), pm.height())
             pieces.append(pm)
-        if not pieces:
-            return None
 
         if direction == "vertical":
             total_w = max(p.width() for p in pieces)
@@ -3494,7 +2872,6 @@ class MultiZoomScaleDialog(QDialog):
             return
 
         direction = cfg.get("stack_direction", "horizontal")
-        free_placement_enabled = bool(cfg.get("free_placement_enabled", False))
         n_zones = sum(1 for z in cfg["zones"] if z.get("enabled") and z.get("crop_w", 0) > 0)
 
         composite_w = result.width()
@@ -3545,15 +2922,13 @@ class MultiZoomScaleDialog(QDialog):
                                Qt.TransformationMode.SmoothTransformation)
         self._final_canvas.setPixmap(scaled)
 
-        dir_txt = "free placement" if free_placement_enabled else (
-            "vertical" if direction == "vertical" else "horizontal"
-        )
+        dir_txt = "vertical" if direction == "vertical" else "horizontal"
         crop_info = (f"  |  Comp crop: {comp_crop_w}×{comp_crop_h}"
                      if comp_crop_w > 0 and comp_crop_h > 0 else "")
         scale_info = (f"  |  Comp scale: {comp_sw}×{comp_sh}"
                       if comp_sw > 0 and comp_sh > 0 else "")
         self._stitch_info_label.setText(
-            f"Layout: {dir_txt}  |  {n_zones} zone(s)  |  "
+            f"Stitch: {dir_txt}  |  {n_zones} zone(s)  |  "
             f"Composite: {composite_w}×{composite_h} px"
             f"{crop_info}{scale_info}  |  "
             f"Output canvas: {out_w}×{out_h} px")
@@ -3830,9 +3205,6 @@ class MultiZoomScaleDialog(QDialog):
         self._ext_preview_source_path = source_path
         vf_str = _build_vf_for_zones(self._collect_config())
         self._ext_preview_vf = vf_str or ""
-        if self._ext_preview_vf:
-            print(f"[external preview] vf: {self._ext_preview_vf}")
-            self._status.setText(f"Video filter: {self._ext_preview_vf}")
 
         cmd = _build_external_preview_mpv_command(
             MPV_PATH,
@@ -5004,15 +4376,6 @@ class LiveController(QWidget):
             self.zoom_status_label.setText("Zoom: enabled — no zones configured")
             self.zoom_status_label.setStyleSheet("font-size: 10px; color: #e67e22; font-style: italic;")
         else:
-            if migrated.get("free_placement_enabled", False):
-                parts = []
-                for idx, z in enumerate(enabled_zones):
-                    cw, ch = z.get("crop_w", 0), z.get("crop_h", 0)
-                    px, py = z.get("place_x", 0), z.get("place_y", 0)
-                    parts.append(f"Z{idx+1}:{cw}×{ch}@({px},{py})")
-                self.zoom_status_label.setText("⊞ " + "  ".join(parts))
-                self.zoom_status_label.setStyleSheet("font-size: 10px; color: #00b894; font-style: italic;")
-                return
             direction = migrated.get("stack_direction", "horizontal")
             parts = []
             for idx, z in enumerate(enabled_zones):
