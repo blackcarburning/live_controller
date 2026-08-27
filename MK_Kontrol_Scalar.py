@@ -356,11 +356,11 @@ QSlider::sub-page:horizontal:disabled {
 }
 """
 
-# Branded logo HTML — ▲ (U+25B2) replaces each A in KATTMAN CONTROL
+# Branded logo HTML — ▲ (U+25B2) replaces each A in KATTMAN
 KATTMAN_LOGO_HTML = (
     '<span style="color:#f2f2f7; font-weight:700; font-size:22px; letter-spacing:4px;">'
     'K<span style="color:#0a84ff;">&#9650;</span>TTM'
-    '<span style="color:#0a84ff;">&#9650;</span>N&nbsp;&nbsp;CONTROL'
+    '<span style="color:#0a84ff;">&#9650;</span>N&nbsp;&nbsp;KONTROL&nbsp;&nbsp;KOMPLETE'
     '</span>'
 )
 
@@ -722,6 +722,12 @@ def _default_zone():
     }
 
 
+def _normalize_snapshot_path(path):
+    if not path:
+        return ""
+    return os.path.abspath(path)
+
+
 def _migrate_zoom_config(cfg):
     def _backfill_composite(d):
         d.setdefault("out_w", -1)
@@ -751,7 +757,7 @@ def _migrate_zoom_config(cfg):
         result = {
             "zones": zones[:NUM_ZONES],
             "stack_direction": cfg.get("stack_direction", "horizontal"),
-            "frame_snapshot_path": cfg.get("frame_snapshot_path", ""),
+            "frame_snapshot_path": _normalize_snapshot_path(cfg.get("frame_snapshot_path", "")),
         }
         for k in ("out_w", "out_h", "out_sim_enabled",
                   "comp_crop_x", "comp_crop_y", "comp_crop_w", "comp_crop_h",
@@ -773,7 +779,11 @@ def _migrate_zoom_config(cfg):
         "mode": "crop",
     }
     zones = [zone0] + [_default_zone() for _ in range(NUM_ZONES - 1)]
-    result = {"zones": zones, "stack_direction": "horizontal", "frame_snapshot_path": ""}
+    result = {
+        "zones": zones,
+        "stack_direction": "horizontal",
+        "frame_snapshot_path": _normalize_snapshot_path(cfg.get("frame_snapshot_path", "")),
+    }
     _backfill_composite(result)
     return result
 
@@ -2510,8 +2520,6 @@ class MultiZoomScaleDialog(QDialog):
                 self._zone_mode_stretch_rbs[i].setChecked(True)
             else:
                 self._zone_mode_crop_rbs[i].setChecked(True)
-            self._zone_crop_canvases[i].set_region(x, y, w, h)
-            self._zone_stretch_canvases[i].set_output(sw if sw > 0 else w, sh if sh > 0 else h)
 
         # Load composite output fields
         out_w  = self._cfg.get("out_w",  -1)
@@ -2527,13 +2535,55 @@ class MultiZoomScaleDialog(QDialog):
         self._comp_sh_sb.setValue(int(self._cfg.get("comp_scale_h", -1)))
 
         self._updating = False
+        self._push_restored_values_to_canvases()
 
         # Attempt to reload the persistent frame snapshot
-        saved_path = self._cfg.get("frame_snapshot_path", "")
+        saved_path = _normalize_snapshot_path(self._cfg.get("frame_snapshot_path", ""))
+        self._cfg["frame_snapshot_path"] = saved_path
         if saved_path and os.path.isfile(saved_path):
             self._load_frame_from_path(saved_path)
             self._status.setText(
                 f"Restored saved frame snapshot from '{os.path.basename(saved_path)}'.")
+
+    def _push_restored_values_to_canvases(self):
+        prev_updating = self._updating
+        self._updating = True
+        for i in range(NUM_ZONES):
+            x = self._zone_x_sbs[i].value()
+            y = self._zone_y_sbs[i].value()
+            w = self._zone_w_sbs[i].value()
+            h = self._zone_h_sbs[i].value()
+            sw = self._zone_sw_sbs[i].value()
+            sh = self._zone_sh_sbs[i].value()
+            self._zone_crop_canvases[i].set_region(x, y, w, h)
+            self._zone_stretch_canvases[i].set_output(sw if sw > 0 else w, sh if sh > 0 else h)
+            self._zone_stacked[i].setCurrentIndex(1 if self._zone_mode_stretch_rbs[i].isChecked() else 0)
+            self._sync_stretch_canvas(i)
+
+        cw = self._comp_w_sb.value()
+        ch = self._comp_h_sb.value()
+        if cw > 0 and ch > 0:
+            self._comp_crop_canvas.set_region(
+                self._comp_x_sb.value(),
+                self._comp_y_sb.value(),
+                cw,
+                ch,
+            )
+        else:
+            src_w = self._comp_crop_canvas.source_w
+            src_h = self._comp_crop_canvas.source_h
+            if src_w > 0 and src_h > 0:
+                self._comp_crop_canvas.set_region(0, 0, src_w, src_h)
+
+        comp_sw = self._comp_sw_sb.value()
+        comp_sh = self._comp_sh_sb.value()
+        src_w, src_h = self._comp_stretch_canvas.get_source_size()
+        self._comp_stretch_canvas.set_output(
+            comp_sw if comp_sw > 0 else max(1, src_w),
+            comp_sh if comp_sh > 0 else max(1, src_h),
+        )
+        self._comp_stacked.setCurrentIndex(1 if self._comp_mode_stretch_rb.isChecked() else 0)
+        self._updating = prev_updating
 
     def _collect_config(self):
         direction = "vertical" if self._stitch_v.isChecked() else "horizontal"
@@ -2552,7 +2602,8 @@ class MultiZoomScaleDialog(QDialog):
                 "offset_y":  self._zone_offset_y_sbs[i].value(),
                 "mode":      mode,
             })
-        snapshot_path = self._cfg.get("frame_snapshot_path", "")
+        snapshot_path = _normalize_snapshot_path(self._cfg.get("frame_snapshot_path", ""))
+        self._cfg["frame_snapshot_path"] = snapshot_path
         out_sim = self._out_sim_playback_cb.isChecked()
         return {
             "zones": zones,
@@ -3026,8 +3077,11 @@ class MultiZoomScaleDialog(QDialog):
                 self._zone_h_sbs[i].value(),
             )
             self._sync_stretch_canvas(i)
-        # Rebuild composite canvases automatically whenever a new frame is loaded
-        self._schedule_composite_update()
+        # Push restored crop/stretch state and rebuild composite canvases immediately.
+        self._push_restored_values_to_canvases()
+        self._rebuild_composite_canvas()
+        if self._tabs.currentIndex() == self._FINAL_TAB_INDEX:
+            self._refresh_final_preview()
 
     def _stop_mpv(self):
         # Pause position polling before tearing down the IPC pipe.
@@ -3260,7 +3314,7 @@ class MultiZoomScaleDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _ok(self):
-        self.result_config = self._collect_config()
+        self.result_config = self.collect_config()
         self._close_external_preview()
         self._stop_mpv()
         self.accept()
@@ -3454,7 +3508,7 @@ class LiveControllerMac(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("KATTMAN CONTROL")
+        self.setWindowTitle("Kattman Kontrol Komplete")
 
         # Debug console (created early so _debug_log works immediately).
         self._debug_console = DebugConsoleWindow(self)
@@ -3582,7 +3636,7 @@ class LiveControllerMac(QWidget):
         left_layout.addWidget(self.active_label)
         left_layout.addStretch(1)
 
-        # Center: K▲TTM▲N CONTROL logo + setlist info stacked
+        # Center: K▲TTM▲N KONTROL KOMPLETE logo + setlist info stacked
         title_layout = QVBoxLayout()
         title_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title_layout.setSpacing(2)
@@ -5889,7 +5943,8 @@ class LiveControllerMac(QWidget):
         try:
             with open(ZOOM_CONFIG_FILE, 'r', encoding='utf-8') as f:
                 return _migrate_zoom_config(json.load(f))
-        except Exception:
+        except Exception as exc:
+            self._debug_log(f"Zoom config load failed: {exc}")
             return {}
 
     def save_zoom_config(self):
@@ -5938,7 +5993,8 @@ class LiveControllerMac(QWidget):
             output_display_num = DEFAULT_VIDEO_SCREEN_NUMBER
         dialog = MultiZoomScaleDialog(self.zoom_config, output_display_num=output_display_num, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.zoom_config = dialog.result_config if dialog.result_config is not None else dialog.collect_config()
+            cfg = dialog.result_config if dialog.result_config is not None else dialog.collect_config()
+            self.zoom_config = _migrate_zoom_config(cfg)
             self.save_zoom_config()
             self._update_zoom_status_label()
             QMessageBox.information(
