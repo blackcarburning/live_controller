@@ -675,6 +675,19 @@ def _send_mpv_ipc_command(ipc_path, command, max_attempts=2, retry_delay=0.05):
     return False, last_error
 
 
+def _mz_format_duration(seconds):
+    """Format *seconds* as ``MM:SS`` for display in the Multi-Zone scrub bar.
+
+    Returns ``"00:00"`` for ``None`` or negative values so labels always show
+    something sensible before a video is loaded.
+    """
+    if seconds is None or seconds < 0:
+        return "00:00"
+    total = int(seconds)
+    mins, secs = divmod(total, 60)
+    return f"{mins:02d}:{secs:02d}"
+
+
 class MidiSyncWorker(QThread):
     """The main worker thread for handling synchronized mpv playback and MIDI clock output."""
     finished = pyqtSignal()          # Emitted when playback is finished.
@@ -1914,6 +1927,15 @@ class MultiZoomScaleDialog(QDialog):
 
         self._updating = False        # Guard for circular signal updates
 
+        # Scrub-slider tracking state (capture-preview transport)
+        self._mz_pos = 0.0            # Most-recently known playback position (seconds)
+        self._mz_dur = 0.0            # Most-recently known video duration (seconds)
+        self._mz_slider_dragging = False  # True while the user has the handle pressed
+
+        # Background position poller for the capture-preview mpv instance
+        self._pos_poller = PositionPoller()
+        self._pos_poller.position_updated.connect(self._on_mz_position_updated)
+
         # Debounce timer for real-time composite/preview updates
         self._update_timer = QTimer(self)
         self._update_timer.setSingleShot(True)
@@ -1922,6 +1944,9 @@ class MultiZoomScaleDialog(QDialog):
 
         self._setup_ui()
         self._load_config_to_ui()
+        # Start the position poller after all UI widgets are constructed so the
+        # slot cannot reference attributes that do not yet exist.
+        self._pos_poller.start()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -1955,6 +1980,52 @@ class MultiZoomScaleDialog(QDialog):
         file_bar.addWidget(self._pause_btn)
         file_bar.addWidget(self._capture_btn)
         root.addLayout(file_bar)
+
+        # ---- Transport / scrub controls row ----
+        transport_bar = QHBoxLayout()
+
+        # Play-from-beginning button
+        self._beg_btn = QPushButton("⏮  Beginning")
+        self._beg_btn.setToolTip("Seek to position 0 and start playback.")
+        self._beg_btn.clicked.connect(self._play_from_beginning)
+        self._beg_btn.setEnabled(False)
+
+        # Frame-step buttons
+        self._frame_back_btn = QPushButton("◀  Frame Back")
+        self._frame_back_btn.setToolTip("Step exactly one frame backward (works while paused).")
+        self._frame_back_btn.clicked.connect(self._frame_back)
+        self._frame_back_btn.setEnabled(False)
+
+        self._frame_fwd_btn = QPushButton("Frame Forward  ▶")
+        self._frame_fwd_btn.setToolTip("Step exactly one frame forward (works while paused).")
+        self._frame_fwd_btn.clicked.connect(self._frame_forward)
+        self._frame_fwd_btn.setEnabled(False)
+
+        # Scrub slider with MM:SS labels either side
+        self._mz_pos_label = QLabel("00:00")
+        self._mz_pos_label.setMinimumWidth(42)
+        self._mz_pos_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        self._mz_scrub_slider = QSlider(Qt.Orientation.Horizontal)
+        self._mz_scrub_slider.setRange(0, 1000)
+        self._mz_scrub_slider.setValue(0)
+        self._mz_scrub_slider.setEnabled(False)
+        self._mz_scrub_slider.setToolTip("Drag to jump to any position in the video.")
+        self._mz_scrub_slider.sliderMoved.connect(self._on_mz_scrub_moved)
+        self._mz_scrub_slider.sliderReleased.connect(self._on_mz_scrub_released)
+
+        self._mz_dur_label = QLabel("00:00")
+        self._mz_dur_label.setMinimumWidth(42)
+        self._mz_dur_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+        transport_bar.addWidget(self._beg_btn)
+        transport_bar.addWidget(self._frame_back_btn)
+        transport_bar.addWidget(self._frame_fwd_btn)
+        transport_bar.addSpacing(8)
+        transport_bar.addWidget(self._mz_pos_label)
+        transport_bar.addWidget(self._mz_scrub_slider, 1)
+        transport_bar.addWidget(self._mz_dur_label)
+        root.addLayout(transport_bar)
 
         ext_bar = QHBoxLayout()
         ext_bar.addWidget(QLabel("External preview:"))
@@ -2877,8 +2948,12 @@ class MultiZoomScaleDialog(QDialog):
         ]
         try:
             self._mpv_process = subprocess.Popen(cmd)
-            for btn in (self._play_btn, self._pause_btn, self._capture_btn):
+            for btn in (self._play_btn, self._pause_btn, self._capture_btn,
+                        self._beg_btn, self._frame_back_btn, self._frame_fwd_btn):
                 btn.setEnabled(True)
+            self._mz_scrub_slider.setEnabled(True)
+            # Point the position poller at the new pipe so scrub labels update live.
+            self._pos_poller.set_socket(self._ipc_path)
             self._status.setText(
                 "mpv opened. Navigate to the desired frame, then click 'Capture Frame'.")
         except Exception as exc:
@@ -2953,6 +3028,8 @@ class MultiZoomScaleDialog(QDialog):
         self._schedule_composite_update()
 
     def _stop_mpv(self):
+        # Pause position polling before tearing down the IPC pipe.
+        self._pos_poller.set_socket(None)
         if self._mpv_process and self._mpv_process.poll() is None:
             if self._ipc_path:
                 _send_mpv_ipc_command(self._ipc_path, ["quit"], max_attempts=2)
@@ -2960,6 +3037,89 @@ class MultiZoomScaleDialog(QDialog):
             self._mpv_process.terminate()
         self._mpv_process = None
         self._ipc_path = None
+        # Disable transport controls until a new video is loaded.
+        for btn in (self._beg_btn, self._frame_back_btn, self._frame_fwd_btn):
+            btn.setEnabled(False)
+        self._mz_scrub_slider.setEnabled(False)
+
+    # ------------------------------------------------------------------
+    # Capture-preview transport controls
+    # ------------------------------------------------------------------
+
+    def _on_mz_position_updated(self, pos: float, dur: float):
+        """Slot connected to PositionPoller.position_updated for the capture-preview mpv.
+
+        Updates the scrub slider and MM:SS labels.  Blocked while the user is
+        dragging the handle to prevent the slider jumping back to the poll value.
+        """
+        self._mz_pos = pos
+        self._mz_dur = dur
+        if not self._mz_slider_dragging:
+            if dur > 0:
+                slider_val = int((pos / dur) * 1000)
+                self._mz_scrub_slider.blockSignals(True)
+                self._mz_scrub_slider.setValue(slider_val)
+                self._mz_scrub_slider.blockSignals(False)
+            self._mz_pos_label.setText(_mz_format_duration(pos))
+            self._mz_dur_label.setText(_mz_format_duration(dur))
+
+    def _on_mz_scrub_moved(self, value: int):
+        """Called continuously while the user drags the scrub-slider handle.
+
+        Updates the position label live so the operator sees where they are
+        landing; the actual seek is deferred to sliderReleased.
+        """
+        self._mz_slider_dragging = True
+        if self._mz_dur > 0:
+            pos = (value / 1000.0) * self._mz_dur
+            self._mz_pos_label.setText(_mz_format_duration(pos))
+
+    def _on_mz_scrub_released(self):
+        """Called when the user releases the scrub-slider handle.
+
+        Issues an absolute seek to the chosen position.  ``hr-seek yes``
+        ensures frame-accurate positioning so the mpv window shows the exact
+        frame at the new position even while paused.
+        """
+        if not self._mz_slider_dragging:
+            return
+        self._mz_slider_dragging = False
+        if not self._ipc_path or self._mz_dur <= 0:
+            return
+        value = self._mz_scrub_slider.value()
+        pos = (value / 1000.0) * self._mz_dur
+        # Use "exact" flag for frame-accurate positioning so the mpv window
+        # shows the precise frame even while paused (equivalent to hr-seek).
+        self._send_ipc(["seek", pos, "absolute", "exact"])
+
+    def _play_from_beginning(self):
+        """Seek to position 0 and start playback."""
+        self._send_ipc(["seek", 0, "absolute"])
+        self._send_ipc(["set_property", "pause", False])
+        self._ext_preview_paused = False
+        self._apply_external_preview_playback_state()
+
+    def _frame_forward(self):
+        """Advance exactly one frame using mpv's native frame-step command.
+
+        mpv pauses playback as a side-effect of frame-step, which is the desired
+        behaviour here (the operator is locating a precise frame for capture).
+        We update ``_ext_preview_paused`` accordingly so the external-preview
+        logic stays consistent.
+        """
+        self._send_ipc(["frame-step"])
+        # mpv pauses automatically after frame-step.
+        self._ext_preview_paused = True
+        self._apply_external_preview_playback_state()
+
+    def _frame_back(self):
+        """Step exactly one frame backward using mpv's frame-back-step command.
+
+        Like frame-step, mpv pauses as a side-effect, which is desired.
+        """
+        self._send_ipc(["frame-back-step"])
+        self._ext_preview_paused = True
+        self._apply_external_preview_playback_state()
 
     def _is_external_source_video(self):
         return self._ext_source_combo.currentIndex() == 1
@@ -3111,6 +3271,9 @@ class MultiZoomScaleDialog(QDialog):
     def closeEvent(self, event):
         self._close_external_preview()
         self._stop_mpv()
+        # Stop the position-poller thread so it is not leaked when the dialog closes.
+        self._pos_poller.stop()
+        self._pos_poller.wait()
         try:
             shutil.rmtree(self._temp_dir, ignore_errors=True)
         except Exception:
