@@ -3540,7 +3540,7 @@ class LiveControllerMac(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Kattman Kontrol Komplete")
+        self.setWindowTitle("Kattman Komplete Kontreol")
 
         # Debug console (created early so _debug_log works immediately).
         self._debug_console = DebugConsoleWindow(self)
