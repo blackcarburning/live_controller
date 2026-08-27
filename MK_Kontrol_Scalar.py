@@ -1138,6 +1138,8 @@ class MidiSyncWorker(QThread):
                     f"stderr={stderr_text or '<empty>'})"
                 )
             time.sleep(0.02)
+        if not self._is_running:
+            raise InterruptedError("Playback stopped by user while waiting for mpv IPC socket")
         if not os.path.exists(socket_path):
             raise RuntimeError(
                 f"mpv IPC socket did not appear: {socket_path} "
