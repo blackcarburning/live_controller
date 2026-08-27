@@ -24,9 +24,16 @@ def _default_zone():
         "crop_x": 0, "crop_y": 0, "crop_w": 1920, "crop_h": 1080,
         "scale_w": -1, "scale_h": -1,
         "border_px": 0,
+        "place_x": 0, "place_y": 0,
         "offset_y": 0,
         "mode": "crop",
     }
+
+
+def test_default_zone_includes_free_placement_coordinates():
+    zone = _default_zone()
+    assert zone["place_x"] == 0
+    assert zone["place_y"] == 0
 
 
 def _migrate_zoom_config(cfg):
@@ -34,6 +41,7 @@ def _migrate_zoom_config(cfg):
         d.setdefault("out_w", -1)
         d.setdefault("out_h", -1)
         d.setdefault("out_sim_enabled", False)
+        d.setdefault("free_placement_enabled", False)
         d.setdefault("comp_crop_x", 0)
         d.setdefault("comp_crop_y", 0)
         d.setdefault("comp_crop_w", 0)
@@ -47,6 +55,7 @@ def _migrate_zoom_config(cfg):
         result = {"zones": zones, "stack_direction": "horizontal",
                   "frame_snapshot_path": "",
                   "out_w": 1920, "out_h": 1080, "out_sim_enabled": False,
+                  "free_placement_enabled": False,
                   "comp_crop_x": 0, "comp_crop_y": 0,
                   "comp_crop_w": 0, "comp_crop_h": 0,
                   "comp_scale_w": -1, "comp_scale_h": -1}
@@ -57,6 +66,8 @@ def _migrate_zoom_config(cfg):
             zones.append(_default_zone())
         for z in zones:
             z.setdefault("border_px", 0)
+            z.setdefault("place_x", 0)
+            z.setdefault("place_y", 0)
             z.setdefault("offset_y", 0)
             z.setdefault("mode", "crop")
         result = {
@@ -64,7 +75,7 @@ def _migrate_zoom_config(cfg):
             "stack_direction": cfg.get("stack_direction", "horizontal"),
             "frame_snapshot_path": cfg.get("frame_snapshot_path", ""),
         }
-        for k in ("out_w", "out_h", "out_sim_enabled",
+        for k in ("out_w", "out_h", "out_sim_enabled", "free_placement_enabled",
                   "comp_crop_x", "comp_crop_y", "comp_crop_w", "comp_crop_h",
                   "comp_scale_w", "comp_scale_h"):
             if k in cfg:
@@ -81,6 +92,8 @@ def _migrate_zoom_config(cfg):
         "scale_w": cfg.get("scale_w", -1),
         "scale_h": cfg.get("scale_h", -1),
         "border_px": 0,
+        "place_x": 0,
+        "place_y": 0,
         "offset_y": 0,
         "mode": "crop",
     }
@@ -136,15 +149,41 @@ def _build_vf_for_zones(zoom_config):
     out_h = int(migrated.get("out_h", -1))
     out_sim_enabled = bool(migrated.get("out_sim_enabled", False))
 
-    def _composite_suffix():
+    def _composite_suffix(skip_pad=False):
         parts = []
         if comp_crop_w > 0 and comp_crop_h > 0:
             parts.append(f"crop={comp_crop_w}:{comp_crop_h}:{comp_crop_x}:{comp_crop_y}")
         if comp_scale_w > 0 and comp_scale_h > 0:
             parts.append(f"scale={comp_scale_w}:{comp_scale_h}")
-        if out_sim_enabled and out_w > 0 and out_h > 0:
+        if (not skip_pad) and out_sim_enabled and out_w > 0 and out_h > 0:
             parts.append(f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:black")
         return "," + ",".join(parts) if parts else ""
+
+    free_placement_enabled = bool(migrated.get("free_placement_enabled", False))
+    if free_placement_enabled and out_w > 0 and out_h > 0:
+        n = len(enabled)
+        split_tags = "[base_src]" + "".join(f"[z{i}]" for i in range(n))
+        graph_parts = [
+            f"split={n + 1}{split_tags}",
+            (f"[base_src]crop=1:1:0:0,scale={out_w}:{out_h},"
+             f"drawbox=x=0:y=0:w=iw:h=ih:color=black@1:t=fill[base]")
+        ]
+        for i, z in enumerate(enabled):
+            graph_parts.append(f"[z{i}]{_zone_vf(z)}[c{i}]")
+        overlay_input = "[base]"
+        for i, z in enumerate(enabled):
+            overlay_output = f"[o{i}]"
+            overlay_part = (
+                f"{overlay_input}[c{i}]overlay=x={int(z.get('place_x', 0))}:"
+                f"y={int(z.get('place_y', 0))}"
+            )
+            if i == n - 1:
+                overlay_part += f"{_composite_suffix(skip_pad=True)},setsar=1"
+            else:
+                overlay_part += overlay_output
+            graph_parts.append(overlay_part)
+            overlay_input = overlay_output
+        return f"lavfi=[{';'.join(graph_parts)}]"
 
     if len(enabled) == 1:
         return f"lavfi=[{_zone_vf(enabled[0])}{_composite_suffix()},setsar=1]"
@@ -272,6 +311,7 @@ def test_migrate_empty_includes_composite_fields():
     assert result["out_w"] == 1920
     assert result["out_h"] == 1080
     assert result["out_sim_enabled"] is False
+    assert result["free_placement_enabled"] is False
     assert result["comp_crop_w"] == 0
     assert result["comp_scale_w"] == -1
 
@@ -341,8 +381,11 @@ def test_migrate_backfills_zone_fields():
     result = _migrate_zoom_config(cfg)
     z = result["zones"][0]
     assert z["border_px"] == 0
+    assert z["place_x"] == 0
+    assert z["place_y"] == 0
     assert z["offset_y"] == 0
     assert z["mode"] == "crop"
+    assert result["free_placement_enabled"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -350,13 +393,16 @@ def test_migrate_backfills_zone_fields():
 # ---------------------------------------------------------------------------
 
 def _enabled_zone(crop_x=0, crop_y=0, crop_w=1920, crop_h=1080,
-                  scale_w=-1, scale_h=-1, border_px=0, offset_y=0):
+                  scale_w=-1, scale_h=-1, border_px=0, offset_y=0,
+                  place_x=0, place_y=0):
     return {
         "enabled": True,
         "crop_x": crop_x, "crop_y": crop_y,
         "crop_w": crop_w, "crop_h": crop_h,
         "scale_w": scale_w, "scale_h": scale_h,
         "border_px": border_px,
+        "place_x": place_x,
+        "place_y": place_y,
         "offset_y": offset_y,
         "mode": "crop",
     }
@@ -427,6 +473,34 @@ def test_two_zones_vertical_stitch():
     cfg = _make_cfg(z0, z1, direction="vertical")
     result = _build_vf_for_zones(cfg)
     assert "vstack=inputs=2" in result
+
+
+def test_free_placement_builds_overlay_graph():
+    z0 = _enabled_zone(crop_w=640, crop_h=360, place_x=100, place_y=200)
+    z1 = _enabled_zone(crop_x=640, crop_w=640, crop_h=360, place_x=900, place_y=120)
+    cfg = _make_cfg(
+        z0, z1,
+        out_w=1920, out_h=1080,
+        out_sim_enabled=True,
+        free_placement_enabled=True,
+    )
+    result = _build_vf_for_zones(cfg)
+    assert "split=3[base_src][z0][z1]" in result
+    assert "drawbox=x=0:y=0:w=iw:h=ih:color=black@1:t=fill[base]" in result
+    assert "[base][c0]overlay=x=100:y=200[o0]" in result
+    assert "[o0][c1]overlay=x=900:y=120,setsar=1" in result
+    assert "hstack=inputs=2" not in result
+    assert "pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black" not in result
+
+
+def test_free_placement_false_keeps_existing_graph():
+    z0 = _enabled_zone(crop_w=960, crop_h=540)
+    z1 = _enabled_zone(crop_x=960, crop_w=960, crop_h=540)
+    baseline = _build_vf_for_zones(_make_cfg(z0, z1, direction="horizontal"))
+    explicit_false = _build_vf_for_zones(
+        _make_cfg(z0, z1, direction="horizontal", free_placement_enabled=False)
+    )
+    assert baseline == explicit_false
 
 
 def test_multi_zone_different_heights_padded():
