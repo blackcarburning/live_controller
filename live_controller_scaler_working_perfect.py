@@ -1,0 +1,6092 @@
+# live_controller.py
+#
+# Author: blackcarburning
+# Date: 2025-07-26 10:54:03
+#
+# Description:
+# A comprehensive live performance controller for synchronizing video playback 
+# with external MIDI devices. The application provides a graphical user interface 
+# built with PyQt6 to manage a setlist of video tracks, control playback, 
+# and test MIDI connections. It uses mpv for video playback, rtmidi for MIDI 
+# communication, and features global hotkey support for in-show control.
+
+# --- Standard Library Imports ---
+import sys
+import os
+import re
+import ssl
+import subprocess
+import time
+import json
+import ctypes
+import ctypes.wintypes
+import threading
+import datetime
+import tempfile
+import shutil
+import uuid
+import zipfile
+import urllib.request
+import urllib.parse
+from collections import deque
+
+# --- Third-Party Library Imports ---
+# This solution requires the 'keyboard' and 'psutil' libraries.
+# If you see a "ModuleNotFoundError", please install them by running this command
+# in your command prompt:
+#
+# python -m pip install keyboard psutil rtmidi-python
+#
+import rtmidi                  # For sending MIDI messages
+import keyboard                # For global hotkey listening
+import psutil                  # For setting process priority
+import serial                  # For Arduino serial communication
+from serial.tools import list_ports  # For discovering serial ports
+
+# --- PyQt6 Imports ---
+from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
+                             QTableWidget, QTableWidgetItem, QLineEdit, QHeaderView, 
+                             QGroupBox, QLabel, QFileDialog, QSizePolicy, QComboBox,
+                             QAbstractButton, QSlider, QAbstractItemView, QCheckBox,
+                             QGridLayout, QRadioButton, QSpinBox, QColorDialog, QDialog,
+                             QTabWidget, QStackedWidget, QMessageBox)
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer, QRect
+from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen, QPixmap
+
+# --- Core Application Configuration ---
+# File paths for external media players
+MPV_PATH = r"c:\mpv\mpv.exe"
+MPLAYER_PATH = r"d:\mplayer\mplayer.exe"
+
+# JSON files for persistent storage of track-specific data
+BPM_STORE_FILE = "bpm_store.json"
+TRACK_NAME_STORE_FILE = "track_names.json"
+
+# Configuration and session files for the application state
+CONFIG_FILE = "config.json"
+SESSION_FILE = "session.json"
+ZOOM_CONFIG_FILE = "zoom_config.json"
+ZOOM_FRAME_SNAPSHOT = "zoom_frame_snapshot.png"  # Persistent frame snapshot in project dir
+SETLISTS_DIR = "setlists"
+
+# Default settings for playback and display
+DEFAULT_VIDEO_SCREEN_NUMBER = 1
+DEFAULT_LOAD_DELAY_SECONDS = 5
+DEFAULT_MIDI_OFFSET_MS = 0
+DEFAULT_COUNT_IN_SECONDS = 20
+DEFAULT_TABLE_FONT_SIZE = 16
+DEFAULT_COUNT_IN_FONT_SIZE = 250
+DEFAULT_TRACK_PLAY_FONT_SIZE = 80
+DEFAULT_STREAMDECK_FONT_SIZE = 12
+DEFAULT_COUNT_IN_BG_COLOR = "#c80000"
+DEFAULT_TRACK_PLAY_BG_COLOR = "#00c800"
+TRACK_OVERHEAD_SECONDS = 15  # Extra time added to total running time per track for transitions
+MAX_UNDO_LEVELS = 30
+
+# UI and timing constants
+PREPARING_OVERLAY_DURATION_MS = 2000
+ACTIVE_FLASH_INTERVAL_MS = 500
+SAVE_POPUP_DURATION_MS = 3000
+MPV_LAUNCH_HEAD_START_SECONDS = 2 # Launch mpv this many seconds before pre-roll ends
+
+# --- MIDI Protocol Bytes (Standard MIDI Specification) ---
+START_BYTE = 0xFA    # MIDI System Real-Time Message: Start
+STOP_BYTE = 0xFC     # MIDI System Real-Time Message: Stop
+CLOCK_BYTE = 0xF8    # MIDI System Real-Time Message: Timing Clock
+SPP_BYTE = 0xF2      # MIDI System Common Message: Song Position Pointer
+
+# --- Arduino LED Controller Constants ---
+ARDUINO_BAUD = 9600
+ARDUINO_TARGET_ID = "LED_TEST_PRO_MINI_01"
+ARDUINO_PROBE_CMD = b'?\n'
+
+# --- Sync-Show API Defaults ---
+# These are the instance-specific defaults used in the initial deployment.
+# Override both values via the Sync Show API config group in the settings panel.
+DEFAULT_SYNC_SHOW_HOST = "https://meshlive.blackcarburning.com"
+DEFAULT_SYNC_SHOW_SESSION = "0e49315f"
+# Global timing trim applied to the sync-show scheduled start (milliseconds).
+# Positive = sync-show starts later; Negative = sync-show starts earlier.
+DEFAULT_SYNC_TIMING_TRIM_MS = 0
+
+# --- Windows Multimedia Timer API ---
+# Used for high-precision timing on Windows to ensure accurate MIDI clock signals.
+# `timeBeginPeriod` requests a higher timer resolution from the OS.
+winmm = ctypes.windll.winmm
+
+# --- Dark Theme Stylesheet ---
+# A global stylesheet to provide a consistent dark theme for the application.
+DARK_STYLESHEET = """
+QWidget {
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+    font-family: 'Segoe UI';
+}
+QGroupBox {
+    font-size: 12px;
+    font-weight: bold;
+    border: 1px solid #444;
+    border-radius: 8px;
+    margin-top: 6px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top center;
+    padding: 0 10px;
+}
+QLabel {
+    background-color: transparent;
+}
+QPushButton {
+    background-color: #333;
+    color: #d4d4d4;
+    border: 1px solid #555;
+    padding: 8px;
+    border-radius: 6px;
+    font-size: 16px;
+}
+QPushButton:hover {
+    background-color: #454545;
+}
+QPushButton:pressed {
+    background-color: #555;
+}
+QPushButton:disabled {
+    background-color: #2a2a2a;
+    color: #5a5a5a;
+}
+QLineEdit, QComboBox, QSpinBox {
+    background-color: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 5px;
+    font-size: 12px;
+}
+QComboBox::drop-down {
+    border: none;
+}
+QTableWidget {
+    background-color: #2a2a2a;
+    gridline-color: #444;
+    border: 1px solid #444;
+}
+QHeaderView::section {
+    background-color: #333;
+    color: #d4d4d4;
+    padding: 3px;
+    border: 1px solid #444;
+    font-size: 9pt;
+}
+QTableWidget::item {
+    padding-left: 5px;
+    padding-right: 5px;
+}
+QTableWidget::item:selected {
+    background-color: #3d3d3d;
+    color: #d4d4d4;
+}
+QSlider::groove:horizontal {
+    border: 1px solid #444;
+    background: #333;
+    height: 8px;
+    border-radius: 4px;
+}
+QSlider::handle:horizontal {
+    background: #d4d4d4;
+    border: 1px solid #d4d4d4;
+    width: 18px;
+    margin: -5px 0;
+    border-radius: 9px;
+}
+QCheckBox::indicator, QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #555;
+    border-radius: 4px;
+}
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+    background-color: #3498db;
+}
+"""
+
+def _lc_send_ipc_command(pipe_path, command_str):
+    """Sends a JSON command string to mpv via its Windows named pipe."""
+    try:
+        with open(pipe_path, "w", encoding='utf-8') as f:
+            f.write(command_str + '\n')
+    except Exception as e:
+        print(f"mpv IPC send error (pipe: {pipe_path}): {e}")
+
+
+def _lc_query_mpv_property(pipe_path, prop):
+    """Query a single mpv property via a Windows named pipe.
+
+    Uses the Win32 CreateFile / WriteFile / ReadFile API for bidirectional
+    access to the named pipe.  Returns the property value on success, or
+    *None* on any error (including when running on a non-Windows host).
+    """
+    try:
+        GENERIC_READ  = 0x80000000
+        GENERIC_WRITE = 0x40000000
+        OPEN_EXISTING = 3
+
+        k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        k32.CreateFileW.restype = ctypes.c_void_p
+        handle = k32.CreateFileW(
+            pipe_path, GENERIC_READ | GENERIC_WRITE, 0, None, OPEN_EXISTING, 0, None
+        )
+        invalid = ctypes.c_void_p(-1).value
+        if handle is None or handle == invalid:
+            return None
+        try:
+            cmd = json.dumps({"command": ["get_property", prop], "request_id": 42}) + '\n'
+            cmd_bytes = cmd.encode('utf-8')
+            bw = ctypes.c_uint32(0)
+            if not k32.WriteFile(handle, cmd_bytes, len(cmd_bytes), ctypes.byref(bw), None):
+                return None
+            buf = ctypes.create_string_buffer(4096)
+            br = ctypes.c_uint32(0)
+            if not k32.ReadFile(handle, buf, 4096, ctypes.byref(br), None):
+                return None
+            if br.value == 0:
+                return None
+            for line in buf.raw[:br.value].decode('utf-8', errors='ignore').split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if obj.get('request_id') == 42 and obj.get('error') == 'success':
+                        return obj.get('data')
+                except json.JSONDecodeError:
+                    pass
+        finally:
+            k32.CloseHandle(handle)
+    except Exception:
+        pass
+    return None
+
+
+class DraggableTableWidget(QTableWidget):
+    """A QTableWidget subclass that supports drag-and-drop row reordering."""
+    # Signal to notify the main controller when rows have been reordered.
+    rows_reordered = pyqtSignal(int, int) # Emits start and end row indices.
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Configure the widget for drag-and-drop.
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setDragDropOverwriteMode(False)
+        self.source_row = -1
+
+    def startDrag(self, supportedActions):
+        """Stores the source row index when a drag operation begins."""
+        self.source_row = self.currentRow()
+        super().startDrag(supportedActions)
+
+    def dropEvent(self, event):
+        """Handles the drop event to reorder rows and emit the signal."""
+        if not event.isAccepted() and event.source() == self:
+            dest_row = self.indexAt(event.position().toPoint()).row()
+            if dest_row < 0: dest_row = self.rowCount() - 1 # Handle drop outside rows
+            
+            # If the row has moved, emit the reordering signal.
+            if self.source_row != dest_row:
+                self.rows_reordered.emit(self.source_row, dest_row)
+            
+            event.accept()
+        else:
+            super().dropEvent(event)
+
+class GlobalHotkeyListener(QThread):
+    """A dedicated QThread to listen for keyboard events globally.
+    This prevents the main UI from freezing while waiting for key presses.
+    """
+    hotkey_pressed = pyqtSignal(str) # Signal emitted when a hotkey is pressed.
+
+    def __init__(self):
+        super().__init__()
+        self._is_running = True
+
+    def run(self):
+        """The main loop for the thread, using the 'keyboard' library's hook."""
+        def on_key_event(event):
+            # We only care about key down events to avoid double triggers.
+            if event.event_type == keyboard.KEY_DOWN:
+                self.hotkey_pressed.emit(event.name)
+        
+        keyboard.hook(on_key_event)
+        # Keep the thread alive until explicitly stopped.
+        while self._is_running:
+            time.sleep(0.1)
+        # Clean up the hook when the thread stops.
+        keyboard.unhook(on_key_event)
+
+    def stop(self):
+        """Stops the thread's execution loop."""
+        self._is_running = False
+
+class MidiTestWorker(QThread):
+    """A worker thread for testing MIDI clock output on a specific port."""
+    finished = pyqtSignal(int)      # Emitted when the test is finished.
+    error = pyqtSignal(str)         # Emitted if an error occurs.
+    status_update = pyqtSignal(str) # Emitted for status messages.
+
+    def __init__(self, port_num, bpm, send_start):
+        super().__init__()
+        self.port_num = port_num
+        self.bpm = bpm
+        self.send_start = send_start
+        self._is_running = True
+        self.midiout = None
+
+    def stop(self):
+        """Stops the test loop."""
+        self._is_running = False
+
+    def run(self):
+        """Opens the MIDI port and sends clock signals at the specified BPM."""
+        try:
+            self.status_update.emit(f"Testing Port {self.port_num} at {self.bpm} BPM...")
+            self.midiout = rtmidi.MidiOut()
+            self.midiout.open_port(self.port_num)
+
+            # Optionally send SPP and START messages at the beginning of the test.
+            if self.send_start:
+                self.midiout.send_message([SPP_BYTE, 0, 0]) # Song Position Pointer to start
+                self.midiout.send_message([START_BYTE])
+
+            # Calculate the interval between MIDI clock ticks (24 ticks per quarter note).
+            tick_interval = 60.0 / self.bpm / 24.0
+            next_tick = time.perf_counter()
+
+            # Main test loop.
+            while self._is_running:
+                if time.perf_counter() >= next_tick:
+                    self.midiout.send_message([CLOCK_BYTE])
+                    next_tick += tick_interval
+                time.sleep(0.001) # Small sleep to prevent pegging the CPU.
+
+            self.status_update.emit(f"Test on Port {self.port_num} stopped.")
+
+        except rtmidi._rtmidi.RtMidiError as e:
+            self.error.emit(f"MIDI Error on port {self.port_num}: {e}")
+        except Exception as e:
+            self.error.emit(f"Test worker error: {e}")
+        finally:
+            # Ensure MIDI resources are cleaned up properly.
+            if self.midiout and self.midiout.is_port_open():
+                if self.send_start:
+                    self.midiout.send_message([STOP_BYTE])
+                self.midiout.close_port()
+            self.finished.emit(self.port_num)
+
+# ---------------------------------------------------------------------------
+# Multi-zone zoom/crop configuration helpers
+# ---------------------------------------------------------------------------
+
+NUM_ZONES = 5
+_ZONE_COLORS = ["#00e676", "#ff9800", "#2196f3", "#e040fb", "#ffeb3b"]  # Green, Orange, Blue, Purple, Yellow per zone
+
+
+def _default_zone():
+    """Return a default (disabled) zone configuration dictionary."""
+    return {
+        "enabled": False,
+        "crop_x": 0, "crop_y": 0, "crop_w": 1920, "crop_h": 1080,
+        "scale_w": -1, "scale_h": -1,
+        "border_px": 0,
+        "offset_y": 0,
+        "mode": "crop",
+    }
+
+
+def _migrate_zoom_config(cfg):
+    """Return a guaranteed multi-zone config dict, migrating old single-zone format if needed.
+
+    New fields added for output-resolution simulation and whole-composite transform:
+      out_w / out_h        — simulated output canvas size (-1 = legacy, no padding in mpv)
+      out_sim_enabled      — whether to apply output canvas padding in mpv playback
+      comp_crop_x/y/w/h   — whole-composite crop (comp_crop_w=0 means no crop)
+      comp_scale_w/h       — whole-composite output scale (-1 = no scale)
+
+    Backward-compatibility: existing configs without these fields get out_w=-1/out_h=-1
+    and comp_crop_w=0/comp_scale_w=-1 so that mpv playback is unchanged.
+    """
+    def _backfill_composite(d):
+        d.setdefault("out_w", -1)
+        d.setdefault("out_h", -1)
+        d.setdefault("out_sim_enabled", False)
+        d.setdefault("comp_crop_x", 0)
+        d.setdefault("comp_crop_y", 0)
+        d.setdefault("comp_crop_w", 0)
+        d.setdefault("comp_crop_h", 0)
+        d.setdefault("comp_scale_w", -1)
+        d.setdefault("comp_scale_h", -1)
+
+    if not cfg:
+        zones = [_default_zone() for _ in range(NUM_ZONES)]
+        zones[0]["enabled"] = True  # Enable zone 0 by default
+        result = {"zones": zones, "stack_direction": "horizontal",
+                  "frame_snapshot_path": "",
+                  "out_w": 1920, "out_h": 1080, "out_sim_enabled": False,
+                  "comp_crop_x": 0, "comp_crop_y": 0,
+                  "comp_crop_w": 0, "comp_crop_h": 0,
+                  "comp_scale_w": -1, "comp_scale_h": -1}
+        return result
+    if "zones" in cfg:
+        zones = list(cfg["zones"])
+        while len(zones) < NUM_ZONES:
+            zones.append(_default_zone())
+        # Ensure every existing zone has the newer fields
+        for z in zones:
+            z.setdefault("border_px", 0)
+            z.setdefault("offset_y", 0)
+            z.setdefault("mode", "crop")
+        result = {
+            "zones": zones[:NUM_ZONES],
+            "stack_direction": cfg.get("stack_direction", "horizontal"),
+            "frame_snapshot_path": cfg.get("frame_snapshot_path", ""),
+        }
+        # Copy composite/output fields, backfilling absent ones as no-ops
+        for k in ("out_w", "out_h", "out_sim_enabled",
+                  "comp_crop_x", "comp_crop_y", "comp_crop_w", "comp_crop_h",
+                  "comp_scale_w", "comp_scale_h"):
+            if k in cfg:
+                result[k] = cfg[k]
+        _backfill_composite(result)
+        return result
+    # Old single-zone format — migrate to zone 0
+    zone0 = {
+        "enabled": cfg.get("enabled", True),
+        "crop_x": cfg.get("crop_x", 0),
+        "crop_y": cfg.get("crop_y", 0),
+        "crop_w": cfg.get("crop_w", 1920),
+        "crop_h": cfg.get("crop_h", 1080),
+        "scale_w": cfg.get("scale_w", -1),
+        "scale_h": cfg.get("scale_h", -1),
+        "border_px": 0,
+        "offset_y": 0,
+        "mode": "crop",
+    }
+    zones = [zone0] + [_default_zone() for _ in range(NUM_ZONES - 1)]
+    result = {"zones": zones, "stack_direction": "horizontal", "frame_snapshot_path": ""}
+    _backfill_composite(result)
+    return result
+
+
+def _build_vf_for_zones(zoom_config):
+    """Build the mpv --vf string for a multi-zone config. Returns None if no transform needed.
+
+    Pipeline (in order):
+      1. Per-zone: crop → optional scale → optional border → optional offset_y
+      2. Zone stitch (hstack / vstack)
+      3. Whole-composite crop       (if comp_crop_w > 0)
+      4. Whole-composite scale      (if comp_scale_w > 0 and comp_scale_h > 0)
+      5. Pad to output canvas       (if out_sim_enabled and out_w > 0 and out_h > 0)
+      6. setsar=1
+
+    If *zoom_config* is empty ({}), or contains no enabled zones with a crop region,
+    returns None so mpv plays without any video filter.
+
+    Backward compatibility: existing configs without the composite/output fields are
+    treated as no-ops for those steps (comp_crop_w defaults to 0, comp_scale_w to -1,
+    out_sim_enabled to False), so pre-existing playback behaviour is preserved.
+    """
+    # An empty dict means "never configured" — apply no filter
+    if not zoom_config:
+        return None
+    # For old single-zone format, only apply if 'enabled' is set
+    if "zones" not in zoom_config:
+        if not zoom_config.get("enabled"):
+            return None
+    migrated = _migrate_zoom_config(zoom_config)
+    zones = migrated.get("zones", [])
+    direction = migrated.get("stack_direction", "horizontal")
+    enabled = [z for z in zones if z.get("enabled") and z.get("crop_w", 0) > 0]
+    if not enabled:
+        return None
+
+    def _zone_vf(z):
+        vf = f"crop={z['crop_w']}:{z['crop_h']}:{z['crop_x']}:{z['crop_y']}"
+        sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
+        if sw > 0 and sh > 0:
+            vf += f",scale={sw}:{sh}"
+        border = z.get("border_px", 0)
+        if border > 0:
+            vf += f",pad=iw+{2*border}:ih+{2*border}:{border}:{border}:black"
+        offset_y = int(z.get("offset_y", 0))
+        if offset_y != 0:
+            abs_offset = abs(offset_y)
+            pad_y = max(offset_y, 0)
+            crop_y = max(-offset_y, 0)
+            vf += f",pad=iw:ih+{abs_offset}:0:{pad_y}:black,crop=iw:ih:0:{crop_y}"
+        return vf
+
+    def _zone_out_size(z):
+        """Return the (width, height) of a zone after crop + optional scale + border."""
+        sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
+        w = sw if sw > 0 else z["crop_w"]
+        h = sh if sh > 0 else z["crop_h"]
+        border = z.get("border_px", 0)
+        return w + 2 * border, h + 2 * border
+
+    # --- Composite-level transform parts (appended after stacking) ---
+    comp_crop_w = int(migrated.get("comp_crop_w", 0))
+    comp_crop_h = int(migrated.get("comp_crop_h", 0))
+    comp_crop_x = int(migrated.get("comp_crop_x", 0))
+    comp_crop_y = int(migrated.get("comp_crop_y", 0))
+    comp_scale_w = int(migrated.get("comp_scale_w", -1))
+    comp_scale_h = int(migrated.get("comp_scale_h", -1))
+    out_w = int(migrated.get("out_w", -1))
+    out_h = int(migrated.get("out_h", -1))
+    out_sim_enabled = bool(migrated.get("out_sim_enabled", False))
+
+    def _composite_suffix():
+        """Build filter suffix to apply after zone stacking (no leading comma)."""
+        parts = []
+        if comp_crop_w > 0 and comp_crop_h > 0:
+            parts.append(f"crop={comp_crop_w}:{comp_crop_h}:{comp_crop_x}:{comp_crop_y}")
+        if comp_scale_w > 0 and comp_scale_h > 0:
+            parts.append(f"scale={comp_scale_w}:{comp_scale_h}")
+        if out_sim_enabled and out_w > 0 and out_h > 0:
+            # Pad composite into the output canvas, centred, with black bars
+            parts.append(
+                f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:black"
+            )
+        return "," + ",".join(parts) if parts else ""
+
+    # setsar=1 is appended to every filter graph so that mpv uses the composite's
+    # own pixel dimensions for display-aspect-ratio calculations, rather than
+    # inheriting the SAR from the source video.  Without this, a source whose
+    # metadata encodes a non-square SAR (e.g. anamorphic or display-aspect
+    # overrides) causes the stitched composite to be vertically squashed or
+    # stretched when rendered fullscreen instead of being letterboxed correctly.
+    if len(enabled) == 1:
+        # Wrap in lavfi so setsar=1 is applied inside the same graph.
+        return f"lavfi=[{_zone_vf(enabled[0])}{_composite_suffix()},setsar=1]"
+
+    # Multiple zones: use lavfi split + per-zone crop/scale + hstack/vstack.
+    n = len(enabled)
+    zone_sizes = [_zone_out_size(z) for z in enabled]
+
+    # hstack requires all inputs to share the same height; vstack requires the
+    # same width.  Compute the maximum dimension and pad shorter zones so that
+    # the stack filter never sees mismatched stream sizes (which would either
+    # error or silently truncate the composite).
+    if direction == "horizontal":
+        target_h = max(s[1] for s in zone_sizes)
+    else:
+        target_w = max(s[0] for s in zone_sizes)
+
+    split_tags = "".join(f"[z{i}]" for i in range(n))
+    split_part = f"split={n}{split_tags}"
+
+    def _zone_segment(z, size, i):
+        vf_str = _zone_vf(z)
+        out_w_z, out_h_z = size
+        if direction == "horizontal" and out_h_z < target_h:
+            # Pad height to target_h with black at the bottom.
+            vf_str += f",pad=iw:{target_h}:0:0:black"
+        elif direction == "vertical" and out_w_z < target_w:
+            # Pad width to target_w with black on the right.
+            vf_str += f",pad={target_w}:ih:0:0:black"
+        return f"[z{i}]{vf_str}[c{i}]"
+
+    crop_parts = [_zone_segment(z, zone_sizes[i], i) for i, z in enumerate(enabled)]
+    stack_inputs = "".join(f"[c{i}]" for i in range(n))
+    stack_fn = "vstack" if direction == "vertical" else "hstack"
+    # setsar=1 after the stack forces the composite's pixel dimensions to be
+    # used as-is, matching the preview display and preventing squashing.
+    stack_part = f"{stack_inputs}{stack_fn}=inputs={n}{_composite_suffix()},setsar=1"
+    graph = ";".join([split_part] + crop_parts + [stack_part])
+    return f"lavfi=[{graph}]"
+
+
+def _make_unique_mpv_pipe_name(prefix):
+    """Build a unique Windows named-pipe path for mpv IPC."""
+    return fr'\\.\pipe\{prefix}_{os.getpid()}_{uuid.uuid4().hex}'
+
+
+def _ext_preview_vf_command(vf_str):
+    """Return the mpv IPC command list to apply or clear the video filter chain.
+
+    Uses the ``vf set`` / ``vf clr`` commands rather than ``set_property vf``
+    so that both non-empty filter graphs and the no-filter (empty) case are
+    handled correctly at runtime without relying on mpv's option-string parser.
+    """
+    if vf_str:
+        return ["vf", "set", vf_str]
+    return ["vf", "clr", ""]
+
+
+def _build_external_preview_mpv_command(
+    mpv_path,
+    ipc_path,
+    output_display_num,
+    source_path,
+    *,
+    is_video_source,
+    paused=False,
+    vf_str="",
+):
+    """Build the external-preview mpv command line for either video or still images."""
+    cmd = [
+        mpv_path,
+        f"--input-ipc-server={ipc_path}",
+        "--fullscreen",
+        f"--fs-screen={output_display_num}",
+        "--no-osd-bar",
+        "--no-osc",
+        "--no-input-default-bindings",
+        "--really-quiet",
+        "--keep-open=yes",
+    ]
+    if is_video_source:
+        cmd.append("--loop-file=inf")
+    else:
+        cmd.append("--image-display-duration=inf")
+    if paused:
+        cmd.append("--pause")
+    if vf_str:
+        cmd.append(f"--vf={vf_str}")
+    cmd.append(source_path)
+    return cmd
+
+
+def _build_multizone_capture_preview_mpv_command(mpv_path, ipc_path, video_path):
+    """Build the windowed mpv command used for Multi-Zone frame capture preview.
+
+    ``--ontop`` keeps the preview visible while the operator clicks back into the
+    compositor controls to play, pause, scrub, and capture a frame. mpv already
+    raises a newly opened window normally, so no extra focus flag or follow-up
+    IPC property write is needed here.
+    """
+    return [
+        mpv_path,
+        f"--input-ipc-server={ipc_path}",
+        "--pause",
+        "--no-fullscreen",
+        "--geometry=800x600",
+        "--title=Multi-Zone Preview — navigate then click Capture Frame",
+        "--ontop",
+        "--no-osd-bar",
+        "--no-osc",
+        "--no-input-default-bindings",
+        "--loop-file=inf",
+        "--really-quiet",
+        video_path,
+    ]
+
+
+def _send_mpv_ipc_command(ipc_path, command, max_attempts=2, retry_delay=0.05):
+    """Send a JSON IPC command to an mpv named pipe with bounded retries."""
+    if not ipc_path:
+        return False, "Missing IPC pipe path."
+    payload = json.dumps({"command": command}, ensure_ascii=False) + "\n"
+    last_error = "Unknown IPC error."
+    attempts = max(1, max_attempts)
+    for i in range(attempts):
+        try:
+            with open(ipc_path, "w", encoding="utf-8") as f:
+                f.write(payload)
+            return True, ""
+        except Exception as exc:
+            last_error = str(exc)
+            if i < attempts - 1:
+                time.sleep(retry_delay)
+    return False, last_error
+
+
+def _mz_format_duration(seconds):
+    """Format *seconds* as ``MM:SS`` for display in the Multi-Zone scrub bar.
+
+    Returns ``"00:00"`` for ``None`` or negative values so labels always show
+    something sensible before a video is loaded.
+    """
+    if seconds is None or seconds < 0:
+        return "00:00"
+    total = int(seconds)
+    mins, secs = divmod(total, 60)
+    return f"{mins:02d}:{secs:02d}"
+
+
+class MidiSyncWorker(QThread):
+    """The main worker thread for handling synchronized mpv playback and MIDI clock output."""
+    finished = pyqtSignal()          # Emitted when playback is finished.
+    error = pyqtSignal(str)          # Emitted on error.
+    status_update = pyqtSignal(str)  # For status messages.
+    ipc_socket_path = pyqtSignal(str)# Emits the path to the mpv IPC socket.
+
+    def __init__(self, video_file, bpm, display_num, preload_time, midi_offset_ms, 
+                 send_start_port1, send_start_port2, send_start_port3, timing_method,
+                 require_midi=True, max_duration_sec=0, zoom_config=None,
+                 absolute_start_time=None):
+        super().__init__()
+        # Store all playback parameters.
+        self.video_file = video_file
+        self.bpm = bpm
+        self.display_num = display_num
+        self.preload_time = preload_time
+        self.midi_offset_ms = midi_offset_ms
+        self.send_start_port1 = send_start_port1
+        self.send_start_port2 = send_start_port2
+        self.send_start_port3 = send_start_port3
+        self.timing_method = timing_method
+        self.require_midi = require_midi
+        self.max_duration_sec = max_duration_sec  # If > 0, limits playback via mpv --length
+        self.zoom_config = zoom_config or {}
+        # Absolute Unix timestamp (seconds) at which local video should unpause.
+        # When not None the worker sleeps until (absolute_start_time - preload_time)
+        # before beginning the MIDI pre-roll so that the video unpauses at exactly
+        # absolute_start_time, matching the remote sync-show start time.
+        # None (default) retains the existing immediate-start behaviour.
+        self.absolute_start_time = absolute_start_time
+        self.mpv_process = None
+        self._is_running = True
+        self.midi_outputs = {}
+
+    def stop(self):
+        """Stops the playback loop."""
+        self._is_running = False
+
+    def run(self):
+        """Initializes MIDI ports and selects the timing method to run."""
+        # --- Pre-flight checks ---
+        if not os.path.exists(MPV_PATH):
+            self.error.emit(f"mpv not found at '{MPV_PATH}'")
+            return
+        if not os.path.exists(self.video_file):
+            self.error.emit(f"File not found: '{self.video_file}'")
+            return
+        
+        # --- Open MIDI ports (best-effort) ---
+        all_ports = [1, 2, 3]
+        for port_num in all_ports:
+            try:
+                midiout = rtmidi.MidiOut()
+                midiout.open_port(port_num)
+                self.midi_outputs[port_num] = midiout
+            except rtmidi._rtmidi.RtMidiError as e:
+                self.status_update.emit(f"Warning: MIDI port {port_num} unavailable: {e}")
+
+        if self.midi_outputs:
+            self.status_update.emit(f"MIDI ports opened: {list(self.midi_outputs.keys())}")
+        elif self.require_midi:
+            self.error.emit("No MIDI ports available. Check connections.")
+            return
+        else:
+            self.status_update.emit("Warning: No MIDI ports available. Playing without MIDI.")
+
+        # --- Select and run the appropriate timing logic ---
+        if self.timing_method == 'high_precision':
+            self.run_high_precision()
+        else:
+            self.run_standard()
+            
+    def _run_logic(self, is_high_precision):
+        """The core logic for MIDI sync, shared by both timing methods."""
+        # Create a unique IPC socket name for this mpv instance.
+        socket_name = f"mpv_socket_{int(time.time())}"
+        full_socket_path = fr'\\.\pipe\{socket_name}'
+        # Construct the command to launch mpv with specific settings.
+        file_ext = os.path.splitext(self.video_file)[1].lower()
+        is_audio_only = file_ext == '.wav'
+
+        if is_audio_only:
+            # Audio-only: no video window needed
+            mpv_cmd = [
+                MPV_PATH,
+                f"--input-ipc-server={full_socket_path}",
+                "--pause",
+                "--no-video",
+                "--really-quiet",
+                "--keep-open=no",
+                self.video_file
+            ]
+        else:
+            # Video file: full screen on selected display
+            mpv_cmd = [
+                MPV_PATH,
+                f"--input-ipc-server={full_socket_path}",
+                "--pause",
+                "--fullscreen",
+                f"--fs-screen={self.display_num}",
+                "--no-osd-bar",
+                "--no-osc",
+                "--no-input-default-bindings",
+                "--no-border",
+                "--really-quiet",
+                "--video-sync=audio",
+                "--keep-open=no",
+                self.video_file
+            ]
+        # If a maximum duration is set (e.g. for calibration loops), limit playback via mpv.
+        if self.max_duration_sec > 0:
+            mpv_cmd.insert(-1, f"--length={self.max_duration_sec}")
+        # If a zoom/crop/scale transform is configured, apply it as an mpv video filter.
+        if not is_audio_only:
+            vf_str = _build_vf_for_zones(self.zoom_config)
+            if vf_str:
+                mpv_cmd.insert(-1, f"--vf={vf_str}")
+        
+        try:
+            # --- Absolute-time sync wait (sync-show tracks only) ---
+            # When absolute_start_time is set the local video must unpause at
+            # that exact wall-clock instant.  Ideally the pre-roll should begin
+            # at (absolute_start_time - preload_time) so MIDI gear gets a full
+            # preload_time clock run-up; if this process reached this point early
+            # enough we wait until that moment.  The pre-roll end is always pinned
+            # to absolute_start_time further below, so any leftover startup latency
+            # does not push the video start past the agreed time.
+            # Sleep in short increments so the user can still cancel with Stop.
+            if self.absolute_start_time is not None:
+                print(
+                    f"Sync-show: local video absolute_start={self.absolute_start_time:.3f}s "
+                    f"(in {self.absolute_start_time - time.time():.3f}s from now)"
+                )
+                pre_roll_wall_start = self.absolute_start_time - self.preload_time
+                initial_delay = pre_roll_wall_start - time.time()
+                if initial_delay <= 0:
+                    # Pre-roll start is in the past (MIDI/thread startup took
+                    # longer than expected); begin the pre-roll immediately.
+                    # The pre-roll end is pinned to absolute_start_time below,
+                    # so the local video still unpauses at the correct instant
+                    # provided some lead time remains.
+                    print(
+                        f"Sync-show: absolute start is {-initial_delay:.3f}s in the past; "
+                        "skipping wait and starting pre-roll immediately."
+                    )
+                else:
+                    self.status_update.emit(
+                        f"Sync-show: waiting {initial_delay:.2f}s for absolute start…"
+                    )
+                    deadline = time.time() + initial_delay
+                    while time.time() < deadline and self._is_running:
+                        remaining = deadline - time.time()
+                        time.sleep(min(0.05, remaining))
+                    if not self._is_running:
+                        raise InterruptedError("Playback stopped by user during sync wait")
+
+            # --- Pre-roll Phase ---
+            # Send MIDI clock for a specified duration before starting video.
+            self.status_update.emit(f"Pre-rolling MIDI clock for {self.preload_time}s at {self.bpm} BPM...")
+            tick_interval = 60.0 / self.bpm / 24.0
+            start_time = time.perf_counter()
+            # For sync-enabled tracks, pin the pre-roll end to the agreed
+            # absolute_start_time so the video unpauses at that exact
+            # wall-clock instant regardless of how long MIDI port setup or
+            # thread startup took.  Without this pinning the full preload_time
+            # is added on top of any startup latency, pushing the local video
+            # behind the remote sync-show by that latency amount.
+            # Sample both clocks at the same instant so the wall-clock
+            # absolute_start_time is converted to perf_counter space accurately.
+            if self.absolute_start_time is not None:
+                remaining_until_start = self.absolute_start_time - time.time()
+                pre_roll_end_time = time.perf_counter() + max(0.0, remaining_until_start)
+            else:
+                pre_roll_end_time = start_time + self.preload_time
+            # Calculate when to launch mpv so it's ready when the pre-roll ends.
+            # Clamp to start_time so mpv always launches promptly when the
+            # remaining lead time is less than MPV_LAUNCH_HEAD_START_SECONDS
+            # (e.g. MIDI setup consumed most of the pre-roll budget).
+            mpv_launch_time = max(start_time, pre_roll_end_time - MPV_LAUNCH_HEAD_START_SECONDS)
+            mpv_launched = False
+            # When there is little or no lead time left, launch mpv before
+            # entering the loop so it has the maximum available time to
+            # initialise before we attempt the unpause command.
+            if mpv_launch_time <= start_time:
+                self.status_update.emit(f"Starting mpv on screen {self.display_num}...")
+                self.mpv_process = subprocess.Popen(mpv_cmd)
+                self.ipc_socket_path.emit(full_socket_path)
+                mpv_launched = True
+
+            while time.perf_counter() < pre_roll_end_time and self._is_running:
+                current_time = time.perf_counter()
+                
+                # Launch mpv just-in-time.
+                if not mpv_launched and current_time >= mpv_launch_time:
+                    self.status_update.emit(f"Starting mpv on screen {self.display_num}...")
+                    self.mpv_process = subprocess.Popen(mpv_cmd)
+                    self.ipc_socket_path.emit(full_socket_path)
+                    mpv_launched = True
+
+                # Error check: if mpv closes unexpectedly, abort.
+                if self.mpv_process and self.mpv_process.poll() is not None:
+                    raise InterruptedError("mpv closed prematurely during pre-roll")
+
+                # Send clock ticks to all open MIDI ports.
+                for midiout in self.midi_outputs.values():
+                    midiout.send_message([CLOCK_BYTE])
+                
+                time.sleep(0.01) # Yield CPU time.
+
+            if not self._is_running:
+                raise InterruptedError("Playback stopped by user during pre-roll")
+            if not self.mpv_process:
+                raise RuntimeError("mpv process was not launched in time.")
+
+            if self.absolute_start_time is not None:
+                print(
+                    f"Sync-show: local video starting now at {time.time():.3f}s "
+                    f"(scheduled {self.absolute_start_time:.3f}s, "
+                    f"delta={time.time() - self.absolute_start_time:+.3f}s)"
+                )
+
+            # --- Atomic Start Event ---
+            # This section ensures that MIDI start and video unpause are offset correctly.
+            self.status_update.emit("Sending START...")
+            offset_sec = self.midi_offset_ms / 1000.0
+            start_time_base = 0
+            is_sending_any_start = self.send_start_port1 or self.send_start_port2 or self.send_start_port3
+
+            def send_atomic_start():
+                """Sends MIDI START messages to the selected ports."""
+                nonlocal start_time_base
+                ports_to_start = [p for p, should_send in [(1, self.send_start_port1), (2, self.send_start_port2), (3, self.send_start_port3)] if should_send]
+                
+                for port_num in ports_to_start:
+                    if port_num in self.midi_outputs:
+                        self.midi_outputs[port_num].send_message([SPP_BYTE, 0, 0])
+                        self.midi_outputs[port_num].send_message([START_BYTE])
+
+                # Send one final clock tick with the start message for tight sync.
+                for midiout in self.midi_outputs.values():
+                    midiout.send_message([CLOCK_BYTE])
+                start_time_base = time.perf_counter()
+            
+            def unpause_video():
+                """Unpauses the mpv instance via its IPC socket."""
+                nonlocal start_time_base
+                with open(full_socket_path, "w", encoding='utf-8') as ipc:
+                    ipc.write('{ "command": ["set_property", "pause", false] }\n')
+                if not is_sending_any_start: 
+                    start_time_base = time.perf_counter()
+
+            # Apply the MIDI offset.
+            if is_sending_any_start:
+                if offset_sec > 0: # Video starts before MIDI
+                    unpause_video()
+                    time.sleep(offset_sec)
+                    send_atomic_start()
+                else: # MIDI starts before or at the same time as Video
+                    send_atomic_start()
+                    time.sleep(abs(offset_sec))
+                    unpause_video()
+            else: # Not sending MIDI start, just unpause video
+                unpause_video()
+            
+            # --- Main Clock Loop ---
+            # This loop sends MIDI clock ticks synchronized with the video playback.
+            next_tick = start_time_base + tick_interval
+            self.status_update.emit(f"PLAYING: {os.path.basename(self.video_file)}")
+            while self.mpv_process.poll() is None and self._is_running:
+                # High-precision timing uses a busy-wait loop for maximum accuracy.
+                if is_high_precision:
+                    while time.perf_counter() < next_tick:
+                        pass # Spin until it's time for the next tick.
+                # Standard timing uses sleep, which is less CPU intensive but less accurate.
+                else:
+                    sleep_time = next_tick - time.perf_counter()
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
+                
+                for midiout in self.midi_outputs.values():
+                    midiout.send_message([CLOCK_BYTE])
+                next_tick += tick_interval
+            
+            if self._is_running:
+                self.status_update.emit("mpv closed. Stopping.")
+            else:
+                self.status_update.emit("Playback stopped by user.")
+
+        except Exception as e:
+            self.error.emit(f"Runtime error ({'High-Precision' if is_high_precision else 'Standard'}): {e}")
+        finally:
+            self.cleanup()
+
+    def run_standard(self):
+        """Runs the main sync logic with standard timing."""
+        self._run_logic(is_high_precision=False)
+
+    def run_high_precision(self):
+        """Runs the main sync logic with high-precision timing."""
+        # Request higher timer resolution from Windows.
+        winmm.timeBeginPeriod(1)
+        self._run_logic(is_high_precision=True)
+        # Release the higher timer resolution.
+        winmm.timeEndPeriod(1)
+
+    def cleanup(self):
+        """Cleans up all resources (MIDI ports, mpv process)."""
+        self.status_update.emit("Cleaning up...")
+        ports_to_stop = [p for p, should_send in [(1, self.send_start_port1), (2, self.send_start_port2), (3, self.send_start_port3)] if should_send]
+        
+        for port_num in ports_to_stop:
+            if port_num in self.midi_outputs and self.midi_outputs[port_num].is_port_open():
+                self.midi_outputs[port_num].send_message([STOP_BYTE])
+
+        for out in self.midi_outputs.values():
+            out.close_port()
+        if self.mpv_process and self.mpv_process.poll() is None:
+            self.mpv_process.terminate()
+        self.finished.emit()
+
+class ZoomCropCanvas(QWidget):
+    """A canvas widget for visually defining a crop region on a captured video frame.
+    
+    The user can drag to create a new selection, move the selection,
+    or resize it by dragging the corner/edge handles. Pixel coordinates
+    are reported live via the region_changed signal.
+    """
+    region_changed = pyqtSignal(int, int, int, int)  # x, y, w, h in source pixels
+    handle_dragged = pyqtSignal(str, int, int)        # drag_mode, abs_x, abs_y
+    drag_started   = pyqtSignal()                     # emitted once on left-button press (drag begins)
+    drag_finished  = pyqtSignal()                     # emitted once on mouse-button release after a drag
+
+    HANDLE_SIZE = 9  # Half-size of resize handles in canvas pixels
+
+    def __init__(self, color="#00e676", parent=None):
+        super().__init__(parent)
+        self.selection_color = color  # Colour used for border and handles
+        self.pixmap = None
+        self.scale_factor = 1.0
+        self.offset_x = 0.0
+        self.offset_y = 0.0
+        self.source_w = 0
+        self.source_h = 0
+
+        # Selection rectangle in source-pixel coordinates
+        self._sel = QRect()
+        self._drag_start = None
+        self._drag_mode = None
+        self._drag_orig_rect = QRect()
+        self._drag_handle_pos = None  # (mode, src_x, src_y) while dragging
+
+        self.setMinimumSize(480, 270)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def load_frame(self, image_path):
+        """Load a video frame image from *image_path* and display it."""
+        pm = QPixmap(image_path)
+        if pm.isNull():
+            return
+        self.pixmap = pm
+        self.source_w = pm.width()
+        self.source_h = pm.height()
+        if self._sel.isNull():
+            self._sel = QRect(0, 0, self.source_w, self.source_h)
+        self._update_transform()
+        self.update()
+
+    def set_region(self, x, y, w, h):
+        """Set the selection region in source-pixel coordinates."""
+        self._sel = QRect(x, y, max(1, w), max(1, h))
+        self.update()
+        self.region_changed.emit(self._sel.x(), self._sel.y(),
+                                 self._sel.width(), self._sel.height())
+
+    def get_region(self):
+        """Return (x, y, w, h) of the selection in source-pixel coordinates."""
+        return self._sel.x(), self._sel.y(), self._sel.width(), self._sel.height()
+
+    # ------------------------------------------------------------------
+    # Coordinate helpers
+    # ------------------------------------------------------------------
+
+    def _update_transform(self):
+        if not self.pixmap:
+            return
+        sx = self.width() / max(1, self.source_w)
+        sy = self.height() / max(1, self.source_h)
+        self.scale_factor = min(sx, sy)
+        self.offset_x = (self.width() - self.source_w * self.scale_factor) / 2.0
+        self.offset_y = (self.height() - self.source_h * self.scale_factor) / 2.0
+
+    def _to_canvas(self, sx, sy):
+        return QPoint(int(sx * self.scale_factor + self.offset_x),
+                      int(sy * self.scale_factor + self.offset_y))
+
+    def _to_source(self, cx, cy):
+        sx = (cx - self.offset_x) / max(1e-6, self.scale_factor)
+        sy = (cy - self.offset_y) / max(1e-6, self.scale_factor)
+        return int(sx), int(sy)
+
+    def _sel_canvas(self):
+        """Return the selection rect in canvas coordinates."""
+        if self._sel.isNull():
+            return QRect()
+        tl = self._to_canvas(self._sel.left(), self._sel.top())
+        br = self._to_canvas(self._sel.right(), self._sel.bottom())
+        return QRect(tl, br)
+
+    def _handle_rects(self):
+        """Return list of (QRect, name) for the eight resize handles."""
+        cr = self._sel_canvas()
+        if cr.isNull():
+            return []
+        h = self.HANDLE_SIZE
+        cx, cy = cr.center().x(), cr.center().y()
+        points = [
+            (cr.left(),   cr.top(),    'tl'),
+            (cr.right(),  cr.top(),    'tr'),
+            (cr.left(),   cr.bottom(), 'bl'),
+            (cr.right(),  cr.bottom(), 'br'),
+            (cx,          cr.top(),    't'),
+            (cx,          cr.bottom(), 'b'),
+            (cr.left(),   cy,          'l'),
+            (cr.right(),  cy,          'r'),
+        ]
+        return [(QRect(px - h, py - h, h * 2, h * 2), name)
+                for px, py, name in points]
+
+    def _hit_mode(self, pos):
+        """Return the drag mode string based on where *pos* lands."""
+        cr = self._sel_canvas()
+        for rect, name in self._handle_rects():
+            if rect.contains(pos):
+                return f'resize_{name}'
+        if not cr.isNull() and cr.contains(pos):
+            return 'move'
+        return 'new'
+
+    # ------------------------------------------------------------------
+    # Paint
+    # ------------------------------------------------------------------
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("#1e1e1e"))
+        if not self.pixmap:
+            painter.setPen(QColor("#555"))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                             "Load a video and click 'Capture Frame'")
+            return
+
+        # Draw scaled video frame
+        dest_w = int(self.source_w * self.scale_factor)
+        dest_h = int(self.source_h * self.scale_factor)
+        dest_rect = QRect(int(self.offset_x), int(self.offset_y), dest_w, dest_h)
+        painter.drawPixmap(dest_rect, self.pixmap)
+
+        cr = self._sel_canvas()
+        if not cr.isNull():
+            # Semi-transparent dark overlay outside the selection
+            painter.setBrush(QBrush(QColor(0, 0, 0, 120)))
+            painter.setPen(Qt.PenStyle.NoPen)
+            # top strip
+            painter.drawRect(dest_rect.left(), dest_rect.top(),
+                             dest_rect.width(), cr.top() - dest_rect.top())
+            # bottom strip
+            painter.drawRect(dest_rect.left(), cr.bottom(),
+                             dest_rect.width(), dest_rect.bottom() - cr.bottom())
+            # left strip
+            painter.drawRect(dest_rect.left(), cr.top(),
+                             cr.left() - dest_rect.left(), cr.height())
+            # right strip
+            painter.drawRect(cr.right(), cr.top(),
+                             dest_rect.right() - cr.right(), cr.height())
+
+            # Selection border
+            painter.setPen(QPen(QColor(self.selection_color), 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(cr)
+
+            # Resize handles
+            painter.setPen(QPen(QColor(self.selection_color), 1))
+            painter.setBrush(QBrush(QColor(self.selection_color)))
+            for rect, _ in self._handle_rects():
+                painter.drawRect(rect)
+
+        # Coordinate overlay while a handle is being dragged
+        if self._drag_handle_pos:
+            mode, src_x, src_y = self._drag_handle_pos
+            vertical_modes = ('resize_t', 'resize_b',
+                              'resize_tl', 'resize_tr',
+                              'resize_bl', 'resize_br')
+            if mode in vertical_modes and self.source_h > 0:
+                y_from_bottom = self.source_h - src_y - 1
+                coord_text = f"X:{src_x}  Y:{src_y}  (↑{y_from_bottom} from bottom)"
+            else:
+                coord_text = f"X:{src_x}  Y:{src_y}"
+            canvas_pos = self._to_canvas(src_x, src_y)
+            fm = painter.fontMetrics()
+            tw = fm.horizontalAdvance(coord_text) + 10
+            th = fm.height() + 6
+            tx = canvas_pos.x() + 15
+            ty = canvas_pos.y() - th // 2
+            # Keep the tooltip within the canvas area
+            tx = max(2, min(self.width() - tw - 2, tx))
+            ty = max(2, min(self.height() - th - 2, ty))
+            painter.fillRect(tx, ty, tw, th, QColor(0, 0, 0, 200))
+            painter.setPen(QColor(self.selection_color))
+            painter.drawText(tx + 5, ty + th - 4, coord_text)
+
+    # ------------------------------------------------------------------
+    # Mouse interaction
+    # ------------------------------------------------------------------
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton or not self.pixmap:
+            return
+        self._drag_start = event.pos()
+        self._drag_mode = self._hit_mode(event.pos())
+        self._drag_orig_rect = QRect(self._sel)
+        if self._drag_mode is not None:
+            self.drag_started.emit()
+
+    def mouseMoveEvent(self, event):
+        if not self.pixmap:
+            return
+
+        # Update cursor
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            mode = self._hit_mode(event.pos())
+            cursors = {
+                'move': Qt.CursorShape.SizeAllCursor,
+                'resize_tl': Qt.CursorShape.SizeFDiagCursor,
+                'resize_br': Qt.CursorShape.SizeFDiagCursor,
+                'resize_tr': Qt.CursorShape.SizeBDiagCursor,
+                'resize_bl': Qt.CursorShape.SizeBDiagCursor,
+                'resize_t': Qt.CursorShape.SizeVerCursor,
+                'resize_b': Qt.CursorShape.SizeVerCursor,
+                'resize_l': Qt.CursorShape.SizeHorCursor,
+                'resize_r': Qt.CursorShape.SizeHorCursor,
+            }
+            self.setCursor(cursors.get(mode, Qt.CursorShape.CrossCursor))
+            return
+
+        if not self._drag_start:
+            return
+
+        # Delta in source pixels
+        dx_c = event.pos().x() - self._drag_start.x()
+        dy_c = event.pos().y() - self._drag_start.y()
+        dx_s = int(dx_c / max(1e-6, self.scale_factor))
+        dy_s = int(dy_c / max(1e-6, self.scale_factor))
+
+        r = QRect(self._drag_orig_rect)
+
+        if self._drag_mode == 'move':
+            r.translate(dx_s, dy_s)
+        elif self._drag_mode == 'new':
+            sx0, sy0 = self._to_source(self._drag_start.x(), self._drag_start.y())
+            sx1, sy1 = self._to_source(event.pos().x(), event.pos().y())
+            r = QRect(min(sx0, sx1), min(sy0, sy1),
+                      abs(sx1 - sx0), abs(sy1 - sy0))
+        elif self._drag_mode == 'resize_tl':
+            r.setTopLeft(r.topLeft() + QPoint(dx_s, dy_s))
+        elif self._drag_mode == 'resize_tr':
+            r.setTopRight(r.topRight() + QPoint(dx_s, dy_s))
+        elif self._drag_mode == 'resize_bl':
+            r.setBottomLeft(r.bottomLeft() + QPoint(dx_s, dy_s))
+        elif self._drag_mode == 'resize_br':
+            r.setBottomRight(r.bottomRight() + QPoint(dx_s, dy_s))
+        elif self._drag_mode == 'resize_t':
+            r.setTop(r.top() + dy_s)
+        elif self._drag_mode == 'resize_b':
+            r.setBottom(r.bottom() + dy_s)
+        elif self._drag_mode == 'resize_l':
+            r.setLeft(r.left() + dx_s)
+        elif self._drag_mode == 'resize_r':
+            r.setRight(r.right() + dx_s)
+
+        r = r.normalized()
+        # Hard-clamp to source image bounds — no handle can escape the frame
+        r.setLeft(max(0, r.left()))
+        r.setTop(max(0, r.top()))
+        r.setRight(min(self.source_w - 1, r.right()))
+        r.setBottom(min(self.source_h - 1, r.bottom()))
+        if r.width() < 1:
+            r.setWidth(1)
+        if r.height() < 1:
+            r.setHeight(1)
+
+        self._sel = r
+
+        # Determine the active handle position in source coordinates and emit
+        cx_s = self._sel.center().x()
+        cy_s = self._sel.center().y()
+        _pos_map = {
+            'move':      (self._sel.left(), self._sel.top()),
+            'new':       (self._sel.right(), self._sel.bottom()),
+            'resize_tl': (self._sel.left(),  self._sel.top()),
+            'resize_tr': (self._sel.right(), self._sel.top()),
+            'resize_bl': (self._sel.left(),  self._sel.bottom()),
+            'resize_br': (self._sel.right(), self._sel.bottom()),
+            'resize_t':  (cx_s,              self._sel.top()),
+            'resize_b':  (cx_s,              self._sel.bottom()),
+            'resize_l':  (self._sel.left(),  cy_s),
+            'resize_r':  (self._sel.right(), cy_s),
+        }
+        hx, hy = _pos_map.get(self._drag_mode, (cx_s, cy_s))
+        self._drag_handle_pos = (self._drag_mode, hx, hy)
+        self.handle_dragged.emit(self._drag_mode, hx, hy)
+
+        self.update()
+        self.region_changed.emit(r.x(), r.y(), r.width(), r.height())
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            was_dragging = self._drag_mode is not None
+            self._drag_start = None
+            self._drag_mode = None
+            self._drag_handle_pos = None
+            self.handle_dragged.emit("", 0, 0)
+            if was_dragging:
+                self.drag_finished.emit()
+            self.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_transform()
+        self.update()
+
+
+class ZoomScaleDialog(QDialog):
+    """Edit-mode dialog for configuring video crop/scale for mpv playback.
+
+    Workflow:
+    1. Select a test video  →  mpv opens in a separate windowed preview.
+    2. Use Play/Pause to navigate to the desired frame.
+    3. Click 'Capture Frame' to snapshot the frame into the canvas.
+    4. Drag / resize the green selection rectangle to define the crop region.
+    5. Optionally enter output scale dimensions (for non-uniform stretch).
+    6. Click OK to persist the settings.
+    """
+
+    def __init__(self, current_config, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Video Zoom / Scale Configuration (Edit Mode)")
+        self.setModal(True)
+        self.resize(1100, 720)
+
+        self._current_config = dict(current_config)
+        self.result_config = None
+
+        # mpv state
+        self._mpv_process = None
+        self._ipc_path = None
+        self._temp_dir = tempfile.mkdtemp(prefix="lc_zoom_")
+        self._frame_path = os.path.join(self._temp_dir, "frame.png")
+
+        self._updating_spinboxes = False  # Guard for circular signal updates
+
+        self._setup_ui()
+        self._apply_config(current_config)
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+
+    def _setup_ui(self):
+        root = QVBoxLayout(self)
+        root.setSpacing(6)
+
+        # --- Video file and playback controls ---
+        file_bar = QHBoxLayout()
+        self._select_btn = QPushButton("Select Video…")
+        self._select_btn.clicked.connect(self._select_video)
+        self._video_label = QLabel("No video selected.")
+        self._video_label.setStyleSheet("font-style: italic; color: #888;")
+
+        self._play_btn = QPushButton("▶  Play")
+        self._play_btn.clicked.connect(self._play)
+        self._pause_btn = QPushButton("⏸  Pause / Freeze")
+        self._pause_btn.clicked.connect(self._pause)
+        self._capture_btn = QPushButton("📷  Capture Frame  →")
+        self._capture_btn.setStyleSheet("background-color: #007acc; color: white; font-weight: bold; padding: 4px 8px;")
+        self._capture_btn.clicked.connect(self._capture_frame)
+        self._capture_btn.setToolTip(
+            "Pause the mpv preview and snapshot the current frame into the canvas.\n"
+            "Then drag the green rectangle to define your crop region."
+        )
+
+        for btn in (self._play_btn, self._pause_btn, self._capture_btn):
+            btn.setEnabled(False)
+
+        file_bar.addWidget(self._select_btn)
+        file_bar.addWidget(self._video_label, 1)
+        file_bar.addWidget(self._play_btn)
+        file_bar.addWidget(self._pause_btn)
+        file_bar.addWidget(self._capture_btn)
+        root.addLayout(file_bar)
+
+        # --- Canvas + right panel ---
+        body = QHBoxLayout()
+        body.setSpacing(8)
+
+        self._canvas = ZoomCropCanvas()
+        self._canvas.region_changed.connect(self._on_region_changed)
+        self._canvas.handle_dragged.connect(self._on_handle_dragged)
+        body.addWidget(self._canvas, 3)
+
+        right = QVBoxLayout()
+        right.setSpacing(6)
+
+        # Crop region spinboxes
+        crop_group = QGroupBox("Source Crop Region")
+        crop_grid = QGridLayout()
+        crop_grid.setSpacing(4)
+
+        self._x_sb = QSpinBox(); self._x_sb.setRange(0, 99999); self._x_sb.setSuffix(" px")
+        self._y_sb = QSpinBox(); self._y_sb.setRange(0, 99999); self._y_sb.setSuffix(" px")
+        self._w_sb = QSpinBox(); self._w_sb.setRange(1, 99999); self._w_sb.setSuffix(" px")
+        self._h_sb = QSpinBox(); self._h_sb.setRange(1, 99999); self._h_sb.setSuffix(" px")
+
+        for sb in (self._x_sb, self._y_sb, self._w_sb, self._h_sb):
+            sb.setFixedWidth(110)
+            sb.valueChanged.connect(self._on_spinbox_changed)
+
+        crop_grid.addWidget(QLabel("X:"), 0, 0)
+        crop_grid.addWidget(self._x_sb, 0, 1)
+        crop_grid.addWidget(QLabel("Y:"), 1, 0)
+        crop_grid.addWidget(self._y_sb, 1, 1)
+        crop_grid.addWidget(QLabel("Width:"), 2, 0)
+        crop_grid.addWidget(self._w_sb, 2, 1)
+        crop_grid.addWidget(QLabel("Height:"), 3, 0)
+        crop_grid.addWidget(self._h_sb, 3, 1)
+        crop_group.setLayout(crop_grid)
+
+        # Output scale spinboxes
+        scale_group = QGroupBox("Output Scale (optional stretch)")
+        scale_group.setToolTip(
+            "Leave at -1 (auto) to let mpv fill the screen while preserving aspect ratio.\n"
+            "Set explicit pixel dimensions to force non-uniform stretching."
+        )
+        scale_grid = QGridLayout()
+        scale_grid.setSpacing(4)
+
+        self._sw_sb = QSpinBox()
+        self._sw_sb.setRange(-1, 99999)
+        self._sw_sb.setSpecialValueText("auto")
+        self._sw_sb.setSuffix(" px")
+        self._sw_sb.setFixedWidth(110)
+
+        self._sh_sb = QSpinBox()
+        self._sh_sb.setRange(-1, 99999)
+        self._sh_sb.setSpecialValueText("auto")
+        self._sh_sb.setSuffix(" px")
+        self._sh_sb.setFixedWidth(110)
+
+        scale_grid.addWidget(QLabel("Scale W:"), 0, 0)
+        scale_grid.addWidget(self._sw_sb, 0, 1)
+        scale_grid.addWidget(QLabel("Scale H:"), 1, 0)
+        scale_grid.addWidget(self._sh_sb, 1, 1)
+        scale_group.setLayout(scale_grid)
+
+        # Reset button
+        self._reset_btn = QPushButton("Reset Selection to Full Frame")
+        self._reset_btn.clicked.connect(self._reset_selection)
+
+        # Enable checkbox
+        self._enable_cb = QCheckBox("Enable crop/scale during playback")
+        self._enable_cb.setChecked(True)
+
+        # OK / Cancel
+        btn_row = QHBoxLayout()
+        self._ok_btn = QPushButton("✔  OK — Save Settings")
+        self._ok_btn.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold; padding: 6px;")
+        self._ok_btn.clicked.connect(self._ok)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.clicked.connect(self._cancel)
+        btn_row.addWidget(self._ok_btn)
+        btn_row.addWidget(self._cancel_btn)
+
+        right.addWidget(crop_group)
+        right.addWidget(scale_group)
+        right.addWidget(self._reset_btn)
+        right.addStretch()
+        right.addWidget(self._enable_cb)
+        right.addLayout(btn_row)
+
+        body.addLayout(right, 1)
+        root.addLayout(body, 1)
+
+        # Status bar
+        self._status = QLabel("Select a video to begin, or adjust the values directly.")
+        self._status.setStyleSheet("font-style: italic; color: #888; font-size: 12px;")
+        root.addWidget(self._status)
+
+        # Live coordinate readout during handle drag
+        self._coord_label = QLabel("")
+        self._coord_label.setStyleSheet(
+            "font-size: 11px; color: #00e676; font-family: monospace; "
+            "background-color: #1a1a2e; padding: 2px 6px; border-radius: 3px;"
+        )
+        self._coord_label.setVisible(False)
+        root.addWidget(self._coord_label)
+
+    # ------------------------------------------------------------------
+    # Config helpers
+    # ------------------------------------------------------------------
+
+    def _apply_config(self, cfg):
+        self._updating_spinboxes = True
+        self._x_sb.setValue(cfg.get('crop_x', 0))
+        self._y_sb.setValue(cfg.get('crop_y', 0))
+        self._w_sb.setValue(max(1, cfg.get('crop_w', 1920)))
+        self._h_sb.setValue(max(1, cfg.get('crop_h', 1080)))
+        self._sw_sb.setValue(cfg.get('scale_w', -1))
+        self._sh_sb.setValue(cfg.get('scale_h', -1))
+        self._enable_cb.setChecked(cfg.get('enabled', True))
+        self._updating_spinboxes = False
+        self._canvas.set_region(
+            cfg.get('crop_x', 0), cfg.get('crop_y', 0),
+            max(1, cfg.get('crop_w', 1920)), max(1, cfg.get('crop_h', 1080)),
+        )
+
+    # ------------------------------------------------------------------
+    # Video / mpv control
+    # ------------------------------------------------------------------
+
+    def _select_video(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Test Video", "d:\\",
+            "Media Files (*.mov *.mp4 *.avi *.mkv *.wmv *.m4v);;All Files (*)"
+        )
+        if not path:
+            return
+        self._video_label.setText(os.path.basename(path))
+        self._video_label.setStyleSheet("color: #d4d4d4;")
+        self._launch_mpv(path)
+
+    def _launch_mpv(self, video_path):
+        self._stop_mpv()
+        socket_name = f"mpv_zoom_{int(time.time())}"
+        self._ipc_path = fr'\\.\pipe\{socket_name}'
+        cmd = [
+            MPV_PATH,
+            f"--input-ipc-server={self._ipc_path}",
+            "--pause",
+            "--no-fullscreen",
+            "--geometry=800x600",
+            "--title=Zoom/Scale Preview — navigate then click Capture Frame",
+            "--no-osd-bar",
+            "--no-osc",
+            "--no-input-default-bindings",
+            "--loop-file=inf",
+            "--really-quiet",
+            video_path,
+        ]
+        try:
+            self._mpv_process = subprocess.Popen(cmd)
+            for btn in (self._play_btn, self._pause_btn, self._capture_btn):
+                btn.setEnabled(True)
+            self._status.setText("mpv opened. Navigate to the desired frame, then click 'Capture Frame'.")
+        except Exception as exc:
+            self._status.setText(f"Error launching mpv: {exc}")
+
+    def _send_ipc(self, json_str):
+        if not self._ipc_path:
+            return
+        try:
+            with open(self._ipc_path, "w", encoding="utf-8") as f:
+                f.write(json_str + "\n")
+        except Exception as exc:
+            self._status.setText(f"IPC error: {exc}")
+
+    def _play(self):
+        self._send_ipc('{ "command": ["set_property", "pause", false] }')
+
+    def _pause(self):
+        self._send_ipc('{ "command": ["set_property", "pause", true] }')
+
+    def _capture_frame(self):
+        """Pause the preview and schedule a frame capture after a short delay."""
+        self._pause()
+        QTimer.singleShot(350, self._do_capture)
+
+    def _do_capture(self):
+        # mpv uses forward slashes in screenshot-to-file path
+        safe_path = self._frame_path.replace("\\", "/")
+        self._send_ipc(f'{{ "command": ["screenshot-to-file", "{safe_path}", "video"] }}')
+        QTimer.singleShot(600, self._load_frame)
+
+    def _load_frame(self):
+        if not os.path.exists(self._frame_path):
+            self._status.setText("Frame capture failed — is mpv still running?")
+            return
+        self._canvas.load_frame(self._frame_path)
+        x, y, w, h = self._canvas.get_region()
+        self._on_region_changed(x, y, w, h)
+        self._status.setText(
+            f"Frame captured ({self._canvas.source_w} × {self._canvas.source_h} px). "
+            "Drag the green rectangle to set the crop region."
+        )
+
+    def _stop_mpv(self):
+        if self._mpv_process and self._mpv_process.poll() is None:
+            if self._ipc_path:
+                try:
+                    with open(self._ipc_path, "w", encoding="utf-8") as f:
+                        f.write('{ "command": ["quit"] }\n')
+                    time.sleep(0.2)
+                except Exception:
+                    pass
+            self._mpv_process.terminate()
+        self._mpv_process = None
+        self._ipc_path = None
+
+    # ------------------------------------------------------------------
+    # Region synchronisation
+    # ------------------------------------------------------------------
+
+    def _on_region_changed(self, x, y, w, h):
+        """Called when the canvas selection changes — update spinboxes."""
+        self._updating_spinboxes = True
+        self._x_sb.setValue(x)
+        self._y_sb.setValue(y)
+        self._w_sb.setValue(max(1, w))
+        self._h_sb.setValue(max(1, h))
+        self._updating_spinboxes = False
+
+    def _on_handle_dragged(self, mode, abs_x, abs_y):
+        """Update live coordinate readout while dragging a crop handle."""
+        if not mode:
+            self._coord_label.setVisible(False)
+            self._coord_label.setText("")
+            return
+        vertical_modes = ('resize_t', 'resize_b',
+                          'resize_tl', 'resize_tr',
+                          'resize_bl', 'resize_br')
+        if mode in vertical_modes and self._canvas.source_h > 0:
+            y_from_bottom = self._canvas.source_h - abs_y - 1
+            text = (f"  Handle: {mode}   X: {abs_x} px   Y: {abs_y} px"
+                    f"   (Y from bottom: {y_from_bottom} px)")
+        else:
+            text = f"  Handle: {mode}   X: {abs_x} px   Y: {abs_y} px"
+        self._coord_label.setText(text)
+        self._coord_label.setVisible(True)
+
+    def _on_spinbox_changed(self):
+        """Called when a spinbox changes — update the canvas."""
+        if self._updating_spinboxes:
+            return
+        self._canvas.set_region(
+            self._x_sb.value(), self._y_sb.value(),
+            self._w_sb.value(), self._h_sb.value(),
+        )
+
+    def _reset_selection(self):
+        """Reset selection to the full captured frame (or 1920×1080 default)."""
+        w = self._canvas.source_w or 1920
+        h = self._canvas.source_h or 1080
+        self._canvas.set_region(0, 0, w, h)
+        self._on_region_changed(0, 0, w, h)
+
+    # ------------------------------------------------------------------
+    # Dialog accept / reject
+    # ------------------------------------------------------------------
+
+    def _ok(self):
+        self.result_config = {
+            'enabled': self._enable_cb.isChecked(),
+            'crop_x': self._x_sb.value(),
+            'crop_y': self._y_sb.value(),
+            'crop_w': self._w_sb.value(),
+            'crop_h': self._h_sb.value(),
+            'scale_w': self._sw_sb.value(),
+            'scale_h': self._sh_sb.value(),
+        }
+        self._stop_mpv()
+        self.accept()
+
+    def _cancel(self):
+        self._stop_mpv()
+        self.reject()
+
+    def closeEvent(self, event):
+        self._stop_mpv()
+        try:
+            shutil.rmtree(self._temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+
+# ---------------------------------------------------------------------------
+# StretchCanvas — shows a cropped sub-image with draggable output-size handles
+# ---------------------------------------------------------------------------
+
+class StretchCanvas(QWidget):
+    """Canvas that displays a cropped region and lets the user resize output dimensions.
+
+    In stretch/scale edit mode the user sees the cropped sub-image drawn at the
+    *current output size* (potentially distorted) and can drag the right/bottom/
+    corner handles to change the scale_w × scale_h values.
+    """
+
+    output_changed = pyqtSignal(int, int)  # scale_w, scale_h
+    drag_started   = pyqtSignal()          # emitted once on left-button press when a handle is hit
+    drag_finished  = pyqtSignal()          # emitted once on mouse-button release after a drag
+    HANDLE_SIZE = 9
+
+    def __init__(self, color="#ff9800", parent=None):
+        super().__init__(parent)
+        self._color = color
+        self._full_pixmap = None   # Full captured frame
+        self._cropped_pm = None    # Cropped sub-image
+        self._crop_w = 1920
+        self._crop_h = 1080
+        self._out_w = 1920
+        self._out_h = 1080
+        self._drag_mode = None
+        self._drag_start = None
+        self._drag_orig = (0, 0)
+        self.setMinimumSize(480, 270)
+        self.setMouseTracking(True)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def set_source(self, full_pixmap, crop_x, crop_y, crop_w, crop_h):
+        """Update the displayed pixmap to the given crop region of full_pixmap."""
+        self._full_pixmap = full_pixmap
+        self._crop_w = max(1, crop_w)
+        self._crop_h = max(1, crop_h)
+        if full_pixmap and not full_pixmap.isNull():
+            self._cropped_pm = full_pixmap.copy(
+                max(0, crop_x), max(0, crop_y), self._crop_w, self._crop_h)
+        else:
+            self._cropped_pm = None
+        self.update()
+
+    def set_output(self, w, h):
+        """Set the output (scale) dimensions and repaint."""
+        self._out_w = max(1, w)
+        self._out_h = max(1, h)
+        self.update()
+
+    def get_output(self):
+        """Return (scale_w, scale_h)."""
+        return self._out_w, self._out_h
+
+    def get_source_size(self):
+        """Return (crop_w, crop_h) — the natural source dimensions of the displayed image."""
+        return self._crop_w, self._crop_h
+
+    # ------------------------------------------------------------------
+    # Internal geometry
+    # ------------------------------------------------------------------
+
+    def _display_rect(self):
+        """Return (QRect, scale) for the output box drawn in widget space."""
+        margin = 20
+        avail_w = self.width() - 2 * margin
+        avail_h = self.height() - 2 * margin
+        sx = avail_w / max(1, self._out_w)
+        sy = avail_h / max(1, self._out_h)
+        scale = min(sx, sy)
+        dw = int(self._out_w * scale)
+        dh = int(self._out_h * scale)
+        ox = (self.width() - dw) // 2
+        oy = (self.height() - dh) // 2
+        return QRect(ox, oy, dw, dh), scale
+
+    def _handle_rects(self):
+        r, _ = self._display_rect()
+        h = self.HANDLE_SIZE
+        cx, cy = r.center().x(), r.center().y()
+        pts = [
+            (r.right(),  r.bottom(), 'br'),
+            (r.right(),  r.top(),    'tr'),
+            (r.left(),   r.bottom(), 'bl'),
+            (r.right(),  cy,         'r'),
+            (cx,         r.bottom(), 'b'),
+        ]
+        return [(QRect(px - h, py - h, h * 2, h * 2), name) for px, py, name in pts]
+
+    def _hit_mode(self, pos):
+        for rect, name in self._handle_rects():
+            if rect.contains(pos):
+                return f'resize_{name}'
+        return None
+
+    # ------------------------------------------------------------------
+    # Paint
+    # ------------------------------------------------------------------
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("#1e1e1e"))
+        r, _ = self._display_rect()
+
+        if self._cropped_pm and not self._cropped_pm.isNull():
+            painter.drawPixmap(r, self._cropped_pm)
+        else:
+            painter.setBrush(QBrush(QColor("#2a2a2a")))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRect(r)
+            painter.setPen(QColor("#555"))
+            painter.drawText(r, Qt.AlignmentFlag.AlignCenter,
+                             "Capture a frame first")
+
+        col = QColor(self._color)
+        painter.setPen(QPen(col, 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(r)
+
+        painter.setPen(QPen(col, 1))
+        painter.setBrush(QBrush(col))
+        for rect, _ in self._handle_rects():
+            painter.drawRect(rect)
+
+        painter.setPen(col)
+        painter.drawText(r.x() + 4, r.y() + 16,
+                         f"Output: {self._out_w} × {self._out_h} px")
+
+    # ------------------------------------------------------------------
+    # Mouse interaction
+    # ------------------------------------------------------------------
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        mode = self._hit_mode(event.pos())
+        if mode:
+            self._drag_mode = mode
+            self._drag_start = event.pos()
+            self._drag_orig = (self._out_w, self._out_h)
+            self.drag_started.emit()
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            mode = self._hit_mode(event.pos())
+            cursors = {
+                'resize_br': Qt.CursorShape.SizeFDiagCursor,
+                'resize_tr': Qt.CursorShape.SizeBDiagCursor,
+                'resize_bl': Qt.CursorShape.SizeBDiagCursor,
+                'resize_r':  Qt.CursorShape.SizeHorCursor,
+                'resize_b':  Qt.CursorShape.SizeVerCursor,
+            }
+            self.setCursor(cursors.get(mode, Qt.CursorShape.ArrowCursor))
+            return
+        if not self._drag_mode or not self._drag_start:
+            return
+        _, scale = self._display_rect()
+        dx = (event.pos().x() - self._drag_start.x()) / max(1e-6, scale)
+        dy = (event.pos().y() - self._drag_start.y()) / max(1e-6, scale)
+        ow, oh = self._drag_orig
+        if 'r' in self._drag_mode:
+            ow = max(1, int(ow + dx))
+        if 'b' in self._drag_mode:
+            oh = max(1, int(oh + dy))
+        self._out_w = ow
+        self._out_h = oh
+        self.update()
+        self.output_changed.emit(self._out_w, self._out_h)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            was_dragging = self._drag_mode is not None
+            self._drag_mode = None
+            self._drag_start = None
+            if was_dragging:
+                self.drag_finished.emit()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update()
+
+
+# ---------------------------------------------------------------------------
+# MultiZoomScaleDialog — multi-zone crop/stretch compositor dialog
+# ---------------------------------------------------------------------------
+
+class MultiZoomScaleDialog(QDialog):
+    """Multi-zone crop/stretch configuration dialog.
+
+    Up to 3 independent crop zones can be configured and enabled; the enabled
+    zones are stitched (horizontally or vertically) to produce the final output
+    image sent to mpv.
+
+    Per-zone the user can toggle between:
+      • Crop mode   — drag the coloured rectangle on the full source frame.
+      • Stretch mode — drag handles to set output scale dimensions; the
+                       cropped sub-image is previewed stretched in real-time.
+
+    A *Final Preview* tab composites all enabled zones into one image showing
+    exactly how the final stitched output will look.
+    """
+
+    # Tab indices — zone tabs occupy 0 … NUM_ZONES-1
+    _COMP_TAB_INDEX  = NUM_ZONES      # "Composite Output"
+    _FINAL_TAB_INDEX = NUM_ZONES + 1  # "Final Preview"
+
+    def __init__(self, current_config, output_display_num=DEFAULT_VIDEO_SCREEN_NUMBER, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Multi-Zone Crop / Stretch Compositor")
+        self.setModal(True)
+        self.resize(1280, 820)
+
+        self._cfg = _migrate_zoom_config(current_config)
+        self.result_config = None
+        self._output_display_num = max(1, int(output_display_num))
+
+        # mpv / capture state (shared across all zone canvases)
+        self._mpv_process = None
+        self._ipc_path = None
+        self._selected_video_path = None
+        self._temp_dir = tempfile.mkdtemp(prefix="lc_mzoom_")
+        self._frame_path = os.path.join(self._temp_dir, "frame.png")
+        self._full_pixmap = None      # Most-recently captured video frame
+
+        # Dedicated mpv process for fullscreen external preview on final-output display
+        self._ext_preview_process = None
+        self._ext_preview_ipc_path = None
+        self._ext_preview_open = False
+        self._ext_preview_paused = True
+        self._ext_preview_source_path = None
+        self._ext_preview_start_pos = 0.0
+        self._ext_preview_wall_start = None
+        self._ext_preview_vf = None
+
+        self._updating = False        # Guard for circular signal updates
+
+        # Scrub-slider tracking state (capture-preview transport)
+        self._mz_pos = 0.0            # Most-recently known playback position (seconds)
+        self._mz_dur = 0.0            # Most-recently known video duration (seconds)
+        self._mz_slider_dragging = False  # True while the user has the handle pressed
+
+        # Background position poller for the capture-preview mpv instance
+        self._pos_poller = PositionPoller()
+        self._pos_poller.position_updated.connect(self._on_mz_position_updated)
+
+        # Debounce timer for real-time composite/preview updates
+        self._update_timer = QTimer(self)
+        self._update_timer.setSingleShot(True)
+        self._update_timer.setInterval(120)  # ms — short delay to smooth drag interactions
+        self._update_timer.timeout.connect(self._do_composite_update)
+
+        self._setup_ui()
+        self._load_config_to_ui()
+        # Start the position poller after all UI widgets are constructed so the
+        # slot cannot reference attributes that do not yet exist.
+        self._pos_poller.start()
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+
+    def _setup_ui(self):
+        root = QVBoxLayout(self)
+        root.setSpacing(6)
+
+        # ---- Video controls bar ----
+        file_bar = QHBoxLayout()
+        self._select_btn = QPushButton("Select Video…")
+        self._select_btn.clicked.connect(self._select_video)
+        self._video_label = QLabel("No video selected.")
+        self._video_label.setStyleSheet("font-style: italic; color: #888;")
+        self._play_btn   = QPushButton("▶  Play")
+        self._play_btn.clicked.connect(self._play)
+        self._pause_btn  = QPushButton("⏸  Pause")
+        self._pause_btn.clicked.connect(self._pause)
+        self._capture_btn = QPushButton("📷  Capture Frame  →")
+        self._capture_btn.setStyleSheet(
+            "background-color: #007acc; color: white; font-weight: bold; padding: 4px 8px;")
+        self._capture_btn.clicked.connect(self._capture_frame)
+        self._capture_btn.setToolTip(
+            "Pause mpv and snapshot the current frame into all zone canvases.")
+        for btn in (self._play_btn, self._pause_btn, self._capture_btn):
+            btn.setEnabled(False)
+        file_bar.addWidget(self._select_btn)
+        file_bar.addWidget(self._video_label, 1)
+        file_bar.addWidget(self._play_btn)
+        file_bar.addWidget(self._pause_btn)
+        file_bar.addWidget(self._capture_btn)
+        root.addLayout(file_bar)
+
+        # ---- Transport / scrub controls row ----
+        transport_bar = QHBoxLayout()
+
+        # Play-from-beginning button
+        self._beg_btn = QPushButton("⏮  Beginning")
+        self._beg_btn.setToolTip("Seek to position 0 and start playback.")
+        self._beg_btn.clicked.connect(self._play_from_beginning)
+        self._beg_btn.setEnabled(False)
+
+        # Frame-step buttons
+        self._frame_back_btn = QPushButton("◀  Frame Back")
+        self._frame_back_btn.setToolTip("Step exactly one frame backward (works while paused).")
+        self._frame_back_btn.clicked.connect(self._frame_back)
+        self._frame_back_btn.setEnabled(False)
+
+        self._frame_fwd_btn = QPushButton("Frame Forward  ▶")
+        self._frame_fwd_btn.setToolTip("Step exactly one frame forward (works while paused).")
+        self._frame_fwd_btn.clicked.connect(self._frame_forward)
+        self._frame_fwd_btn.setEnabled(False)
+
+        # Scrub slider with MM:SS labels either side
+        self._mz_pos_label = QLabel("00:00")
+        self._mz_pos_label.setMinimumWidth(42)
+        self._mz_pos_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        self._mz_scrub_slider = QSlider(Qt.Orientation.Horizontal)
+        self._mz_scrub_slider.setRange(0, 1000)
+        self._mz_scrub_slider.setValue(0)
+        self._mz_scrub_slider.setEnabled(False)
+        self._mz_scrub_slider.setToolTip("Drag to jump to any position in the video.")
+        self._mz_scrub_slider.sliderMoved.connect(self._on_mz_scrub_moved)
+        self._mz_scrub_slider.sliderReleased.connect(self._on_mz_scrub_released)
+
+        self._mz_dur_label = QLabel("00:00")
+        self._mz_dur_label.setMinimumWidth(42)
+        self._mz_dur_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+        transport_bar.addWidget(self._beg_btn)
+        transport_bar.addWidget(self._frame_back_btn)
+        transport_bar.addWidget(self._frame_fwd_btn)
+        transport_bar.addSpacing(8)
+        transport_bar.addWidget(self._mz_pos_label)
+        transport_bar.addWidget(self._mz_scrub_slider, 1)
+        transport_bar.addWidget(self._mz_dur_label)
+        root.addLayout(transport_bar)
+
+        ext_bar = QHBoxLayout()
+        ext_bar.addWidget(QLabel("External preview:"))
+        self._ext_source_combo = QComboBox()
+        self._ext_source_combo.addItems(["Frame (captured/restored)", "Video (selected source)"])
+        self._ext_source_combo.setToolTip(
+            "Choose what to preview on the final-output display selected in the main window.\n"
+            "Frame mode loops the captured/restored snapshot. Video mode plays the selected source video.\n"
+            "This preview is separate from actual live playback.")
+        self._ext_source_combo.currentIndexChanged.connect(self._on_external_source_mode_changed)
+        self._ext_toggle_btn = QPushButton("Open External Preview")
+        self._ext_toggle_btn.setToolTip(
+            "Open/close a dedicated fullscreen mpv preview on the selected final-output display.\n"
+            "Uses the same composite filter chain as live playback and does not start automatically.")
+        self._ext_toggle_btn.clicked.connect(self._toggle_external_preview)
+        self._ext_live_refresh_btn = QPushButton("Live Refresh")
+        self._ext_live_refresh_btn.setToolTip(
+            "Apply current zone/composite settings to the external preview.\n"
+            "Click to reload the preview once.")
+        self._ext_live_refresh_btn.clicked.connect(self._on_live_refresh_clicked)
+        self._ext_preview_label = QLabel(f"Target display: {self._output_display_num}")
+        self._ext_preview_label.setStyleSheet("color: #888; font-style: italic;")
+        ext_bar.addWidget(self._ext_source_combo)
+        ext_bar.addWidget(self._ext_toggle_btn)
+        ext_bar.addWidget(self._ext_live_refresh_btn)
+        ext_bar.addWidget(self._ext_preview_label)
+        ext_bar.addStretch()
+        root.addLayout(ext_bar)
+        self._update_external_source_availability()
+
+        # ---- Stitch direction ----
+        stitch_bar = QHBoxLayout()
+        stitch_bar.addWidget(QLabel("Stitch direction:"))
+        self._stitch_h = QRadioButton("Horizontal  (zones side-by-side)")
+        self._stitch_v = QRadioButton("Vertical  (zones stacked)")
+        self._stitch_h.setChecked(True)
+        stitch_bar.addWidget(self._stitch_h)
+        stitch_bar.addWidget(self._stitch_v)
+        stitch_bar.addStretch()
+        # Import / Export buttons
+        self._export_btn = QPushButton("⬆  Export State…")
+        self._export_btn.setToolTip(
+            "Export the current editor state (zones, borders, frame snapshot path) to a JSON file.")
+        self._export_btn.clicked.connect(self._export_state)
+        self._import_btn = QPushButton("⬇  Import State…")
+        self._import_btn.setToolTip(
+            "Import a previously exported editor state JSON file to restore all settings.")
+        self._import_btn.clicked.connect(self._import_state)
+        stitch_bar.addWidget(self._export_btn)
+        stitch_bar.addWidget(self._import_btn)
+        root.addLayout(stitch_bar)
+
+        # ---- Tab widget ----
+        self._tabs = QTabWidget()
+
+        # Per-zone state lists
+        self._zone_crop_canvases    = []
+        self._zone_stretch_canvases = []
+        self._zone_stacked          = []
+        self._zone_enable_cbs       = []
+        self._zone_mode_crop_rbs    = []
+        self._zone_mode_stretch_rbs = []
+        self._zone_x_sbs    = []
+        self._zone_y_sbs    = []
+        self._zone_w_sbs    = []
+        self._zone_h_sbs    = []
+        self._zone_sw_sbs   = []
+        self._zone_sh_sbs   = []
+        self._zone_border_sbs = []
+        self._zone_offset_y_sbs = []
+
+        for i in range(NUM_ZONES):
+            color = _ZONE_COLORS[i]
+            tab_w = QWidget()
+            tl = QVBoxLayout(tab_w)
+            tl.setSpacing(6)
+            tl.setContentsMargins(4, 4, 4, 4)
+
+            # ---- Top bar: enable + mode toggle + reset ----
+            top_bar = QHBoxLayout()
+            enable_cb = QCheckBox(f"Enable Zone {i + 1}")
+            enable_cb.setStyleSheet(f"color: {color}; font-weight: bold;")
+            enable_cb.setChecked(i == 0)
+
+            mode_crop_rb    = QRadioButton("✂  Crop Mode")
+            mode_stretch_rb = QRadioButton("⤢  Stretch Mode")
+            mode_crop_rb.setChecked(True)
+            mode_crop_rb.setToolTip(
+                "Drag the coloured rectangle on the captured frame to define\n"
+                "which region of the source video is used for this zone.")
+            mode_stretch_rb.setToolTip(
+                "Drag the corner/edge handles to set the output size for this zone.\n"
+                "The cropped sub-image is shown stretched to the chosen output size.")
+
+            reset_btn = QPushButton("Reset to Full Frame")
+            reset_btn.clicked.connect(lambda _, zi=i: self._reset_zone(zi))
+
+            top_bar.addWidget(enable_cb)
+            top_bar.addSpacing(16)
+            top_bar.addWidget(QLabel("Mode:"))
+            top_bar.addWidget(mode_crop_rb)
+            top_bar.addWidget(mode_stretch_rb)
+            top_bar.addStretch()
+            top_bar.addWidget(reset_btn)
+            tl.addLayout(top_bar)
+
+            # ---- Canvas (stacked: crop / stretch) + right spinboxes ----
+            body = QHBoxLayout()
+            body.setSpacing(8)
+
+            stacked = QStackedWidget()
+            crop_canvas    = ZoomCropCanvas(color=color)
+            stretch_canvas = StretchCanvas(color=color)
+            stacked.addWidget(crop_canvas)      # index 0
+            stacked.addWidget(stretch_canvas)   # index 1
+            body.addWidget(stacked, 3)
+
+            right = QVBoxLayout()
+            right.setSpacing(4)
+
+            crop_grp = QGroupBox("Source Crop Region")
+            crop_grp.setStyleSheet(f"QGroupBox::title {{ color: {color}; }}")
+            cg = QGridLayout(); cg.setSpacing(4)
+            x_sb  = QSpinBox(); x_sb.setRange(0, 99999);  x_sb.setSuffix(" px");  x_sb.setFixedWidth(110)
+            y_sb  = QSpinBox(); y_sb.setRange(0, 99999);  y_sb.setSuffix(" px");  y_sb.setFixedWidth(110)
+            w_sb  = QSpinBox(); w_sb.setRange(1, 99999);  w_sb.setSuffix(" px");  w_sb.setFixedWidth(110)
+            h_sb  = QSpinBox(); h_sb.setRange(1, 99999);  h_sb.setSuffix(" px");  h_sb.setFixedWidth(110)
+            cg.addWidget(QLabel("X:"),      0, 0); cg.addWidget(x_sb, 0, 1)
+            cg.addWidget(QLabel("Y:"),      1, 0); cg.addWidget(y_sb, 1, 1)
+            cg.addWidget(QLabel("Width:"),  2, 0); cg.addWidget(w_sb, 2, 1)
+            cg.addWidget(QLabel("Height:"), 3, 0); cg.addWidget(h_sb, 3, 1)
+            crop_grp.setLayout(cg)
+
+            scale_grp = QGroupBox("Output Scale (optional stretch)")
+            scale_grp.setStyleSheet(f"QGroupBox::title {{ color: {color}; }}")
+            scale_grp.setToolTip(
+                "Leave at -1 (auto) to preserve aspect ratio.\n"
+                "Set explicit pixel dimensions to force non-uniform stretching.")
+            sg = QGridLayout(); sg.setSpacing(4)
+            sw_sb = QSpinBox(); sw_sb.setRange(-1, 99999); sw_sb.setSpecialValueText("auto")
+            sw_sb.setSuffix(" px"); sw_sb.setFixedWidth(110)
+            sh_sb = QSpinBox(); sh_sb.setRange(-1, 99999); sh_sb.setSpecialValueText("auto")
+            sh_sb.setSuffix(" px"); sh_sb.setFixedWidth(110)
+            sg.addWidget(QLabel("Scale W:"), 0, 0); sg.addWidget(sw_sb, 0, 1)
+            sg.addWidget(QLabel("Scale H:"), 1, 0); sg.addWidget(sh_sb, 1, 1)
+            scale_grp.setLayout(sg)
+
+            border_grp = QGroupBox("Black Border")
+            border_grp.setStyleSheet(f"QGroupBox::title {{ color: {color}; }}")
+            border_grp.setToolTip(
+                "Add a solid black border around this zone's output.\n"
+                "0 = no border.  The border is applied after cropping and scaling.")
+            bg = QGridLayout(); bg.setSpacing(4)
+            border_sb = QSpinBox()
+            border_sb.setRange(0, 500)
+            border_sb.setSuffix(" px")
+            border_sb.setFixedWidth(110)
+            border_sb.setToolTip("Border thickness in pixels (applied to all four sides).")
+            bg.addWidget(QLabel("Thickness:"), 0, 0); bg.addWidget(border_sb, 0, 1)
+            border_grp.setLayout(bg)
+
+            pos_grp = QGroupBox("Final Display Position")
+            pos_grp.setStyleSheet(f"QGroupBox::title {{ color: {color}; }}")
+            pos_grp.setToolTip(
+                "Move this zone's rendered output within the final stitched display.\n"
+                "This does NOT change the source crop rectangle.")
+            pg = QGridLayout(); pg.setSpacing(4)
+            offset_y_sb = QSpinBox()
+            offset_y_sb.setRange(-5000, 5000)
+            offset_y_sb.setSuffix(" px")
+            offset_y_sb.setFixedWidth(110)
+            offset_y_sb.setToolTip(
+                "Vertical offset in the final output (+ down, - up).\n"
+                "Does not affect source crop coordinates.")
+            pg.addWidget(QLabel("Y offset:"), 0, 0); pg.addWidget(offset_y_sb, 0, 1)
+            pos_grp.setLayout(pg)
+
+            right.addWidget(crop_grp)
+            right.addWidget(scale_grp)
+            right.addWidget(border_grp)
+            right.addWidget(pos_grp)
+            right.addStretch()
+            body.addLayout(right, 1)
+            tl.addLayout(body, 1)
+
+            self._tabs.addTab(tab_w, f"Zone {i + 1}")
+
+            # Wire signals (capture zone index in default arg to avoid late-binding)
+            crop_canvas.region_changed.connect(
+                lambda x, y, w, h, zi=i: self._on_crop_changed(zi, x, y, w, h))
+            stretch_canvas.output_changed.connect(
+                lambda sw, sh, zi=i: self._on_stretch_changed(zi, sw, sh))
+            for sb in (x_sb, y_sb, w_sb, h_sb):
+                sb.valueChanged.connect(lambda _, zi=i: self._on_crop_spinbox_changed(zi))
+            sw_sb.valueChanged.connect(lambda _, zi=i: self._on_scale_spinbox_changed(zi))
+            sh_sb.valueChanged.connect(lambda _, zi=i: self._on_scale_spinbox_changed(zi))
+            mode_crop_rb.toggled.connect(
+                lambda checked, st=stacked: st.setCurrentIndex(0) if checked else None)
+            mode_stretch_rb.toggled.connect(
+                lambda checked, st=stacked: st.setCurrentIndex(1) if checked else None)
+
+            # Store per-zone references
+            self._zone_crop_canvases.append(crop_canvas)
+            self._zone_stretch_canvases.append(stretch_canvas)
+            self._zone_stacked.append(stacked)
+            self._zone_enable_cbs.append(enable_cb)
+            self._zone_mode_crop_rbs.append(mode_crop_rb)
+            self._zone_mode_stretch_rbs.append(mode_stretch_rb)
+            self._zone_x_sbs.append(x_sb)
+            self._zone_y_sbs.append(y_sb)
+            self._zone_w_sbs.append(w_sb)
+            self._zone_h_sbs.append(h_sb)
+            self._zone_sw_sbs.append(sw_sb)
+            self._zone_sh_sbs.append(sh_sb)
+            self._zone_border_sbs.append(border_sb)
+            self._zone_offset_y_sbs.append(offset_y_sb)
+
+        # ---- Composite Output tab ----
+        # This tab lets the operator crop and/or stretch the already-stitched zone
+        # composite as a whole (after per-zone transforms are applied).
+        comp_tab = QWidget()
+        comp_layout = QVBoxLayout(comp_tab)
+        comp_layout.setSpacing(6)
+        comp_layout.setContentsMargins(4, 4, 4, 4)
+
+        comp_top_bar = QHBoxLayout()
+        comp_top_bar.addWidget(QLabel(
+            "<b>Composite Output</b> — crop and/or stretch the full stitched composite "
+            "after all per-zone transforms have been applied."))
+        self._comp_refresh_btn = QPushButton("🔄  Rebuild Composite")
+        self._comp_refresh_btn.setToolTip(
+            "Manually stitch the current zone settings into the composite canvas.\n"
+            "The composite is also rebuilt automatically when this tab is opened\n"
+            "or when any zone/composite control changes (with a short debounce).")
+        self._comp_refresh_btn.clicked.connect(self._rebuild_composite_canvas)
+        comp_top_bar.addStretch()
+        comp_top_bar.addWidget(self._comp_refresh_btn)
+        comp_layout.addLayout(comp_top_bar)
+
+        # Mode toggle: Crop or Stretch
+        comp_mode_bar = QHBoxLayout()
+        self._comp_mode_crop_rb    = QRadioButton("✂  Edit Crop")
+        self._comp_mode_stretch_rb = QRadioButton("⤢  Edit Stretch / Output Size")
+        self._comp_mode_crop_rb.setChecked(True)
+        self._comp_mode_crop_rb.setToolTip(
+            "Show the crop-handle canvas to define which region of the stitched\n"
+            "composite is kept.  This affects the ENTIRE stitched composite,\n"
+            "not an individual zone.")
+        self._comp_mode_stretch_rb.setToolTip(
+            "Show the stretch-handle canvas to set the final output dimensions of\n"
+            "the stitched composite after cropping.  Drag the handles to resize\n"
+            "width and/or height independently (non-uniform stretch).\n"
+            "This scales the ENTIRE stitched composite, not an individual zone.")
+        comp_mode_bar.addWidget(self._comp_mode_crop_rb)
+        comp_mode_bar.addWidget(self._comp_mode_stretch_rb)
+        comp_mode_bar.addStretch()
+        comp_layout.addLayout(comp_mode_bar)
+
+        comp_body = QHBoxLayout()
+        comp_body.setSpacing(8)
+
+        # Stacked canvas — index 0: crop handles, index 1: stretch handles
+        self._comp_stacked = QStackedWidget()
+
+        self._comp_crop_canvas = ZoomCropCanvas(color="#e040fb")
+        self._comp_crop_canvas.setToolTip(
+            "Drag the handles to define the crop rectangle for the ENTIRE stitched composite.\n"
+            "This crop is applied AFTER all per-zone transforms and BEFORE the composite stretch.\n"
+            "Set Width to 0 in the numeric controls to disable cropping (pass-through).")
+        self._comp_crop_canvas.region_changed.connect(self._on_comp_crop_changed)
+
+        self._comp_stretch_canvas = StretchCanvas(color="#e040fb")
+        self._comp_stretch_canvas.setToolTip(
+            "Drag the right/bottom/corner handles to set the final output dimensions\n"
+            "of the ENTIRE stitched composite (after the composite crop step).\n"
+            "Width and height can be set independently for non-uniform stretching.\n"
+            "Set both Scale W and Scale H to -1 (auto) to skip this step.")
+        self._comp_stretch_canvas.output_changed.connect(self._on_comp_stretch_changed)
+
+        self._comp_stacked.addWidget(self._comp_crop_canvas)    # index 0
+        self._comp_stacked.addWidget(self._comp_stretch_canvas) # index 1
+        comp_body.addWidget(self._comp_stacked, 3)
+
+        self._comp_mode_stretch_rb.toggled.connect(
+            lambda checked: self._comp_stacked.setCurrentIndex(1 if checked else 0))
+
+        comp_right = QVBoxLayout()
+        comp_right.setSpacing(4)
+
+        comp_crop_grp = QGroupBox("Whole-Composite Crop  (entire stitched composite)")
+        comp_crop_grp.setStyleSheet("QGroupBox::title { color: #e040fb; }")
+        comp_crop_grp.setToolTip(
+            "Crop the stitched composite image. Set Width to 0 to disable (pass-through).\n"
+            "Applies to the ENTIRE composite, not an individual zone.")
+        ccg = QGridLayout(); ccg.setSpacing(4)
+        self._comp_x_sb  = QSpinBox(); self._comp_x_sb.setRange(0, 99999);  self._comp_x_sb.setSuffix(" px"); self._comp_x_sb.setFixedWidth(110)
+        self._comp_y_sb  = QSpinBox(); self._comp_y_sb.setRange(0, 99999);  self._comp_y_sb.setSuffix(" px"); self._comp_y_sb.setFixedWidth(110)
+        self._comp_w_sb  = QSpinBox(); self._comp_w_sb.setRange(0, 99999);  self._comp_w_sb.setSuffix(" px"); self._comp_w_sb.setFixedWidth(110)
+        self._comp_w_sb.setSpecialValueText("Full (no crop)")
+        self._comp_h_sb  = QSpinBox(); self._comp_h_sb.setRange(0, 99999);  self._comp_h_sb.setSuffix(" px"); self._comp_h_sb.setFixedWidth(110)
+        self._comp_h_sb.setSpecialValueText("Full (no crop)")
+        ccg.addWidget(QLabel("X:"),      0, 0); ccg.addWidget(self._comp_x_sb, 0, 1)
+        ccg.addWidget(QLabel("Y:"),      1, 0); ccg.addWidget(self._comp_y_sb, 1, 1)
+        ccg.addWidget(QLabel("Width:"),  2, 0); ccg.addWidget(self._comp_w_sb, 2, 1)
+        ccg.addWidget(QLabel("Height:"), 3, 0); ccg.addWidget(self._comp_h_sb, 3, 1)
+        comp_crop_grp.setLayout(ccg)
+
+        comp_scale_grp = QGroupBox("Whole-Composite Stretch / Output Size  (entire stitched composite)")
+        comp_scale_grp.setStyleSheet("QGroupBox::title { color: #e040fb; }")
+        comp_scale_grp.setToolTip(
+            "Stretch the ENTIRE stitched composite to exact output dimensions after cropping.\n"
+            "Width and height are set independently — non-uniform stretching is supported.\n"
+            "Set both to -1 (auto) to skip this step and pass the cropped composite unchanged.\n"
+            "Equivalent to mpv's scale= filter applied to the full composite image,\n"
+            "and to the draggable handles in the 'Edit Stretch' canvas view above.")
+        csg = QGridLayout(); csg.setSpacing(4)
+        self._comp_sw_sb = QSpinBox(); self._comp_sw_sb.setRange(-1, 99999); self._comp_sw_sb.setSuffix(" px"); self._comp_sw_sb.setSpecialValueText("auto"); self._comp_sw_sb.setFixedWidth(110)
+        self._comp_sh_sb = QSpinBox(); self._comp_sh_sb.setRange(-1, 99999); self._comp_sh_sb.setSuffix(" px"); self._comp_sh_sb.setSpecialValueText("auto"); self._comp_sh_sb.setFixedWidth(110)
+        self._comp_sw_sb.setToolTip(
+            "Output width of the ENTIRE composite after stretch.\n"
+            "Set to -1 (auto) together with Scale H to skip this step.")
+        self._comp_sh_sb.setToolTip(
+            "Output height of the ENTIRE composite after stretch.\n"
+            "Set to -1 (auto) together with Scale W to skip this step.")
+        csg.addWidget(QLabel("Stretch W:"), 0, 0); csg.addWidget(self._comp_sw_sb, 0, 1)
+        csg.addWidget(QLabel("Stretch H:"), 1, 0); csg.addWidget(self._comp_sh_sb, 1, 1)
+        comp_scale_grp.setLayout(csg)
+
+        self._comp_reset_btn = QPushButton("↺  Reset to Full Composite")
+        self._comp_reset_btn.setToolTip(
+            "Remove the composite crop (pass-through) and clear stretch overrides\n"
+            "for the ENTIRE stitched composite.")
+        self._comp_reset_btn.clicked.connect(self._reset_composite_crop)
+
+        comp_right.addWidget(comp_crop_grp)
+        comp_right.addWidget(comp_scale_grp)
+        comp_right.addWidget(self._comp_reset_btn)
+        comp_right.addStretch()
+        comp_body.addLayout(comp_right, 1)
+        comp_layout.addLayout(comp_body, 1)
+
+        self._tabs.addTab(comp_tab, "Composite Output")
+
+        # Wire composite spinbox signals
+        for sb in (self._comp_x_sb, self._comp_y_sb,
+                   self._comp_w_sb, self._comp_h_sb):
+            sb.valueChanged.connect(self._on_comp_spinbox_changed)
+        for sb in (self._comp_sw_sb, self._comp_sh_sb):
+            sb.valueChanged.connect(self._on_comp_scale_spinbox_changed)
+
+        # ---- Final Preview tab ----
+        final_tab = QWidget()
+        final_layout = QVBoxLayout(final_tab)
+        final_layout.setSpacing(6)
+
+        # Output resolution controls
+        out_res_bar = QHBoxLayout()
+        out_res_bar.addWidget(QLabel("Simulated output resolution:"))
+        self._out_w_sb = QSpinBox()
+        self._out_w_sb.setRange(160, 32768)
+        self._out_w_sb.setValue(1920)
+        self._out_w_sb.setSuffix(" px")
+        self._out_w_sb.setFixedWidth(100)
+        self._out_w_sb.setToolTip("Simulated display canvas width in pixels.")
+        self._out_h_sb = QSpinBox()
+        self._out_h_sb.setRange(120, 32768)
+        self._out_h_sb.setValue(1080)
+        self._out_h_sb.setSuffix(" px")
+        self._out_h_sb.setFixedWidth(100)
+        self._out_h_sb.setToolTip("Simulated display canvas height in pixels.")
+        out_res_bar.addWidget(self._out_w_sb)
+        out_res_bar.addWidget(QLabel("×"))
+        out_res_bar.addWidget(self._out_h_sb)
+        out_res_bar.addSpacing(12)
+        self._out_sim_playback_cb = QCheckBox("Apply output canvas to mpv playback")
+        self._out_sim_playback_cb.setToolTip(
+            "When checked, mpv will pad the final composite into the configured output\n"
+            "canvas during actual playback — matching the preview letterboxing/pillarboxing.\n"
+            "Leave unchecked to keep existing playback behaviour (no padding added).")
+        out_res_bar.addWidget(self._out_sim_playback_cb)
+        out_res_bar.addStretch()
+        final_layout.addLayout(out_res_bar)
+
+        final_top = QHBoxLayout()
+        self._refresh_btn = QPushButton("🔄  Refresh Final Preview")
+        self._refresh_btn.clicked.connect(self._refresh_final_preview)
+        self._stitch_info_label = QLabel()
+        final_top.addWidget(self._refresh_btn)
+        final_top.addStretch()
+        final_top.addWidget(self._stitch_info_label)
+        final_layout.addLayout(final_top)
+        self._final_canvas = QLabel()
+        self._final_canvas.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._final_canvas.setMinimumSize(400, 200)
+        self._final_canvas.setStyleSheet("background: #111; border: 1px solid #444;")
+        self._final_canvas.setText("Capture a frame and click 'Refresh Final Preview'")
+        final_layout.addWidget(self._final_canvas, 1)
+        self._tabs.addTab(final_tab, "Final Preview")
+
+        root.addWidget(self._tabs, 1)
+
+        # ---- Real-time update signal wiring ----
+        # Connect all controls that affect the composite to _schedule_composite_update
+        # so the composite canvas and final preview refresh in real time (with debounce).
+        for cb in self._zone_enable_cbs:
+            cb.stateChanged.connect(self._schedule_composite_update)
+        for rb in self._zone_mode_crop_rbs + self._zone_mode_stretch_rbs:
+            rb.toggled.connect(lambda _: self._schedule_composite_update())
+        for sbs in (self._zone_x_sbs, self._zone_y_sbs, self._zone_w_sbs, self._zone_h_sbs,
+                    self._zone_sw_sbs, self._zone_sh_sbs, self._zone_border_sbs,
+                    self._zone_offset_y_sbs):
+            for sb in sbs:
+                sb.valueChanged.connect(self._schedule_composite_update)
+        self._stitch_h.toggled.connect(lambda _: self._schedule_composite_update())
+        self._stitch_v.toggled.connect(lambda _: self._schedule_composite_update())
+        for sb in (self._comp_x_sb, self._comp_y_sb, self._comp_w_sb, self._comp_h_sb,
+                   self._comp_sw_sb, self._comp_sh_sb, self._out_w_sb, self._out_h_sb):
+            sb.valueChanged.connect(self._schedule_composite_update)
+        self._out_sim_playback_cb.stateChanged.connect(self._schedule_composite_update)
+
+        # Auto-rebuild when switching to Composite Output or Final Preview tabs
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+
+        # ---- Status bar + OK / Cancel ----
+        self._status = QLabel(
+            "Select a video/capture frame to edit. External preview is optional and opens on the selected final-output display.")
+        self._status.setStyleSheet("font-style: italic; color: #888; font-size: 12px;")
+        root.addWidget(self._status)
+
+        btn_row = QHBoxLayout()
+        self._ok_btn = QPushButton("✔  OK — Save Settings")
+        self._ok_btn.setStyleSheet(
+            "background-color: #27ae60; color: white; font-weight: bold; padding: 6px;")
+        self._ok_btn.clicked.connect(self._ok)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.clicked.connect(self._cancel)
+        btn_row.addWidget(self._ok_btn)
+        btn_row.addWidget(self._cancel_btn)
+        root.addLayout(btn_row)
+
+
+    # ------------------------------------------------------------------
+    # Config ↔ UI
+    # ------------------------------------------------------------------
+
+    def _load_config_to_ui(self):
+        self._updating = True
+        direction = self._cfg.get("stack_direction", "horizontal")
+        self._stitch_h.setChecked(direction != "vertical")
+        self._stitch_v.setChecked(direction == "vertical")
+        for i, zone in enumerate(self._cfg["zones"][:NUM_ZONES]):
+            self._zone_enable_cbs[i].setChecked(zone.get("enabled", i == 0))
+            x  = zone.get("crop_x", 0)
+            y  = zone.get("crop_y", 0)
+            w  = max(1, zone.get("crop_w", 1920))
+            h  = max(1, zone.get("crop_h", 1080))
+            sw = zone.get("scale_w", -1)
+            sh = zone.get("scale_h", -1)
+            border = max(0, zone.get("border_px", 0))
+            offset_y = int(zone.get("offset_y", 0))
+            mode   = zone.get("mode", "crop")
+            self._zone_x_sbs[i].setValue(x)
+            self._zone_y_sbs[i].setValue(y)
+            self._zone_w_sbs[i].setValue(w)
+            self._zone_h_sbs[i].setValue(h)
+            self._zone_sw_sbs[i].setValue(sw)
+            self._zone_sh_sbs[i].setValue(sh)
+            self._zone_border_sbs[i].setValue(border)
+            self._zone_offset_y_sbs[i].setValue(offset_y)
+            if mode == "stretch":
+                self._zone_mode_stretch_rbs[i].setChecked(True)
+            else:
+                self._zone_mode_crop_rbs[i].setChecked(True)
+            self._zone_crop_canvases[i].set_region(x, y, w, h)
+            self._zone_stretch_canvases[i].set_output(sw if sw > 0 else w, sh if sh > 0 else h)
+
+        # Load composite output fields
+        out_w  = self._cfg.get("out_w",  -1)
+        out_h  = self._cfg.get("out_h",  -1)
+        self._out_w_sb.setValue(out_w if out_w > 0 else 1920)
+        self._out_h_sb.setValue(out_h if out_h > 0 else 1080)
+        self._out_sim_playback_cb.setChecked(bool(self._cfg.get("out_sim_enabled", False)))
+        self._comp_x_sb.setValue(int(self._cfg.get("comp_crop_x", 0)))
+        self._comp_y_sb.setValue(int(self._cfg.get("comp_crop_y", 0)))
+        self._comp_w_sb.setValue(int(self._cfg.get("comp_crop_w", 0)))
+        self._comp_h_sb.setValue(int(self._cfg.get("comp_crop_h", 0)))
+        self._comp_sw_sb.setValue(int(self._cfg.get("comp_scale_w", -1)))
+        self._comp_sh_sb.setValue(int(self._cfg.get("comp_scale_h", -1)))
+
+        self._updating = False
+
+        # Attempt to reload the persistent frame snapshot
+        saved_path = self._cfg.get("frame_snapshot_path", "")
+        if saved_path and os.path.isfile(saved_path):
+            self._load_frame_from_path(saved_path)
+            self._status.setText(
+                f"Restored saved frame snapshot from '{os.path.basename(saved_path)}'.")
+
+    def _collect_config(self):
+        direction = "vertical" if self._stitch_v.isChecked() else "horizontal"
+        zones = []
+        for i in range(NUM_ZONES):
+            mode = "stretch" if self._zone_mode_stretch_rbs[i].isChecked() else "crop"
+            zones.append({
+                "enabled":   self._zone_enable_cbs[i].isChecked(),
+                "crop_x":    self._zone_x_sbs[i].value(),
+                "crop_y":    self._zone_y_sbs[i].value(),
+                "crop_w":    self._zone_w_sbs[i].value(),
+                "crop_h":    self._zone_h_sbs[i].value(),
+                "scale_w":   self._zone_sw_sbs[i].value(),
+                "scale_h":   self._zone_sh_sbs[i].value(),
+                "border_px": self._zone_border_sbs[i].value(),
+                "offset_y":  self._zone_offset_y_sbs[i].value(),
+                "mode":      mode,
+            })
+        snapshot_path = self._cfg.get("frame_snapshot_path", "")
+        out_sim = self._out_sim_playback_cb.isChecked()
+        return {
+            "zones": zones,
+            "stack_direction": direction,
+            "frame_snapshot_path": snapshot_path,
+            # Composite output / output simulation fields
+            "out_w":          self._out_w_sb.value(),
+            "out_h":          self._out_h_sb.value(),
+            "out_sim_enabled": out_sim,
+            "comp_crop_x":    self._comp_x_sb.value(),
+            "comp_crop_y":    self._comp_y_sb.value(),
+            "comp_crop_w":    self._comp_w_sb.value(),
+            "comp_crop_h":    self._comp_h_sb.value(),
+            "comp_scale_w":   self._comp_sw_sb.value(),
+            "comp_scale_h":   self._comp_sh_sb.value(),
+        }
+
+    # ------------------------------------------------------------------
+    # Zone signal handlers
+    # ------------------------------------------------------------------
+
+    def _on_crop_changed(self, zi, x, y, w, h):
+        """Canvas selection changed → update spinboxes and stretch canvas."""
+        if self._updating:
+            return
+        self._updating = True
+        self._zone_x_sbs[zi].setValue(x)
+        self._zone_y_sbs[zi].setValue(y)
+        self._zone_w_sbs[zi].setValue(max(1, w))
+        self._zone_h_sbs[zi].setValue(max(1, h))
+        self._updating = False
+        self._sync_stretch_canvas(zi)
+        self._schedule_composite_update()
+
+    def _on_stretch_changed(self, zi, sw, sh):
+        """Stretch canvas handles moved → update scale spinboxes."""
+        if self._updating:
+            return
+        self._updating = True
+        self._zone_sw_sbs[zi].setValue(sw)
+        self._zone_sh_sbs[zi].setValue(sh)
+        self._updating = False
+        self._schedule_composite_update()
+
+    def _on_crop_spinbox_changed(self, zi):
+        """Crop spinbox changed → update crop canvas and stretch canvas source."""
+        if self._updating:
+            return
+        self._zone_crop_canvases[zi].set_region(
+            self._zone_x_sbs[zi].value(),
+            self._zone_y_sbs[zi].value(),
+            self._zone_w_sbs[zi].value(),
+            self._zone_h_sbs[zi].value(),
+        )
+        self._sync_stretch_canvas(zi)
+
+    def _on_scale_spinbox_changed(self, zi):
+        """Scale spinbox changed → update stretch canvas output dimensions."""
+        if self._updating:
+            return
+        sw = self._zone_sw_sbs[zi].value()
+        sh = self._zone_sh_sbs[zi].value()
+        cw = self._zone_w_sbs[zi].value()
+        ch = self._zone_h_sbs[zi].value()
+        self._zone_stretch_canvases[zi].set_output(sw if sw > 0 else cw, sh if sh > 0 else ch)
+
+    def _sync_stretch_canvas(self, zi):
+        """Push the current crop region into the stretch canvas so it shows the right sub-image."""
+        self._zone_stretch_canvases[zi].set_source(
+            self._full_pixmap,
+            self._zone_x_sbs[zi].value(),
+            self._zone_y_sbs[zi].value(),
+            self._zone_w_sbs[zi].value(),
+            self._zone_h_sbs[zi].value(),
+        )
+
+    def _reset_zone(self, zi):
+        """Reset this zone's crop to the full captured frame (or 1920×1080)."""
+        w = self._zone_crop_canvases[zi].source_w or 1920
+        h = self._zone_crop_canvases[zi].source_h or 1080
+        self._zone_crop_canvases[zi].set_region(0, 0, w, h)
+        self._on_crop_changed(zi, 0, 0, w, h)
+
+    # ------------------------------------------------------------------
+    # Composite Output canvas handlers
+    # ------------------------------------------------------------------
+
+    def _on_comp_crop_changed(self, x, y, w, h):
+        """Composite canvas crop changed → update composite spinboxes."""
+        if self._updating:
+            return
+        self._updating = True
+        self._comp_x_sb.setValue(x)
+        self._comp_y_sb.setValue(y)
+        self._comp_w_sb.setValue(max(1, w))
+        self._comp_h_sb.setValue(max(1, h))
+        self._updating = False
+        self._schedule_composite_update()
+
+    def _on_comp_spinbox_changed(self):
+        """Composite crop spinboxes changed → update canvas selection."""
+        if self._updating:
+            return
+        cw = self._comp_w_sb.value()
+        ch = self._comp_h_sb.value()
+        if cw > 0 and ch > 0:
+            self._comp_crop_canvas.set_region(
+                self._comp_x_sb.value(),
+                self._comp_y_sb.value(),
+                cw, ch,
+            )
+        self._schedule_composite_update()
+
+    def _on_comp_scale_spinbox_changed(self):
+        """Composite stretch spinboxes changed → update the stretch canvas output dimensions."""
+        if self._updating:
+            return
+        sw = self._comp_sw_sb.value()
+        sh = self._comp_sh_sb.value()
+        # Use composite source dimensions as fallback when value is -1
+        src_w, src_h = self._comp_stretch_canvas.get_source_size()
+        self._comp_stretch_canvas.set_output(
+            sw if sw > 0 else src_w,
+            sh if sh > 0 else src_h,
+        )
+        self._schedule_composite_update()
+
+    def _on_comp_stretch_changed(self, sw, sh):
+        """Stretch canvas handles moved → update composite scale spinboxes."""
+        if self._updating:
+            return
+        self._updating = True
+        self._comp_sw_sb.setValue(sw)
+        self._comp_sh_sb.setValue(sh)
+        self._updating = False
+        self._schedule_composite_update()
+
+    # ------------------------------------------------------------------
+    # Real-time composite update scheduling
+    # ------------------------------------------------------------------
+
+    def _schedule_composite_update(self, *_args):
+        """Schedule a debounced composite update (handles spurious signal args)."""
+        if self._updating:
+            return
+        self._update_timer.start()
+
+    def _do_composite_update(self):
+        """Debounced handler: rebuild composite canvases and refresh the final preview."""
+        current = self._tabs.currentIndex()
+        if current == self._COMP_TAB_INDEX:
+            self._rebuild_composite_canvas()
+        elif current == self._FINAL_TAB_INDEX:
+            self._refresh_final_preview()
+
+    def _on_tab_changed(self, index):
+        """Auto-rebuild when the user switches to Composite Output or Final Preview."""
+        if index == self._COMP_TAB_INDEX:
+            self._rebuild_composite_canvas()
+        elif index == self._FINAL_TAB_INDEX:
+            self._refresh_final_preview()
+
+    def _reset_composite_crop(self):
+        """Reset composite crop to full composite (pass-through) and clear scale."""
+        self._comp_x_sb.setValue(0)
+        self._comp_y_sb.setValue(0)
+        w = self._comp_crop_canvas.source_w or 0
+        h = self._comp_crop_canvas.source_h or 0
+        self._comp_w_sb.setValue(0)   # 0 = no crop (full composite)
+        self._comp_h_sb.setValue(0)
+        if w > 0 and h > 0:
+            self._comp_crop_canvas.set_region(0, 0, w, h)
+        self._comp_sw_sb.setValue(-1)
+        self._comp_sh_sb.setValue(-1)
+
+    def _rebuild_composite_canvas(self):
+        """Stitch zones and load the composite into the composite crop and stretch canvases."""
+        if not self._full_pixmap or self._full_pixmap.isNull():
+            self._status.setText("Capture a frame first before rebuilding the composite canvas.")
+            return
+        composite = self._build_composite_pixmap()
+        if composite is None or composite.isNull():
+            self._status.setText("No enabled zones — composite canvas cannot be built.")
+            return
+        # Save composite to a temp file and load via load_frame
+        tmp_path = os.path.join(self._temp_dir, "composite_preview.png")
+        composite.save(tmp_path)
+        self._comp_crop_canvas.load_frame(tmp_path)
+        # Restore crop region from spinboxes (if valid)
+        cw = self._comp_w_sb.value()
+        ch = self._comp_h_sb.value()
+        if cw > 0 and ch > 0:
+            self._comp_crop_canvas.set_region(
+                self._comp_x_sb.value(),
+                self._comp_y_sb.value(),
+                cw, ch,
+            )
+        else:
+            # Full composite — set to whole image
+            self._comp_crop_canvas.set_region(
+                0, 0, composite.width(), composite.height())
+
+        # Update the stretch canvas with the composite as the source image
+        sw = self._comp_sw_sb.value()
+        sh = self._comp_sh_sb.value()
+        out_w = sw if sw > 0 else composite.width()
+        out_h = sh if sh > 0 else composite.height()
+        self._comp_stretch_canvas.set_source(
+            composite, 0, 0, composite.width(), composite.height())
+        self._comp_stretch_canvas.set_output(out_w, out_h)
+
+        self._status.setText(
+            f"Composite canvas rebuilt  ({composite.width()} × {composite.height()} px). "
+            "Switch to 'Edit Crop' or 'Edit Stretch' to adjust the composite output.")
+
+    def _build_composite_pixmap(self, cfg=None):
+        """Build and return the stitched composite QPixmap from current zone settings.
+
+        Applies per-zone crop, optional scale, border, and offset_y then stitches
+        according to the current stitch direction.  Returns None if no zones are enabled.
+
+        *cfg* may be a pre-collected config dict (to avoid a duplicate
+        :meth:`_collect_config` call when the caller already has one).
+        """
+        if not self._full_pixmap or self._full_pixmap.isNull():
+            return None
+        if cfg is None:
+            cfg = self._collect_config()
+        zones = [z for z in cfg["zones"] if z.get("enabled") and z.get("crop_w", 0) > 0]
+        if not zones:
+            return None
+
+        direction = cfg.get("stack_direction", "horizontal")
+        pieces = []
+        for z in zones:
+            cx, cy = max(0, z["crop_x"]), max(0, z["crop_y"])
+            cw, ch = max(1, z["crop_w"]), max(1, z["crop_h"])
+            sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
+            border = z.get("border_px", 0)
+            offset_y = int(z.get("offset_y", 0))
+            pm = self._full_pixmap.copy(cx, cy, cw, ch)
+            if sw > 0 and sh > 0:
+                pm = pm.scaled(sw, sh,
+                               Qt.AspectRatioMode.IgnoreAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+            if border > 0:
+                bordered = QPixmap(pm.width() + 2 * border, pm.height() + 2 * border)
+                bordered.fill(QColor("black"))
+                bp = QPainter(bordered)
+                bp.drawPixmap(border, border, pm)
+                bp.end()
+                pm = bordered
+            if offset_y != 0:
+                # Match mpv filter: pad then crop to keep dimensions constant
+                abs_off = abs(offset_y)
+                pad_y   = max(offset_y, 0)
+                crop_y  = max(-offset_y, 0)
+                taller = QPixmap(pm.width(), pm.height() + abs_off)
+                taller.fill(QColor("black"))
+                tp = QPainter(taller)
+                tp.drawPixmap(0, pad_y, pm)
+                tp.end()
+                # Crop back to original height
+                pm = taller.copy(0, crop_y, pm.width(), pm.height())
+            pieces.append(pm)
+
+        if direction == "vertical":
+            total_w = max(p.width() for p in pieces)
+            total_h = sum(p.height() for p in pieces)
+        else:
+            total_w = sum(p.width() for p in pieces)
+            total_h = max(p.height() for p in pieces)
+
+        result = QPixmap(total_w, total_h)
+        result.fill(QColor("#000000"))
+        painter = QPainter(result)
+        off = 0
+        for pm in pieces:
+            if direction == "vertical":
+                painter.drawPixmap(0, off, pm)
+                off += pm.height()
+            else:
+                painter.drawPixmap(off, 0, pm)
+                off += pm.width()
+        painter.end()
+        return result
+
+    # ------------------------------------------------------------------
+    # Final preview compositing
+    # ------------------------------------------------------------------
+
+    def _refresh_final_preview(self):
+        if not self._full_pixmap or self._full_pixmap.isNull():
+            self._final_canvas.setText("No frame captured yet.")
+            return
+
+        cfg = self._collect_config()
+
+        # Step 1: build zone composite (pass cfg so we don't call _collect_config twice)
+        result = self._build_composite_pixmap(cfg)
+        if result is None or result.isNull():
+            self._final_canvas.setText("No zones are currently enabled.")
+            return
+
+        direction = cfg.get("stack_direction", "horizontal")
+        n_zones = sum(1 for z in cfg["zones"] if z.get("enabled") and z.get("crop_w", 0) > 0)
+
+        composite_w = result.width()
+        composite_h = result.height()
+
+        # Step 2: whole-composite crop
+        comp_crop_w = int(cfg.get("comp_crop_w", 0))
+        comp_crop_h = int(cfg.get("comp_crop_h", 0))
+        comp_crop_x = int(cfg.get("comp_crop_x", 0))
+        comp_crop_y = int(cfg.get("comp_crop_y", 0))
+        if comp_crop_w > 0 and comp_crop_h > 0:
+            # Clamp to composite bounds
+            cx = max(0, min(comp_crop_x, composite_w - 1))
+            cy = max(0, min(comp_crop_y, composite_h - 1))
+            cw = min(comp_crop_w, composite_w - cx)
+            ch = min(comp_crop_h, composite_h - cy)
+            if cw > 0 and ch > 0:
+                result = result.copy(cx, cy, cw, ch)
+
+
+        # Step 3: whole-composite scale
+        comp_sw = int(cfg.get("comp_scale_w", -1))
+        comp_sh = int(cfg.get("comp_scale_h", -1))
+        if comp_sw > 0 and comp_sh > 0:
+            result = result.scaled(comp_sw, comp_sh,
+                                   Qt.AspectRatioMode.IgnoreAspectRatio,
+                                   Qt.TransformationMode.SmoothTransformation)
+
+        # Step 4: place in output canvas (letterbox/pillarbox)
+        out_w = self._out_w_sb.value()
+        out_h = self._out_h_sb.value()
+        display_w = result.width()
+        display_h = result.height()
+
+        canvas = QPixmap(out_w, out_h)
+        canvas.fill(QColor("black"))
+        cp = QPainter(canvas)
+        # Centre the composite in the output canvas
+        ox = (out_w - display_w) // 2
+        oy = (out_h - display_h) // 2
+        cp.drawPixmap(ox, oy, result)
+        cp.end()
+
+        # Step 5: scale the output canvas to fit the preview label
+        label_size = self._final_canvas.size()
+        scaled = canvas.scaled(label_size,
+                               Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+        self._final_canvas.setPixmap(scaled)
+
+        dir_txt = "vertical" if direction == "vertical" else "horizontal"
+        crop_info = (f"  |  Comp crop: {comp_crop_w}×{comp_crop_h}"
+                     if comp_crop_w > 0 and comp_crop_h > 0 else "")
+        scale_info = (f"  |  Comp scale: {comp_sw}×{comp_sh}"
+                      if comp_sw > 0 and comp_sh > 0 else "")
+        self._stitch_info_label.setText(
+            f"Stitch: {dir_txt}  |  {n_zones} zone(s)  |  "
+            f"Composite: {composite_w}×{composite_h} px"
+            f"{crop_info}{scale_info}  |  "
+            f"Output canvas: {out_w}×{out_h} px")
+
+
+    # ------------------------------------------------------------------
+    # Video / mpv control
+    # ------------------------------------------------------------------
+
+    def _select_video(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Test Video", "d:\\",
+            "Media Files (*.mov *.mp4 *.avi *.mkv *.wmv *.m4v);;All Files (*)"
+        )
+        if not path:
+            return
+        self._selected_video_path = path
+        self._update_external_source_availability()
+        self._video_label.setText(os.path.basename(path))
+        self._video_label.setStyleSheet("color: #d4d4d4;")
+        self._launch_mpv(path)
+        if self._ext_preview_open and self._is_external_source_video():
+            self._ext_preview_start_pos = 0.0
+            self._open_external_preview()
+
+    def _launch_mpv(self, video_path):
+        self._stop_mpv()
+        self._ipc_path = _make_unique_mpv_pipe_name("mpv_mzoom")
+        cmd = _build_multizone_capture_preview_mpv_command(MPV_PATH, self._ipc_path, video_path)
+        try:
+            self._mpv_process = subprocess.Popen(cmd)
+            for btn in (self._play_btn, self._pause_btn, self._capture_btn,
+                        self._beg_btn, self._frame_back_btn, self._frame_fwd_btn):
+                btn.setEnabled(True)
+            self._mz_scrub_slider.setEnabled(True)
+            # Point the position poller at the new pipe so scrub labels update live.
+            self._pos_poller.set_socket(self._ipc_path)
+            self._status.setText(
+                "mpv opened. Navigate to the desired frame, then click 'Capture Frame'.")
+        except Exception as exc:
+            self._status.setText(f"Error launching mpv: {exc}")
+
+    def _send_ipc(self, command, max_attempts=2):
+        ok, err = _send_mpv_ipc_command(self._ipc_path, command, max_attempts=max_attempts)
+        if not ok:
+            self._status.setText(f"IPC error: {err}")
+        return ok
+
+    def _play(self):
+        self._send_ipc(["set_property", "pause", False])
+        self._ext_preview_paused = False
+        self._apply_external_preview_playback_state()
+        if self._ext_preview_open and self._is_external_source_video():
+            self._send_external_preview_command(["set_property", "pause", False], tolerate_closed=True)
+
+    def _pause(self):
+        self._send_ipc(["set_property", "pause", True])
+        self._snapshot_external_preview_position()
+        self._ext_preview_paused = True
+        self._apply_external_preview_playback_state()
+        if self._ext_preview_open and self._is_external_source_video():
+            self._send_external_preview_command(["set_property", "pause", True], tolerate_closed=True)
+
+    def _capture_frame(self):
+        self._pause()
+        QTimer.singleShot(350, self._do_capture)
+
+    def _do_capture(self):
+        safe_path = self._frame_path.replace("\\", "/")
+        self._send_ipc(["screenshot-to-file", safe_path, "video"])
+        QTimer.singleShot(600, self._load_frame)
+
+    def _load_frame(self):
+        if not os.path.exists(self._frame_path):
+            self._status.setText("Frame capture failed — is mpv still running?")
+            return
+        # Save a persistent copy to the local project directory
+        try:
+            shutil.copy(self._frame_path, ZOOM_FRAME_SNAPSHOT)
+            self._cfg["frame_snapshot_path"] = os.path.abspath(ZOOM_FRAME_SNAPSHOT)
+        except OSError:
+            self._cfg["frame_snapshot_path"] = self._frame_path
+        self._load_frame_from_path(self._frame_path)
+        pm = self._full_pixmap
+        if pm and not pm.isNull():
+            self._status.setText(
+                f"Frame captured ({pm.width()} × {pm.height()} px) and saved to "
+                f"'{ZOOM_FRAME_SNAPSHOT}'. "
+                "Drag each zone's coloured rectangle to define its crop region.")
+
+    def _load_frame_from_path(self, path):
+        """Load a frame image from *path* into all zone canvases."""
+        pm = QPixmap(path)
+        if pm.isNull():
+            self._status.setText(f"Could not load frame image from '{path}'.")
+            return
+        self._full_pixmap = pm
+        for i in range(NUM_ZONES):
+            self._zone_crop_canvases[i].load_frame(path)
+            # Restore the previously configured crop region after loading
+            self._zone_crop_canvases[i].set_region(
+                self._zone_x_sbs[i].value(),
+                self._zone_y_sbs[i].value(),
+                self._zone_w_sbs[i].value(),
+                self._zone_h_sbs[i].value(),
+            )
+            self._sync_stretch_canvas(i)
+        # Rebuild composite canvases automatically whenever a new frame is loaded
+        self._schedule_composite_update()
+
+    def _stop_mpv(self):
+        # Pause position polling before tearing down the IPC pipe.
+        self._pos_poller.set_socket(None)
+        if self._mpv_process and self._mpv_process.poll() is None:
+            if self._ipc_path:
+                _send_mpv_ipc_command(self._ipc_path, ["quit"], max_attempts=2)
+                time.sleep(0.2)
+            self._mpv_process.terminate()
+        self._mpv_process = None
+        self._ipc_path = None
+        # Disable transport controls until a new video is loaded.
+        for btn in (self._beg_btn, self._frame_back_btn, self._frame_fwd_btn):
+            btn.setEnabled(False)
+        self._mz_scrub_slider.setEnabled(False)
+
+    # ------------------------------------------------------------------
+    # Capture-preview transport controls
+    # ------------------------------------------------------------------
+
+    def _on_mz_position_updated(self, pos: float, dur: float):
+        """Slot connected to PositionPoller.position_updated for the capture-preview mpv.
+
+        Updates the scrub slider and MM:SS labels.  Blocked while the user is
+        dragging the handle to prevent the slider jumping back to the poll value.
+        """
+        self._mz_pos = pos
+        self._mz_dur = dur
+        if not self._mz_slider_dragging:
+            if dur > 0:
+                slider_val = int((pos / dur) * 1000)
+                self._mz_scrub_slider.blockSignals(True)
+                self._mz_scrub_slider.setValue(slider_val)
+                self._mz_scrub_slider.blockSignals(False)
+            self._mz_pos_label.setText(_mz_format_duration(pos))
+            self._mz_dur_label.setText(_mz_format_duration(dur))
+
+    def _on_mz_scrub_moved(self, value: int):
+        """Called continuously while the user drags the scrub-slider handle.
+
+        Updates the position label live so the operator sees where they are
+        landing; the actual seek is deferred to sliderReleased.
+        """
+        self._mz_slider_dragging = True
+        if self._mz_dur > 0:
+            pos = (value / 1000.0) * self._mz_dur
+            self._mz_pos_label.setText(_mz_format_duration(pos))
+
+    def _on_mz_scrub_released(self):
+        """Called when the user releases the scrub-slider handle.
+
+        Issues an absolute seek to the chosen position.  ``hr-seek yes``
+        ensures frame-accurate positioning so the mpv window shows the exact
+        frame at the new position even while paused.
+        """
+        if not self._mz_slider_dragging:
+            return
+        self._mz_slider_dragging = False
+        if not self._ipc_path or self._mz_dur <= 0:
+            return
+        value = self._mz_scrub_slider.value()
+        pos = (value / 1000.0) * self._mz_dur
+        # Use "exact" flag for frame-accurate positioning so the mpv window
+        # shows the precise frame even while paused (equivalent to hr-seek).
+        self._send_ipc(["seek", pos, "absolute", "exact"])
+
+    def _play_from_beginning(self):
+        """Seek to position 0 and start playback."""
+        self._send_ipc(["seek", 0, "absolute"])
+        self._send_ipc(["set_property", "pause", False])
+        self._ext_preview_paused = False
+        self._apply_external_preview_playback_state()
+
+    def _frame_forward(self):
+        """Advance exactly one frame using mpv's native frame-step command.
+
+        mpv pauses playback as a side-effect of frame-step, which is the desired
+        behaviour here (the operator is locating a precise frame for capture).
+        We update ``_ext_preview_paused`` accordingly so the external-preview
+        logic stays consistent.
+        """
+        self._send_ipc(["frame-step"])
+        # mpv pauses automatically after frame-step.
+        self._ext_preview_paused = True
+        self._apply_external_preview_playback_state()
+
+    def _frame_back(self):
+        """Step exactly one frame backward using mpv's frame-back-step command.
+
+        Like frame-step, mpv pauses as a side-effect, which is desired.
+        """
+        self._send_ipc(["frame-back-step"])
+        self._ext_preview_paused = True
+        self._apply_external_preview_playback_state()
+
+    def _is_external_source_video(self):
+        return self._ext_source_combo.currentIndex() == 1
+
+    def _update_external_source_availability(self):
+        model = self._ext_source_combo.model()
+        video_item = model.item(1)
+        has_video = bool(self._selected_video_path)
+        if video_item is not None:
+            video_item.setEnabled(has_video)
+        if not has_video and self._ext_source_combo.currentIndex() == 1:
+            self._ext_source_combo.setCurrentIndex(0)
+
+    def _on_external_source_mode_changed(self, _index):
+        if self._ext_preview_open:
+            self._open_external_preview()
+
+    def _toggle_external_preview(self):
+        if self._ext_preview_open:
+            self._close_external_preview("External preview closed.")
+            return
+        self._open_external_preview()
+
+    def _get_external_preview_frame_path(self):
+        if self._cfg.get("frame_snapshot_path") and os.path.isfile(self._cfg["frame_snapshot_path"]):
+            return self._cfg["frame_snapshot_path"]
+        if os.path.isfile(self._frame_path):
+            return self._frame_path
+        return None
+
+    def _get_external_preview_source_path(self):
+        if self._is_external_source_video():
+            return self._selected_video_path
+        return self._get_external_preview_frame_path()
+
+    def _send_external_preview_command(self, command, max_attempts=2, tolerate_closed=False):
+        if self._ext_preview_process and self._ext_preview_process.poll() is not None:
+            if not tolerate_closed:
+                self._close_external_preview("External preview was closed.")
+            return False
+        ok, err = _send_mpv_ipc_command(self._ext_preview_ipc_path, command, max_attempts=max_attempts)
+        if not ok and not tolerate_closed:
+            self._status.setText(f"External preview IPC error: {err}")
+        return ok
+
+    def _snapshot_external_preview_position(self):
+        if self._is_external_source_video() and not self._ext_preview_paused and self._ext_preview_wall_start is not None:
+            self._ext_preview_start_pos = max(0.0, time.time() - self._ext_preview_wall_start)
+
+    def _apply_external_preview_playback_state(self):
+        if self._is_external_source_video() and not self._ext_preview_paused:
+            self._ext_preview_wall_start = time.time() - max(0.0, self._ext_preview_start_pos)
+        else:
+            self._ext_preview_wall_start = None
+
+    def _update_external_preview_button(self):
+        self._ext_toggle_btn.setText("Close External Preview" if self._ext_preview_open else "Open External Preview")
+
+    def _open_external_preview(self):
+        self._snapshot_external_preview_position()
+        source_path = self._get_external_preview_source_path()
+        if self._is_external_source_video() and not source_path:
+            self._status.setText("Select a source video before opening Video external preview.")
+            return
+        if not self._is_external_source_video() and not source_path:
+            self._status.setText("Capture or restore a frame before opening Frame external preview.")
+            return
+
+        self._close_external_preview()
+        self._ext_preview_ipc_path = _make_unique_mpv_pipe_name("mpv_mzoom_external")
+        self._ext_preview_source_path = source_path
+        vf_str = _build_vf_for_zones(self._collect_config())
+        self._ext_preview_vf = vf_str or ""
+
+        cmd = _build_external_preview_mpv_command(
+            MPV_PATH,
+            self._ext_preview_ipc_path,
+            self._output_display_num,
+            source_path,
+            is_video_source=self._is_external_source_video(),
+            paused=self._ext_preview_paused,
+            vf_str=self._ext_preview_vf,
+        )
+
+        try:
+            self._ext_preview_process = subprocess.Popen(cmd)
+        except Exception as exc:
+            self._ext_preview_process = None
+            self._ext_preview_ipc_path = None
+            self._status.setText(f"Could not open external preview mpv: {exc}")
+            return
+
+        self._ext_preview_open = True
+        self._ext_preview_start_pos = max(0.0, self._ext_preview_start_pos)
+        self._apply_external_preview_playback_state()
+        self._update_external_preview_button()
+        src_label = "video" if self._is_external_source_video() else "captured frame"
+        self._status.setText(
+            f"External preview opened on display {self._output_display_num} using {src_label}. "
+            "This is a separate preview process from live playback.")
+        if self._is_external_source_video() and self._ext_preview_start_pos > 0:
+            QTimer.singleShot(
+                300,
+                lambda: self._send_external_preview_command(
+                    ["set_property", "time-pos", max(0.0, self._ext_preview_start_pos)],
+                    max_attempts=8,
+                    tolerate_closed=True))
+
+    def _close_external_preview(self, status_text=None):
+        self._snapshot_external_preview_position()
+        if self._ext_preview_process and self._ext_preview_process.poll() is None:
+            self._send_external_preview_command(["quit"], max_attempts=2, tolerate_closed=True)
+            try:
+                self._ext_preview_process.wait(timeout=0.2)
+            except subprocess.TimeoutExpired:
+                self._ext_preview_process.terminate()
+        self._ext_preview_process = None
+        self._ext_preview_ipc_path = None
+        self._ext_preview_open = False
+        self._ext_preview_source_path = None
+        self._ext_preview_vf = None
+        self._ext_preview_wall_start = None
+        self._update_external_preview_button()
+        if status_text:
+            self._status.setText(status_text)
+
+    def _on_live_refresh_clicked(self):
+        """Manually reload external preview using current settings."""
+        if not self._ext_preview_open:
+            self._status.setText("External preview is not open.")
+            return
+        self._open_external_preview()
+
+    # ------------------------------------------------------------------
+    # Dialog accept / reject
+    # ------------------------------------------------------------------
+
+    def _ok(self):
+        self.result_config = self._collect_config()
+        self._close_external_preview()
+        self._stop_mpv()
+        self.accept()
+
+    def _cancel(self):
+        self._close_external_preview()
+        self._stop_mpv()
+        self.reject()
+
+    def closeEvent(self, event):
+        self._close_external_preview()
+        self._stop_mpv()
+        # Stop the position-poller thread so it is not leaked when the dialog closes.
+        self._pos_poller.stop()
+        self._pos_poller.wait()
+        try:
+            shutil.rmtree(self._temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+    # ------------------------------------------------------------------
+    # Import / Export
+    # ------------------------------------------------------------------
+
+    def _export_state(self):
+        """Export the current editor state (zones, borders, snapshot path) to a JSON file."""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Editor State", "zoom_editor_state.json",
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if not path:
+            return
+        state = self._collect_config()
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=4)
+            self._status.setText(f"Editor state exported to '{os.path.basename(path)}'.")
+        except OSError as exc:
+            self._status.setText(f"Export failed: {exc}")
+
+    def _import_state(self):
+        """Import a previously exported editor state JSON file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Editor State", "",
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            self._status.setText(f"Import failed: {exc}")
+            return
+        self._cfg = _migrate_zoom_config(raw)
+        self._load_config_to_ui()
+        # Rebuild composite preview immediately after importing state
+        self._schedule_composite_update()
+        self._status.setText(
+            f"Editor state imported from '{os.path.basename(path)}'.")
+
+
+class Switch(QAbstractButton):
+    """A custom animated toggle switch widget."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setFixedSize(65, 35)
+        self._circle_pos = QPoint(3, 3)
+        # Animation for the toggle circle.
+        self.animation = QPropertyAnimation(self, b"circle_pos", self)
+        self.animation.setDuration(200)
+        self.animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def paintEvent(self, e):
+        """Draws the switch."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        # Background color changes based on checked state.
+        bg_color = QColor("#d63031") if self.isChecked() else QColor("#00b894") # Red for LIVE, Green for EDIT
+        painter.setBrush(QBrush(bg_color))
+        painter.drawRoundedRect(0, 0, self.width(), self.height(), self.height() / 2, self.height() / 2)
+        # Draw the toggle circle.
+        painter.setBrush(QBrush(QColor(255, 255, 255)))
+        painter.drawEllipse(self.circle_pos.x(), self.circle_pos.y(), 29, 29)
+
+    # Define a property for the circle's position to be used by the animation.
+    @pyqtProperty(QPoint)
+    def circle_pos(self):
+        return self._circle_pos
+
+    @circle_pos.setter
+    def circle_pos(self, pos):
+        self._circle_pos = pos
+        self.update() # Redraw the widget when the position changes.
+
+    def setChecked(self, checked):
+        """Overrides setChecked to trigger the animation."""
+        super().setChecked(checked)
+        start_pos = QPoint(3, 3) if checked else QPoint(self.width() - 32, 3)
+        end_pos = QPoint(self.width() - 32, 3) if checked else QPoint(3, 3)
+        self.animation.setStartValue(start_pos)
+        self.animation.setEndValue(end_pos)
+        self.animation.start()
+
+
+class PositionPoller(QThread):
+    """Polls mpv playback position and duration via IPC at ~500 ms intervals.
+
+    Runs in its own thread so the main-thread UI is never blocked waiting on
+    IPC I/O.  Set the active pipe path with :meth:`set_socket`; pass ``None``
+    to pause polling without stopping the thread.
+    """
+    position_updated = pyqtSignal(float, float)   # (pos_seconds, dur_seconds)
+
+    _POLL_INTERVAL = 0.5   # seconds between polls
+
+    def __init__(self):
+        super().__init__()
+        self._socket_path = None
+        self._socket_lock = threading.Lock()
+        self._running = False
+
+    def set_socket(self, path):
+        """Set (or clear) the active mpv IPC pipe path (thread-safe)."""
+        with self._socket_lock:
+            self._socket_path = path
+
+    def stop(self):
+        """Signal the polling loop to exit."""
+        self._running = False
+
+    def run(self):
+        self._running = True
+        while self._running:
+            with self._socket_lock:
+                path = self._socket_path
+            if path:
+                pos = _lc_query_mpv_property(path, "time-pos")
+                dur = _lc_query_mpv_property(path, "duration")
+                if pos is not None and dur is not None:
+                    try:
+                        self.position_updated.emit(float(pos), float(dur))
+                    except Exception:
+                        pass
+            time.sleep(self._POLL_INTERVAL)
+
+
+class LiveController(QWidget):
+    """The main application window and controller."""
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(f"Live Controller - blackcarburning - 2025-07-26 10:54:03")
+        
+        # On Windows, attempt to set the process priority to high for better real-time performance.
+        try:
+            p = psutil.Process(os.getpid())
+            p.nice(psutil.HIGH_PRIORITY_CLASS)
+            print("Process priority set to HIGH.")
+        except Exception as e:
+            print(f"Could not set process priority: {e}")
+
+        # --- Initialize application state and data ---
+        self.config = self.load_config()
+        self.zoom_config = self.load_zoom_config()
+        self.bpm_data = self.load_json_store(BPM_STORE_FILE)
+        self.track_name_data = self.load_json_store(TRACK_NAME_STORE_FILE)
+        self.worker = None
+        self.current_ipc_socket = None
+        self.is_live_mode = False
+        self.tracks = []
+        self.undo_history = deque(maxlen=MAX_UNDO_LEVELS)
+        self.hotkey_map = {}
+        self.available_hotkeys = self._generate_hotkeys()
+        self.currently_playing_row = None
+        self.test_track_path = None
+        self.test_track_bpm_input = None
+        self.test_worker = None
+        self.running_test_port = None
+        self.test_port_enabled_cbs = {}
+        self.test_port_start_cbs = {}
+        self.test_port_bpm_inputs = {}
+        self.test_port_buttons = {}
+
+        # --- Sync Calibration Loop State ---
+        self.calib_loop_active = False
+        self.calib_loop_worker = None
+        self.calib_loop_ipc_socket = None
+
+        # --- Active sync-show session state (for stop/cleanup) ---
+        # Set when trigger_sync_show fires; cleared on playback stop.
+        self._active_sync_show_host = None
+        self._active_sync_show_session = None
+
+        # --- Scrub / loop state ---
+        self._current_playback_pos = 0.0       # seconds, updated by position poller
+        self._current_track_duration = 0.0     # seconds, updated by position poller
+        self._slider_being_dragged = False      # True while the user holds the scrub slider
+        self._loop_a_seconds = 0.0             # loop start point (seconds)
+        self._loop_b_seconds = 0.0             # loop end point (seconds)
+
+        # Background thread that polls mpv's playback position without blocking the UI.
+        self._position_poller = PositionPoller()
+        self._position_poller.position_updated.connect(self._on_position_updated)
+        self._position_poller.start()
+        
+        # --- FONT & COLOR DEFINITIONS ---
+        self.current_table_font_size = DEFAULT_TABLE_FONT_SIZE
+        self.streamdeck_font_size = DEFAULT_STREAMDECK_FONT_SIZE
+        self.playing_color = QColor("#2ecc71") # Brighter Green for playing track
+        self.default_color = QColor("#2a2a2a") # Default background
+        self.count_in_bg_color = DEFAULT_COUNT_IN_BG_COLOR
+        self.count_in_font_size = DEFAULT_COUNT_IN_FONT_SIZE
+        self.track_play_bg_color = DEFAULT_TRACK_PLAY_BG_COLOR
+        self.track_play_font_size = DEFAULT_TRACK_PLAY_FONT_SIZE
+        
+        # --- Timers for UI effects ---
+        self.countdown_timer = QTimer(self)
+        self.countdown_seconds = 0
+        self.countdown_connection = None
+
+        self.active_flash_timer = QTimer(self)
+        self.active_flash_timer.setInterval(ACTIVE_FLASH_INTERVAL_MS)
+        self.active_flash_timer.timeout.connect(self.toggle_active_label_visibility)
+
+        # Timer that fires once to restart the calibration loop iteration after a short gap.
+        self.calib_loop_restart_timer = QTimer(self)
+        self.calib_loop_restart_timer.setSingleShot(True)
+        self.calib_loop_restart_timer.setInterval(500)  # 500 ms gap between iterations
+        self.calib_loop_restart_timer.timeout.connect(self._start_calib_iteration)
+
+        # --- Build UI and start background services ---
+        self.setup_ui()
+        self.apply_config_to_ui()
+        # Enforce a fixed sync-show session ID and disable editing in the UI so
+        # the application always uses the hard-coded session provided by ops.
+        try:
+            self.sync_show_session_input.setText(DEFAULT_SYNC_SHOW_SESSION)
+            # Disable the widget so the operator cannot change it from the UI.
+            self.sync_show_session_input.setEnabled(False)
+            self.sync_show_session_input.setToolTip("Session ID is hard-coded and cannot be changed here.")
+        except Exception:
+            # If the UI widget is not present for any reason, continue without
+            # crashing — trigger_sync_show will still use the DEFAULT constant.
+            pass
+        self.hotkey_listener = GlobalHotkeyListener()
+        self.hotkey_listener.hotkey_pressed.connect(self.on_global_hotkey)
+        self.hotkey_listener.start()
+        self.load_session()
+
+        # --- Arduino LED Controller Setup ---
+        self.led2_on = False
+        self.arduino_serial = self._connect_arduino()
+        if self.arduino_serial is not None:
+            self.send_led_command("5")  # Chase test: cycle through all LEDs to confirm they work
+            time.sleep(2.5)             # Wait for chase animation to complete
+        self.midi_available = False
+        try:
+            for port_index in [1, 2, 3]:
+                test_out = rtmidi.MidiOut()
+                try:
+                    test_out.open_port(port_index)
+                    self.midi_available = True
+                    test_out.close_port()
+                    break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        if not self.midi_available:
+            self.send_led_command("1")  # LED 1: no MIDI device connected
+        else:
+            self.send_led_command("4")  # "4" turns all LEDs off
+
+    def setup_ui(self):
+        """Constructs the entire user interface."""
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(6, 4, 6, 4)
+        self.layout.setSpacing(3)
+        
+        # --- Top Bar (Title, Mode Switch) ---
+        top_bar_layout = QHBoxLayout()
+        # Left side for "ACTIVE" label
+        left_container = QWidget()
+        left_layout = QHBoxLayout(left_container)
+        left_layout.setContentsMargins(0,0,0,0)
+        self.active_label = QLabel("ACTIVE", self)
+        self.active_label.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        self.active_label.setStyleSheet("color: #27ae60;")
+        self.active_label.hide()
+        left_layout.addWidget(self.active_label)
+        left_layout.addStretch(1)
+        # Center for title and running time
+        title_layout = QVBoxLayout()
+        title_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.title_label = QLabel("Untitled Setlist")
+        self.title_label.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        self.running_time_label = QLabel(f"Total Running Time (incl. {TRACK_OVERHEAD_SECONDS}s overhead/track): 00:00:00")
+        self.running_time_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        self.running_time_label.setStyleSheet("color: #888;")
+        self.export_setlist_button = QPushButton("Export Set List")
+        self.export_setlist_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
+        self.export_setlist_button.clicked.connect(self.export_setlist)
+        self.export_streamdeck_button = QPushButton("Export Stream Deck Profile")
+        self.export_streamdeck_button.setStyleSheet("background-color: #1a6b8a; color: white; font-size: 11px; padding: 3px 6px;")
+        self.export_streamdeck_button.clicked.connect(self.export_streamdeck_profile)
+        sd_font_label = QLabel("SD Font:")
+        sd_font_label.setFont(QFont("Segoe UI", 9))
+        self.streamdeck_font_spinbox = QSpinBox()
+        self.streamdeck_font_spinbox.setRange(6, 36)
+        self.streamdeck_font_spinbox.setValue(self.streamdeck_font_size)
+        self.streamdeck_font_spinbox.setSuffix(" pt")
+        self.streamdeck_font_spinbox.setFixedWidth(70)
+        export_buttons_layout = QHBoxLayout()
+        export_buttons_layout.setSpacing(6)
+        export_buttons_layout.addWidget(self.export_setlist_button)
+        export_buttons_layout.addWidget(self.export_streamdeck_button)
+        export_buttons_layout.addWidget(sd_font_label)
+        export_buttons_layout.addWidget(self.streamdeck_font_spinbox)
+        title_layout.addWidget(self.title_label)
+        title_layout.addWidget(self.running_time_label)
+        title_layout.addLayout(export_buttons_layout)
+        # Right side for mode switch
+        right_container = QWidget()
+        right_layout = QHBoxLayout(right_container)
+        right_layout.setContentsMargins(0,0,0,0)
+        right_layout.addStretch(1)
+        mode_layout = QHBoxLayout()
+        mode_layout.setSpacing(10)
+        self.edit_mode_label = QLabel("EDIT")
+        self.edit_mode_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        self.live_mode_slider = Switch()
+        self.live_mode_slider.toggled.connect(self.toggle_live_mode)
+        self.live_mode_label = QLabel("LIVE")
+        self.live_mode_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        mode_layout.addWidget(self.edit_mode_label)
+        mode_layout.addWidget(self.live_mode_slider)
+        mode_layout.addWidget(self.live_mode_label)
+        right_layout.addLayout(mode_layout)
+        # Add sections to top bar
+        top_bar_layout.addWidget(left_container, 1)
+        top_bar_layout.addLayout(title_layout, 2) 
+        top_bar_layout.addWidget(right_container, 1)
+
+        # --- Overlay Labels (Danger, Countdown, Preparing) ---
+        self.danger_label = QLabel("DANGER!!\n\nSTOP PRESSING BUTTONS!\nAND GET YOUR HAIR CUT", self)
+        self.danger_label.setFont(QFont("Arial", 60, QFont.Weight.ExtraBold))
+        self.danger_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.danger_label.setStyleSheet("background-color: rgba(255, 0, 0, 0.8); color: white; border-radius: 25px;")
+        self.danger_label.hide()
+        
+        self.countdown_label = QLabel("", self)
+        self.countdown_label.setFont(QFont("Arial", DEFAULT_COUNT_IN_FONT_SIZE, QFont.Weight.ExtraBold))
+        self.countdown_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.countdown_label.setStyleSheet("background-color: rgba(200, 0, 0, 0.9); color: white; border-radius: 25px;")
+        self.countdown_label.hide()
+
+        self.preparing_label = QLabel("", self)
+        self.preparing_label.setFont(QFont("Arial", DEFAULT_TRACK_PLAY_FONT_SIZE, QFont.Weight.Bold))
+        self.preparing_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preparing_label.setStyleSheet("background-color: rgba(0, 200, 0, 0.8); color: white; border-radius: 25px;")
+        self.preparing_label.hide()
+
+        self.no_midi_label = QLabel("NO MIDI INTERFACE\nDETECTED", self)
+        self.no_midi_label.setFont(QFont("Arial", 60, QFont.Weight.ExtraBold))
+        self.no_midi_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.no_midi_label.setStyleSheet("background-color: rgba(255, 165, 0, 0.9); color: white; border-radius: 25px;")
+        self.no_midi_label.hide()
+        
+        self.save_notification_label = QLabel(self)
+        self.save_notification_label.setStyleSheet("background-color: #27ae60; color: white; font-size: 18px; font-weight: bold; padding: 15px; border-radius: 10px;")
+        self.save_notification_label.hide()
+
+        # --- Main Content Area (Table and Controls) ---
+        main_layout = QHBoxLayout()
+        self.table = DraggableTableWidget()
+        self.table.setColumnCount(10)
+        self.table.setHorizontalHeaderLabels(["Hotkey", "Track Name", "Linked", "BPM", "Click", "Rich1", "Rich2", "Sync", "Show File", "Actions"])
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setMinimumSectionSize(10)
+        self.table.setColumnWidth(0, 50); self.table.setColumnWidth(2, 55)
+        self.table.setColumnWidth(3, 45); self.table.setColumnWidth(4, 45)
+        self.table.setColumnWidth(5, 45); self.table.setColumnWidth(6, 45)
+        self.table.setColumnWidth(7, 40); self.table.setColumnWidth(8, 80); self.table.setColumnWidth(9, 65)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setWordWrap(False)
+        self.table.rows_reordered.connect(self.reorder_tracks)
+        
+        # --- Right-side Control Panel ---
+        # (Groups are assembled below into a scrollable panel)
+        
+        # --- Playback & Setlist Group ---
+        main_controls_group = QGroupBox("")
+        main_controls_layout = QVBoxLayout()
+        main_controls_layout.setContentsMargins(8, 8, 8, 8)
+        main_controls_layout.setSpacing(6)
+        add_buttons_layout = QHBoxLayout()
+        self.add_button = QPushButton("Add Track(s)")
+        self.add_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 11px; padding: 3px 6px;")
+        self.add_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.add_button.clicked.connect(self.add_tracks)
+        self.add_encore_button = QPushButton("Add Encore Divider")
+        self.add_encore_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 11px; padding: 3px 6px;")
+        self.add_encore_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.add_encore_button.clicked.connect(self.add_encore_divider)
+        add_buttons_layout.addWidget(self.add_button)
+        add_buttons_layout.addWidget(self.add_encore_button)
+        
+        self.undo_button = QPushButton("Undo Delete")
+        self.undo_button.clicked.connect(self.undo_delete)
+        self.undo_button.setEnabled(False)
+
+        self.stop_button = QPushButton("STOP (q)")
+        self.stop_button.setStyleSheet(f"background-color: #e74c3c; color: white; font-size: 11px; font-weight: bold; padding: 3px 6px;")
+        self.stop_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.stop_button.clicked.connect(self.stop_all_activity)
+        self.quit_button = QPushButton("Quit")
+        self.quit_button.setStyleSheet("font-size: 11px; padding: 3px 6px;")
+        self.quit_button.clicked.connect(self.close)
+        stop_quit_layout = QHBoxLayout()
+        stop_quit_layout.setSpacing(4)
+        stop_quit_layout.addWidget(self.stop_button, 3)
+        stop_quit_layout.addWidget(self.quit_button, 1)
+        setlist_name_layout = QHBoxLayout()
+        self.setlist_name_input = QLineEdit()
+        self.setlist_name_input.setPlaceholderText("Enter Setlist Name...")
+        self.rename_button = QPushButton("Change")
+        self.rename_button.clicked.connect(self.rename_setlist_title)
+        setlist_name_layout.addWidget(self.setlist_name_input)
+        setlist_name_layout.addWidget(self.rename_button)
+        self.save_button = QPushButton("Save Setlist")
+        self.save_button.setStyleSheet(f"background-color: #2980b9; color: white; font-size: 11px; padding: 3px 6px;")
+        self.save_button.clicked.connect(self.save_setlist)
+        self.load_button = QPushButton("Load Setlist")
+        self.load_button.setStyleSheet(f"background-color: #27ae60; color: white; font-size: 11px; padding: 3px 6px;")
+        self.load_button.clicked.connect(self.load_setlist)
+        save_load_layout = QHBoxLayout()
+        save_load_layout.setSpacing(4)
+        save_load_layout.addWidget(self.save_button)
+        save_load_layout.addWidget(self.load_button)
+        main_controls_layout.addLayout(stop_quit_layout)
+        main_controls_layout.addLayout(add_buttons_layout)
+        main_controls_layout.addWidget(self.undo_button)
+        main_controls_layout.addLayout(setlist_name_layout)
+        main_controls_layout.addLayout(save_load_layout)
+        main_controls_group.setLayout(main_controls_layout)
+        
+        # --- Settings Group (Compact Grid Layout) ---
+        settings_group = QGroupBox("Settings")
+        settings_layout = QGridLayout()
+        settings_layout.setContentsMargins(8, 16, 8, 8)
+        settings_layout.setSpacing(6)
+
+        self.display_combo = QComboBox(); self.display_combo.addItems([str(i) for i in range(1, 5)])
+        self.display_combo.currentIndexChanged.connect(self.setting_changed)
+        settings_layout.addWidget(QLabel("Display:"), 0, 0)
+        settings_layout.addWidget(self.display_combo, 0, 1)
+
+        self.preload_combo = QComboBox(); self.preload_combo.addItems([str(i) for i in range(1, 11)])
+        self.preload_combo.currentIndexChanged.connect(self.setting_changed)
+        settings_layout.addWidget(QLabel("Preload (s):"), 1, 0)
+        settings_layout.addWidget(self.preload_combo, 1, 1)
+
+        self.count_in_combo = QComboBox(); self.count_in_combo.addItems([str(i) for i in range(1, 31)])
+        settings_layout.addWidget(QLabel("Count In (s):"), 2, 0)
+        settings_layout.addWidget(self.count_in_combo, 2, 1)
+
+        self.count_in_test_checkbox = QCheckBox("Count In on Track 1 (Testing)")
+        self.count_in_test_checkbox.setChecked(True) # Always start checked
+        settings_layout.addWidget(self.count_in_test_checkbox, 3, 0, 1, 2)
+
+        self.require_midi_checkbox = QCheckBox("Require MIDI Ports")
+        self.require_midi_checkbox.setChecked(True) # Always start checked; not persisted to session
+        settings_layout.addWidget(self.require_midi_checkbox, 4, 0, 1, 2)
+
+        offset_layout = QHBoxLayout()
+        self.midi_offset_slider = QSlider(Qt.Orientation.Horizontal)
+        self.midi_offset_slider.setRange(-250, 250)
+        self.midi_offset_spinbox = QSpinBox()
+        self.midi_offset_spinbox.setRange(-250, 250)
+        self.midi_offset_spinbox.setSuffix(" ms")
+        self.midi_offset_slider.valueChanged.connect(self.midi_offset_spinbox.setValue)
+        self.midi_offset_spinbox.valueChanged.connect(self.midi_offset_slider.setValue)
+        self.reset_offset_button = QPushButton("Reset"); self.reset_offset_button.clicked.connect(self.reset_midi_offset)
+        offset_layout.addWidget(self.midi_offset_slider); offset_layout.addWidget(self.midi_offset_spinbox); offset_layout.addWidget(self.reset_offset_button)
+        settings_layout.addWidget(QLabel("MIDI Offset:"), 5, 0)
+        settings_layout.addLayout(offset_layout, 5, 1)
+
+        font_size_layout = QHBoxLayout()
+        self.font_size_spinbox = QSpinBox()
+        self.font_size_spinbox.setRange(8, 36)
+        self.font_size_spinbox.setValue(self.current_table_font_size)
+        self.apply_font_button = QPushButton("Apply"); self.apply_font_button.clicked.connect(self.apply_table_font_size)
+        font_size_layout.addWidget(self.font_size_spinbox); font_size_layout.addWidget(self.apply_font_button)
+        settings_layout.addWidget(QLabel("List Font Size:"), 6, 0)
+        settings_layout.addLayout(font_size_layout, 6, 1)
+
+        timing_group = QGroupBox("MIDI Timing Method")
+        timing_layout = QHBoxLayout()
+        timing_layout.setContentsMargins(8, 14, 8, 8)
+        self.standard_timing_radio = QRadioButton("Standard")
+        self.high_precision_timing_radio = QRadioButton("High-Precision")
+        timing_layout.addWidget(self.standard_timing_radio)
+        timing_layout.addWidget(self.high_precision_timing_radio)
+        timing_group.setLayout(timing_layout)
+        settings_layout.addWidget(timing_group, 7, 0, 1, 2)
+        settings_group.setLayout(settings_layout)
+        
+        # --- Test Track Group ---
+        test_track_group = QGroupBox("Test Track")
+        test_track_layout = QHBoxLayout()
+        test_track_layout.setContentsMargins(8, 14, 8, 8)
+        test_track_layout.setSpacing(6)
+        self.test_file_button = QPushButton("Select Test File...")
+        self.test_file_button.clicked.connect(self.select_test_file)
+        self.test_file_label = QLabel("No file selected.")
+        self.test_file_label.setStyleSheet("font-style: italic;")
+        self.test_track_bpm_input = QLineEdit("120")
+        self.test_track_bpm_input.setFixedWidth(50)
+        self.play_test_button = QPushButton("Play Test Track (t)")
+        self.play_test_button.clicked.connect(self.play_test_track)
+        self.play_test_button.setEnabled(False)
+        test_track_layout.addWidget(self.test_file_button)
+        test_track_layout.addWidget(self.test_file_label, 1)
+        test_track_layout.addStretch(1)
+        test_track_layout.addWidget(QLabel("BPM:"))
+        test_track_layout.addWidget(self.test_track_bpm_input)
+        test_track_layout.addWidget(self.play_test_button)
+        test_track_group.setLayout(test_track_layout)
+
+        # --- Sync Calibration Loop Group ---
+        calib_loop_group = QGroupBox("Sync Calibration Loop (Edit Mode)")
+        calib_loop_layout = QHBoxLayout()
+        calib_loop_layout.setContentsMargins(8, 14, 8, 8)
+        calib_loop_layout.setSpacing(6)
+        calib_loop_layout.addWidget(QLabel("Loop:"))
+        self.calib_loop_duration_spinbox = QSpinBox()
+        self.calib_loop_duration_spinbox.setRange(1, 20)
+        self.calib_loop_duration_spinbox.setValue(5)
+        self.calib_loop_duration_spinbox.setSuffix(" s")
+        self.calib_loop_duration_spinbox.setToolTip("Duration of each calibration loop (1–20 seconds)")
+        calib_loop_layout.addWidget(self.calib_loop_duration_spinbox)
+        self.calib_loop_button = QPushButton("Start Calib Loop")
+        self.calib_loop_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
+        self.calib_loop_button.setToolTip(
+            "Repeatedly plays the first X seconds of the test track so you can dial in the MIDI offset.\n"
+            "\n"
+            "If the MIDI feels late (audio hits before the MIDI-triggered gear responds):\n"
+            "  → move the offset more negative (MIDI fires earlier, before the audio starts).\n"
+            "\n"
+            "If the MIDI feels early/fast (MIDI-triggered gear fires before the audio hits):\n"
+            "  → move the offset more positive (audio starts first, then MIDI fires after the delay).\n"
+            "\n"
+            "Positive offset = audio/video unpauses first, MIDI start is delayed.\n"
+            "Negative offset = MIDI start fires first, audio/video starts later.\n"
+            "\n"
+            "Changes to the offset apply on the next loop restart."
+        )
+        self.calib_loop_button.setEnabled(False)
+        self.calib_loop_button.clicked.connect(self.toggle_calib_loop)
+        calib_loop_layout.addWidget(self.calib_loop_button)
+        calib_loop_group.setLayout(calib_loop_layout)
+
+        # --- Overlay Colours Group ---
+        overlay_colours_group = QGroupBox("Overlay Colours")
+        overlay_colours_layout = QGridLayout()
+        overlay_colours_layout.setContentsMargins(8, 16, 8, 8)
+        overlay_colours_layout.setSpacing(6)
+
+        self.count_in_color_button = QPushButton()
+        self.count_in_color_button.setFixedSize(60, 25)
+        self.count_in_color_button.setStyleSheet(f"background-color: {DEFAULT_COUNT_IN_BG_COLOR};")
+        self.count_in_color_button.clicked.connect(self.pick_count_in_color)
+
+        self.count_in_font_spinbox = QSpinBox()
+        self.count_in_font_spinbox.setRange(20, 500)
+        self.count_in_font_spinbox.setValue(DEFAULT_COUNT_IN_FONT_SIZE)
+        self.count_in_font_spinbox.valueChanged.connect(self._on_count_in_font_changed)
+
+        self.track_play_color_button = QPushButton()
+        self.track_play_color_button.setFixedSize(60, 25)
+        self.track_play_color_button.setStyleSheet(f"background-color: {DEFAULT_TRACK_PLAY_BG_COLOR};")
+        self.track_play_color_button.clicked.connect(self.pick_track_play_color)
+
+        self.track_play_font_spinbox = QSpinBox()
+        self.track_play_font_spinbox.setRange(20, 500)
+        self.track_play_font_spinbox.setValue(DEFAULT_TRACK_PLAY_FONT_SIZE)
+        self.track_play_font_spinbox.valueChanged.connect(self._on_track_play_font_changed)
+
+        overlay_colours_layout.addWidget(QLabel("Count-In BG:"), 0, 0)
+        overlay_colours_layout.addWidget(self.count_in_color_button, 0, 1)
+        overlay_colours_layout.addWidget(QLabel("Font:"), 0, 2)
+        overlay_colours_layout.addWidget(self.count_in_font_spinbox, 0, 3)
+        overlay_colours_layout.addWidget(QLabel("Track Play BG:"), 1, 0)
+        overlay_colours_layout.addWidget(self.track_play_color_button, 1, 1)
+        overlay_colours_layout.addWidget(QLabel("Font:"), 1, 2)
+        overlay_colours_layout.addWidget(self.track_play_font_spinbox, 1, 3)
+        overlay_colours_group.setLayout(overlay_colours_layout)
+        midi_test_group = QGroupBox("MIDI Port Testing")
+        midi_test_grid_layout = QGridLayout()
+        midi_test_grid_layout.setContentsMargins(6, 14, 6, 4)
+        midi_test_grid_layout.setSpacing(2)
+        midi_test_grid_layout.addWidget(QLabel("<b>Port</b>"), 0, 0, Qt.AlignmentFlag.AlignCenter)
+        midi_test_grid_layout.addWidget(QLabel("<b>Enabled</b>"), 0, 1, Qt.AlignmentFlag.AlignCenter)
+        midi_test_grid_layout.addWidget(QLabel("<b>Send Start</b>"), 0, 2, Qt.AlignmentFlag.AlignCenter)
+        midi_test_grid_layout.addWidget(QLabel("<b>BPM</b>"), 0, 3, Qt.AlignmentFlag.AlignCenter)
+        port_names = ["Click", "Rich1", "Rich2"]
+        for i, name in enumerate(port_names, start=1):
+            port_label = QLabel(name)
+            enabled_cb = QCheckBox(); enabled_cb.setChecked(True)
+            self.test_port_enabled_cbs[i] = enabled_cb
+            start_cb = QCheckBox(); start_cb.setChecked(True)
+            self.test_port_start_cbs[i] = start_cb
+            bpm_input = QLineEdit("120"); bpm_input.setFixedWidth(50)
+            self.test_port_bpm_inputs[i] = bpm_input
+            test_button = QPushButton(f"Start Test")
+            test_button.clicked.connect(lambda checked, p=i: self.run_port_test(p))
+            self.test_port_buttons[i] = test_button
+            
+            midi_test_grid_layout.addWidget(port_label, i, 0, Qt.AlignmentFlag.AlignCenter)
+            midi_test_grid_layout.addWidget(enabled_cb, i, 1, Qt.AlignmentFlag.AlignCenter)
+            midi_test_grid_layout.addWidget(start_cb, i, 2, Qt.AlignmentFlag.AlignCenter)
+            midi_test_grid_layout.addWidget(bpm_input, i, 3, Qt.AlignmentFlag.AlignCenter)
+            midi_test_grid_layout.addWidget(test_button, i, 4)
+        midi_test_group.setLayout(midi_test_grid_layout)
+
+        # --- Video Zoom / Scale Group (Edit Mode Only) ---
+        zoom_group = QGroupBox("Multi-Zone Video Zoom / Scale")
+        zoom_layout = QVBoxLayout()
+        zoom_layout.setContentsMargins(8, 16, 8, 8)
+        zoom_layout.setSpacing(6)
+        self.apply_zoom_checkbox = QCheckBox("Apply zoom/scale during playback")
+        self.apply_zoom_checkbox.setChecked(True)  # Default: scaling enabled on startup
+        self.apply_zoom_checkbox.setToolTip(
+            "When checked (default), the saved crop/scale settings are applied during playback.\n"
+            "Uncheck this box to play video without any zoom/scale transform."
+        )
+        self.apply_zoom_checkbox.toggled.connect(self._update_zoom_status_label)
+        self.apply_zoom_checkbox.toggled.connect(self.setting_changed)
+        self.zoom_scale_button = QPushButton("Configure Multi-Zone Zoom / Scale…")
+        self.zoom_scale_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
+        self.zoom_scale_button.setToolTip(
+            "Open the multi-zone crop/stretch compositor.\n"
+            "Configure up to 3 independent crop zones; each zone can be individually\n"
+            "enabled and given its own output scale.  Enabled zones are stitched\n"
+            "together (horizontally or vertically) into one final output image.\n"
+            "Settings are saved and applied to all videos in play mode via mpv."
+        )
+        self.zoom_scale_button.clicked.connect(self.open_zoom_dialog)
+        self.zoom_status_label = QLabel("Zoom: not configured")
+        self.zoom_status_label.setStyleSheet("font-size: 10px; color: #888; font-style: italic;")
+        zoom_layout.addWidget(self.apply_zoom_checkbox)
+        zoom_layout.addWidget(self.zoom_scale_button)
+        zoom_layout.addWidget(self.zoom_status_label)
+        zoom_group.setLayout(zoom_layout)
+        self._update_zoom_status_label()
+
+        # --- Right-side panel: 2-column layout, no scroll needed at 1920×1080 ---
+        controls_widget = QWidget()
+        controls_vbox = QVBoxLayout(controls_widget)
+        controls_vbox.setContentsMargins(6, 6, 6, 6)
+        controls_vbox.setSpacing(8)
+
+        # Upper row: left column (playback + zoom) | right column (settings + overlay colours)
+        upper_row = QHBoxLayout()
+        upper_row.setSpacing(8)
+
+        left_col = QVBoxLayout()
+        left_col.setSpacing(8)
+        left_col.addWidget(main_controls_group)
+        left_col.addWidget(zoom_group)
+        left_col.addStretch(1)
+
+        right_col = QVBoxLayout()
+        right_col.setSpacing(8)
+        right_col.addWidget(settings_group)
+        right_col.addWidget(overlay_colours_group)
+        right_col.addStretch(1)
+
+        upper_row.addLayout(left_col, 1)
+        upper_row.addLayout(right_col, 1)
+        controls_vbox.addLayout(upper_row)
+
+        # Lower row: test track | calib loop  (side by side — both are small horizontal groups)
+        lower_row = QHBoxLayout()
+        lower_row.setSpacing(8)
+        lower_row.addWidget(test_track_group, 2)
+        lower_row.addWidget(calib_loop_group, 1)
+        controls_vbox.addLayout(lower_row)
+
+        # --- Scrub & Loop Group ---
+        scrub_loop_group = QGroupBox("Scrub/Loop")
+        scrub_loop_layout = QVBoxLayout()
+        scrub_loop_layout.setContentsMargins(8, 16, 8, 8)
+        scrub_loop_layout.setSpacing(6)
+
+        # Scrub slider row: [pos] [slider] [dur]
+        scrub_row = QHBoxLayout()
+        scrub_row.setSpacing(6)
+        self.scrub_pos_label = QLabel("--:--")
+        self.scrub_pos_label.setFixedWidth(38)
+        self.scrub_pos_label.setStyleSheet("font-size: 10px; color: #aaa;")
+        self.scrub_slider = QSlider(Qt.Orientation.Horizontal)
+        self.scrub_slider.setRange(0, 1000)
+        self.scrub_slider.setValue(0)
+        self.scrub_slider.setEnabled(False)
+        self.scrub_slider.setToolTip("Drag to seek to a different position in the currently playing file.")
+        self.scrub_slider.sliderMoved.connect(self._on_scrub_slider_moved)
+        self.scrub_slider.sliderReleased.connect(self._on_scrub_slider_released)
+        self.scrub_dur_label = QLabel("--:--")
+        self.scrub_dur_label.setFixedWidth(38)
+        self.scrub_dur_label.setStyleSheet("font-size: 10px; color: #aaa;")
+        scrub_row.addWidget(self.scrub_pos_label)
+        scrub_row.addWidget(self.scrub_slider, 1)
+        scrub_row.addWidget(self.scrub_dur_label)
+
+        # Bar-based loop controls row:
+        # BPM: [120] | Bar A: [1] (00:00) | Bar B: [8] (00:15) | [□ Loop A→B]
+        loop_row = QHBoxLayout()
+        loop_row.setSpacing(6)
+        loop_row.addWidget(QLabel("BPM:"))
+        self.loop_bpm_spinbox = QSpinBox()
+        self.loop_bpm_spinbox.setRange(40, 300)
+        self.loop_bpm_spinbox.setValue(120)
+        self.loop_bpm_spinbox.setFixedWidth(60)
+        self.loop_bpm_spinbox.setToolTip(
+            "BPM of the current track. Used to convert bar numbers to playback times."
+        )
+        self.loop_bpm_spinbox.valueChanged.connect(self._on_loop_bar_changed)
+        loop_row.addWidget(self.loop_bpm_spinbox)
+
+        loop_row.addWidget(QLabel("Bar A:"))
+        self.loop_start_bar_spinbox = QSpinBox()
+        self.loop_start_bar_spinbox.setRange(1, 9999)
+        self.loop_start_bar_spinbox.setValue(1)
+        self.loop_start_bar_spinbox.setFixedWidth(60)
+        self.loop_start_bar_spinbox.setToolTip(
+            "Loop start bar. Bar 1 corresponds to the very beginning of the track."
+        )
+        self.loop_start_bar_spinbox.valueChanged.connect(self._on_loop_bar_changed)
+        loop_row.addWidget(self.loop_start_bar_spinbox)
+        self.loop_a_time_label = QLabel("(--:--)")
+        self.loop_a_time_label.setStyleSheet("font-size: 10px; color: #aaa;")
+        loop_row.addWidget(self.loop_a_time_label)
+
+        loop_row.addWidget(QLabel("Bar B:"))
+        self.loop_end_bar_spinbox = QSpinBox()
+        self.loop_end_bar_spinbox.setRange(1, 9999)
+        self.loop_end_bar_spinbox.setValue(8)
+        self.loop_end_bar_spinbox.setFixedWidth(60)
+        self.loop_end_bar_spinbox.setToolTip(
+            "Loop end bar (inclusive). The loop plays from the start of Bar A to the end of Bar B."
+        )
+        self.loop_end_bar_spinbox.valueChanged.connect(self._on_loop_bar_changed)
+        loop_row.addWidget(self.loop_end_bar_spinbox)
+        self.loop_b_time_label = QLabel("(--:--)")
+        self.loop_b_time_label.setStyleSheet("font-size: 10px; color: #aaa;")
+        loop_row.addWidget(self.loop_b_time_label)
+
+        self.loop_checkbox = QCheckBox("Loop A→B")
+        self.loop_checkbox.setToolTip(
+            "When checked, mpv will repeat the section between bar A and bar B continuously.\n"
+            "Bar positions are converted to times using the BPM above."
+        )
+        self.loop_checkbox.toggled.connect(self._on_loop_toggled)
+        loop_row.addWidget(self.loop_checkbox)
+        loop_row.addStretch(1)
+
+        # Lock row
+        self.scrub_lock_checkbox = QCheckBox("Lock scrub/loop controls")
+        self.scrub_lock_checkbox.setToolTip(
+            "When checked, the scrub slider and loop controls are disabled.\n"
+            "Use this during live shows to prevent accidental changes.\n"
+            "This setting is saved with the session."
+        )
+        self.scrub_lock_checkbox.toggled.connect(self._on_scrub_lock_changed)
+
+        scrub_loop_layout.addLayout(scrub_row)
+        scrub_loop_layout.addLayout(loop_row)
+        scrub_loop_layout.addWidget(self.scrub_lock_checkbox)
+        scrub_loop_group.setLayout(scrub_loop_layout)
+        controls_vbox.addWidget(scrub_loop_group)
+
+        # --- Sync Show Config Group ---
+        sync_show_group = QGroupBox("Sync Show API")
+        sync_show_layout = QGridLayout()
+        sync_show_layout.setContentsMargins(8, 16, 8, 8)
+        sync_show_layout.setSpacing(6)
+        sync_show_layout.addWidget(QLabel("Host URL:"), 0, 0)
+        self.sync_show_host_input = QLineEdit()
+        self.sync_show_host_input.setPlaceholderText(DEFAULT_SYNC_SHOW_HOST)
+        self.sync_show_host_input.setToolTip(
+            "Base URL of the show-sync server, e.g. https://localhost-0.tailc4daa4.ts.net\n"
+            "Do not include a trailing slash."
+        )
+        self.sync_show_host_input.textChanged.connect(self.setting_changed)
+        sync_show_layout.addWidget(self.sync_show_host_input, 0, 1)
+        sync_show_layout.addWidget(QLabel("Session ID:"), 1, 0)
+        self.sync_show_session_input = QLineEdit()
+        self.sync_show_session_input.setPlaceholderText(DEFAULT_SYNC_SHOW_SESSION)
+        self.sync_show_session_input.setToolTip(
+            "The session ID returned when you created your sync-show session, e.g. 0e49315f"
+        )
+        self.sync_show_session_input.textChanged.connect(self.setting_changed)
+        sync_show_layout.addWidget(self.sync_show_session_input, 1, 1)
+        sync_show_layout.addWidget(QLabel("Sync trim (ms):"), 2, 0)
+        self.sync_show_trim_spinbox = QSpinBox()
+        self.sync_show_trim_spinbox.setRange(-2000, 2000)
+        self.sync_show_trim_spinbox.setValue(DEFAULT_SYNC_TIMING_TRIM_MS)
+        self.sync_show_trim_spinbox.setSingleStep(1)
+        self.sync_show_trim_spinbox.setToolTip(
+            "Global timing adjustment for sync-show playback only.\n"
+            "Positive (+) = sync-show starts later relative to local track.\n"
+            "Negative (−) = sync-show starts earlier relative to local track.\n"
+            "Range: −2000 to +2000 ms. Has no effect on non-sync tracks."
+        )
+        self.sync_show_trim_spinbox.valueChanged.connect(self.setting_changed)
+        sync_show_layout.addWidget(self.sync_show_trim_spinbox, 2, 1)
+        sync_show_group.setLayout(sync_show_layout)
+        controls_vbox.addWidget(sync_show_group)
+
+        # MIDI Port Testing spans full width at the bottom
+        controls_vbox.addWidget(midi_test_group)
+
+        # --- Assemble Main Layout ---
+        # Give the controls side more width (3/5) so they don't feel cramped;
+        # the track table takes 2/5.
+        main_layout.addWidget(self.table, 2)
+        main_layout.addWidget(controls_widget, 3)
+        
+        # --- Status Bar ---
+        self.status_label = QLabel("Status: Welcome!")
+        self.status_label.setStyleSheet("font-style: italic; color: #888; font-size: 11px;")
+        
+        # --- Final Layout Assembly ---
+        self.layout.addLayout(top_bar_layout)
+        self.layout.addLayout(main_layout)
+        self.layout.addWidget(self.status_label)
+        
+        # --- Initial UI State ---
+        self.live_mode_slider.setChecked(True) # Default to LIVE mode
+        self.toggle_live_mode()
+        self.populate_table()
+        self.apply_overlay_styles()
+
+    def apply_overlay_styles(self):
+        """Updates the stylesheet and font of both overlay labels based on current settings."""
+        count_in_c = QColor(self.count_in_bg_color)
+        self.countdown_label.setStyleSheet(
+            f"background-color: rgba({count_in_c.red()}, {count_in_c.green()}, {count_in_c.blue()}, 0.9); "
+            "color: white; border-radius: 25px;"
+        )
+        self.countdown_label.setFont(QFont("Arial", self.count_in_font_size, QFont.Weight.ExtraBold))
+
+        track_play_c = QColor(self.track_play_bg_color)
+        self.preparing_label.setStyleSheet(
+            f"background-color: rgba({track_play_c.red()}, {track_play_c.green()}, {track_play_c.blue()}, 0.8); "
+            "color: white; border-radius: 25px;"
+        )
+        self.preparing_label.setFont(QFont("Arial", self.track_play_font_size, QFont.Weight.Bold))
+
+    def pick_count_in_color(self):
+        """Opens a colour picker dialog for the count-in overlay background."""
+        color = QColorDialog.getColor(QColor(self.count_in_bg_color), self, "Count-In Background Colour")
+        if color.isValid():
+            self.count_in_bg_color = color.name()
+            self.count_in_color_button.setStyleSheet(f"background-color: {self.count_in_bg_color};")
+            self.apply_overlay_styles()
+
+    def pick_track_play_color(self):
+        """Opens a colour picker dialog for the track play overlay background."""
+        color = QColorDialog.getColor(QColor(self.track_play_bg_color), self, "Track Play Background Colour")
+        if color.isValid():
+            self.track_play_bg_color = color.name()
+            self.track_play_color_button.setStyleSheet(f"background-color: {self.track_play_bg_color};")
+            self.apply_overlay_styles()
+
+    def _on_count_in_font_changed(self, value):
+        """Handles count-in font size spinbox changes."""
+        self.count_in_font_size = value
+        self.apply_overlay_styles()
+
+    def _on_track_play_font_changed(self, value):
+        """Handles track play font size spinbox changes."""
+        self.track_play_font_size = value
+        self.apply_overlay_styles()
+
+    def apply_table_font_size(self):
+        """Applies the selected font size to all items in the table."""
+        self.current_table_font_size = self.font_size_spinbox.value()
+        new_font = QFont("Segoe UI", self.current_table_font_size)
+        
+        # Adjust row height to fit the new font size.
+        self.table.verticalHeader().setDefaultSectionSize(int(self.current_table_font_size * 2.5))
+        
+        # Iterate through every cell to apply the font.
+        for row in range(self.table.rowCount()):
+            # Apply to QTableWidgetItems
+            item = self.table.item(row, 0) # Hotkey item
+            if item:
+                item.setFont(new_font)
+            
+            # Apply to QWidgets in cells
+            for col in [1, 3, 8]: # Track Name, BPM, Show File
+                widget = self.table.cellWidget(row, col)
+                if isinstance(widget, QLineEdit):
+                    widget.setFont(new_font)
+        
+        self.status_label.setText(f"Status: Font size set to {self.current_table_font_size}pt.")
+
+    def set_test_controls_enabled(self, enabled, except_port=None):
+        """Enable or disable all test controls, optionally exempting one port."""
+        for port_num in range(1, 4):
+            is_exempt = (port_num == except_port)
+            self.test_port_enabled_cbs[port_num].setEnabled(enabled or is_exempt)
+            self.test_port_start_cbs[port_num].setEnabled(enabled or is_exempt)
+            self.test_port_bpm_inputs[port_num].setEnabled(enabled or is_exempt)
+            self.test_port_buttons[port_num].setEnabled(enabled or is_exempt)
+
+    def toggle_live_mode(self):
+        """Toggles between LIVE and EDIT modes, enabling/disabling UI controls accordingly."""
+        self.is_live_mode = self.live_mode_slider.isChecked()
+        is_edit_mode = not self.is_live_mode
+        
+        # Enable/disable all controls that should only be accessible in EDIT mode.
+        self.add_button.setEnabled(is_edit_mode)
+        self.add_encore_button.setEnabled(is_edit_mode)
+        self.undo_button.setEnabled(is_edit_mode and len(self.undo_history) > 0)
+        self.save_button.setEnabled(is_edit_mode)
+        self.load_button.setEnabled(is_edit_mode)
+        self.display_combo.setEnabled(is_edit_mode)
+        self.preload_combo.setEnabled(is_edit_mode)
+        self.count_in_combo.setEnabled(is_edit_mode)
+        self.count_in_test_checkbox.setEnabled(is_edit_mode)
+        self.require_midi_checkbox.setEnabled(is_edit_mode)
+        self.midi_offset_slider.setEnabled(is_edit_mode)
+        self.midi_offset_spinbox.setEnabled(is_edit_mode)
+        self.reset_offset_button.setEnabled(is_edit_mode)
+        self.quit_button.setEnabled(is_edit_mode)
+        self.export_setlist_button.setEnabled(is_edit_mode)
+        self.export_streamdeck_button.setEnabled(is_edit_mode)
+        self.setlist_name_input.setEnabled(is_edit_mode)
+        self.table.setDragEnabled(is_edit_mode)
+        self.rename_button.setEnabled(is_edit_mode)
+        self.test_file_button.setEnabled(is_edit_mode)
+        self.play_test_button.setEnabled(is_edit_mode and self.test_track_path is not None)
+        self.test_track_bpm_input.setEnabled(is_edit_mode)
+        self.standard_timing_radio.setEnabled(is_edit_mode)
+        self.high_precision_timing_radio.setEnabled(is_edit_mode)
+        self.font_size_spinbox.setEnabled(is_edit_mode)
+        self.apply_font_button.setEnabled(is_edit_mode)
+        self.count_in_color_button.setEnabled(is_edit_mode)
+        self.count_in_font_spinbox.setEnabled(is_edit_mode)
+        self.track_play_color_button.setEnabled(is_edit_mode)
+        self.track_play_font_spinbox.setEnabled(is_edit_mode)
+        self.calib_loop_duration_spinbox.setEnabled(is_edit_mode and not self.calib_loop_active)
+        self.calib_loop_button.setEnabled(is_edit_mode and self.test_track_path is not None)
+        self.zoom_scale_button.setEnabled(is_edit_mode)
+        self.sync_show_host_input.setEnabled(is_edit_mode)
+        self.sync_show_session_input.setEnabled(is_edit_mode)
+        self.sync_show_trim_spinbox.setEnabled(is_edit_mode)
+        # apply_zoom_checkbox is always enabled — user can toggle scaling in any mode
+
+        # Stop the calibration loop if switching to LIVE mode.
+        if self.is_live_mode and self.calib_loop_active:
+            self.stop_calib_loop()
+
+        # Enable/disable the widgets inside the table rows.
+        for i in range(self.table.rowCount()):
+            if i < len(self.tracks):
+                item = self.tracks[i]
+                if item['type'] == 'track':
+                    # Columns with widgets: TrackName, Linked, BPM, Ports, Sync, ShowFile, Actions
+                    for col in [1, 2, 3, 4, 5, 6, 7, 8, 9]: 
+                        if widget := self.table.cellWidget(i, col):
+                            widget.setEnabled(is_edit_mode)
+        
+        self.set_test_controls_enabled(is_edit_mode)
+
+        # Update UI text and colors to reflect the current mode.
+        self.live_mode_label.setStyleSheet("color: #d63031; font-weight: bold;" if self.is_live_mode else "color: #888;")
+        self.edit_mode_label.setStyleSheet("color: #00b894; font-weight: bold;" if is_edit_mode else "color: #888;")
+        self.status_label.setText("Status: LIVE MODE - Hotkeys are active." if self.is_live_mode else "Status: EDIT MODE - Hotkeys are disabled.")
+
+    def reset_midi_offset(self):
+        """Resets the MIDI offset slider to 0."""
+        self.midi_offset_slider.setValue(0)
+
+    def _generate_hotkeys(self):
+        """Generates a list of available hotkeys (1-9, a-z, excluding q, t, i, and z)."""
+        keys = [str(i) for i in range(1, 10)] + [chr(i) for i in range(ord('a'), ord('z') + 1)]
+        keys.remove('q') # Reserved for STOP
+        keys.remove('t') # Reserved for PLAY TEST
+        keys.remove('i') # Excluded: visually confused with '1'
+        keys.remove('z') # Reserved for Arduino LED 2 control
+        return keys
+
+    def _connect_arduino(self):
+        """Probes serial ports to find and connect to the Arduino LED controller."""
+        for port in list_ports.comports():
+            try:
+                ser = serial.Serial(port.device, ARDUINO_BAUD, timeout=1.2)
+                time.sleep(2.0)
+                ser.reset_input_buffer()
+                ser.write(ARDUINO_PROBE_CMD)
+                ser.flush()
+                time.sleep(0.3)
+                identity = None
+                end_time = time.time() + 1.2
+                while time.time() < end_time:
+                    if ser.in_waiting:
+                        line = ser.readline().decode(errors="ignore").strip()
+                        if line:
+                            identity = line
+                if identity == ARDUINO_TARGET_ID:
+                    print(f"Arduino LED controller connected on {port.device}")
+                    return ser
+                ser.close()
+            except Exception:
+                continue
+        print("Arduino LED controller not found. LED feedback will be disabled.")
+        return None
+
+    def send_led_command(self, command):
+        """Sends a single-character LED command to the Arduino."""
+        if self.arduino_serial is not None and self.arduino_serial.is_open:
+            try:
+                self.arduino_serial.write(command.encode("utf-8"))
+            except serial.SerialException as e:
+                print(f"Arduino serial error: {e}")
+    
+    def load_config(self):
+        """Loads general application configuration from config.json."""
+        defaults = {
+            "display": DEFAULT_VIDEO_SCREEN_NUMBER,
+            "preload": DEFAULT_LOAD_DELAY_SECONDS,
+            "sync_show_timing_trim_ms": DEFAULT_SYNC_TIMING_TRIM_MS,
+        }
+        if not os.path.exists(CONFIG_FILE): return defaults
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+                defaults.update(config)
+                return defaults
+        except (json.JSONDecodeError, FileNotFoundError):
+            return {}
+    
+    def save_config(self):
+        """Saves general application configuration to config.json."""
+        self.config['display'] = int(self.display_combo.currentText())
+        self.config['preload'] = int(self.preload_combo.currentText())
+        self.config['apply_zoom'] = self.apply_zoom_checkbox.isChecked()
+        self.config['sync_show_host'] = self.sync_show_host_input.text().strip()
+        self.config['sync_show_session'] = self.sync_show_session_input.text().strip()
+        self.config['sync_show_timing_trim_ms'] = self.sync_show_trim_spinbox.value()
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(self.config, f, indent=4)
+    
+    def apply_config_to_ui(self):
+        """Sets UI elements based on the loaded general config."""
+        self.display_combo.setCurrentText(str(self.config.get("display", DEFAULT_VIDEO_SCREEN_NUMBER)))
+        self.preload_combo.setCurrentText(str(self.config.get("preload", DEFAULT_LOAD_DELAY_SECONDS)))
+        self.apply_zoom_checkbox.setChecked(self.config.get('apply_zoom', True))
+        self.sync_show_host_input.setText(self.config.get('sync_show_host', DEFAULT_SYNC_SHOW_HOST))
+        self.sync_show_session_input.setText(self.config.get('sync_show_session', DEFAULT_SYNC_SHOW_SESSION))
+        trim_ms = int(self.config.get('sync_show_timing_trim_ms', DEFAULT_SYNC_TIMING_TRIM_MS))
+        self.sync_show_trim_spinbox.setValue(trim_ms)
+        self._update_zoom_status_label()
+        self.check_display_setting()
+
+    def load_zoom_config(self):
+        """Loads the zoom/scale configuration from zoom_config.json, migrating old format if needed."""
+        if not os.path.exists(ZOOM_CONFIG_FILE):
+            return {}
+        try:
+            with open(ZOOM_CONFIG_FILE, 'r') as f:
+                raw = json.load(f)
+            return _migrate_zoom_config(raw)
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+    def save_zoom_config(self):
+        """Saves the zoom/scale configuration to zoom_config.json."""
+        try:
+            with open(ZOOM_CONFIG_FILE, 'w') as f:
+                json.dump(self.zoom_config, f, indent=4)
+        except OSError as e:
+            self.status_label.setText(f"Warning: Could not save zoom config: {e}")
+
+    def _update_zoom_status_label(self):
+        """Updates the zoom status label to reflect the current multi-zone config."""
+        apply_scaling = self.apply_zoom_checkbox.isChecked()
+        if not apply_scaling:
+            self.zoom_status_label.setText("Zoom: off (unscaled)")
+            self.zoom_status_label.setStyleSheet("font-size: 10px; color: #888; font-style: italic;")
+            return
+        migrated = _migrate_zoom_config(self.zoom_config)
+        zones = migrated.get("zones", [])
+        enabled_zones = [z for z in zones if z.get("enabled") and z.get("crop_w", 0) > 0]
+        if not enabled_zones:
+            self.zoom_status_label.setText("Zoom: enabled — no zones configured")
+            self.zoom_status_label.setStyleSheet("font-size: 10px; color: #e67e22; font-style: italic;")
+        else:
+            direction = migrated.get("stack_direction", "horizontal")
+            parts = []
+            for idx, z in enumerate(enabled_zones):
+                cw, ch = z.get("crop_w", 0), z.get("crop_h", 0)
+                sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
+                border = z.get("border_px", 0)
+                offset_y = int(z.get("offset_y", 0))
+                scale_txt = f"→{sw}×{sh}" if sw > 0 and sh > 0 else ""
+                border_txt = f" +{border}b" if border > 0 else ""
+                offset_txt = f" y{offset_y:+d}" if offset_y != 0 else ""
+                parts.append(f"Z{idx+1}:{cw}×{ch}{scale_txt}{border_txt}{offset_txt}")
+            dir_sym = "↔" if direction != "vertical" else "↕"
+            self.zoom_status_label.setText(f"{dir_sym} " + "  ".join(parts))
+            self.zoom_status_label.setStyleSheet("font-size: 10px; color: #00b894; font-style: italic;")
+
+    def open_zoom_dialog(self):
+        """Opens the MultiZoomScaleDialog for configuring multi-zone crop/stretch."""
+        try:
+            output_display_num = int(self.display_combo.currentText())
+        except (TypeError, ValueError):
+            output_display_num = DEFAULT_VIDEO_SCREEN_NUMBER
+        dialog = MultiZoomScaleDialog(
+            self.zoom_config,
+            output_display_num=output_display_num,
+            parent=self,
+        )
+        dialog_result = dialog.exec()
+        if dialog_result == QDialog.DialogCode.Accepted and dialog.result_config is not None:
+            self.zoom_config = dialog.result_config
+            self.save_zoom_config()
+            self._update_zoom_status_label()
+            status_prefix = "Status: Multi-zone zoom/scale settings saved and will apply in play mode"
+        else:
+            status_prefix = "Status: Multi-zone zoom/scale dialog closed"
+
+        self._show_multizone_restart_warning()
+        self.status_label.setText(
+            f"{status_prefix} — RESTART the application before going live (MIDI timing may drift)."
+        )
+
+    def _show_multizone_restart_warning(self):
+        """Shows a modal restart reminder after opening the multi-zone dialog."""
+        # The multi-zone dialog launches extra mpv preview processes; in practice this can
+        # degrade MIDI clock timing for the rest of the session until the app is restarted.
+        warning_box = QMessageBox(self)
+        warning_box.setWindowTitle("RESTART REQUIRED")
+        warning_box.setIcon(QMessageBox.Icon.Warning)
+        warning_box.setText("RESTART REQUIRED")
+        warning_box.setInformativeText(
+            "Multi-zone zoom/scale settings were accessed.\n\n"
+            "Please restart Live Controller before the show — MIDI timing may be unreliable until you do."
+        )
+        warning_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        warning_box.setStyleSheet(
+            "QMessageBox { background-color: rgba(180, 0, 0, 0.95); }"
+            "QLabel { color: white; font-weight: bold; }"
+            "QPushButton { min-width: 90px; padding: 6px 10px; font-weight: bold; }"
+        )
+        warning_box.exec()
+
+    def setting_changed(self):
+        """Saves the config whenever a setting is changed."""
+        self.save_config()
+
+    def check_display_setting(self):
+        """Warns the user if the selected display is not available."""
+        num_screens = len(QGuiApplication.screens())
+        selected_screen_index = int(self.display_combo.currentText()) - 1
+        if selected_screen_index >= num_screens:
+            self.status_label.setText(f"WARNING: Display {selected_screen_index + 1} not found!")
+
+    def load_json_store(self, file_path):
+        """Generic helper to load data from a JSON file."""
+        if not os.path.exists(file_path): return {}
+        try:
+            with open(file_path, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            return {}
+
+    def save_json_store(self, file_path, data):
+        """Generic helper to save data to a JSON file."""
+        with open(file_path, 'w') as f:
+            json.dump(data, f, indent=4)
+
+    def save_session(self):
+        """Saves the current setlist and settings to session.json."""
+        session_data = {
+            'setlist_name': self.title_label.text(), 
+            'tracks': self.tracks,
+            'undo_history': list(self.undo_history),
+            'test_track_path': self.test_track_path,
+            'test_track_bpm': self.test_track_bpm_input.text(),
+            'midi_offset': self.midi_offset_slider.value(),
+            'timing_method': "high_precision" if self.high_precision_timing_radio.isChecked() else "standard",
+            'count_in_duration': int(self.count_in_combo.currentText()),
+            'table_font_size': self.current_table_font_size,
+            'count_in_bg_color': self.count_in_bg_color,
+            'count_in_font_size': self.count_in_font_size,
+            'track_play_bg_color': self.track_play_bg_color,
+            'track_play_font_size': self.track_play_font_size,
+            'streamdeck_font_size': self.streamdeck_font_spinbox.value(),
+            'scrub_locked': self.scrub_lock_checkbox.isChecked(),
+            'loop_enabled': self.loop_checkbox.isChecked(),
+            'loop_bpm': self.loop_bpm_spinbox.value(),
+            'loop_start_bar': self.loop_start_bar_spinbox.value(),
+            'loop_end_bar': self.loop_end_bar_spinbox.value(),
+        }
+        with open(SESSION_FILE, 'w') as f:
+            json.dump(session_data, f, indent=4)
+    
+    def load_session(self):
+        """Loads the last session from session.json on startup."""
+        if not os.path.exists(SESSION_FILE): 
+            self.status_label.setText("Status: No previous session found. Welcome!")
+            self.midi_offset_slider.setValue(DEFAULT_MIDI_OFFSET_MS)
+            self.count_in_combo.setCurrentText(str(DEFAULT_COUNT_IN_SECONDS))
+            self.count_in_test_checkbox.setChecked(True)
+            self.standard_timing_radio.setChecked(True)
+            return
+        try:
+            with open(SESSION_FILE, 'r') as f: 
+                session_data = json.load(f)
+            
+            # Restore all settings from the session data.
+            self.midi_offset_slider.setValue(session_data.get('midi_offset', DEFAULT_MIDI_OFFSET_MS))
+            self.count_in_combo.setCurrentText(str(session_data.get('count_in_duration', DEFAULT_COUNT_IN_SECONDS)))
+            self.count_in_test_checkbox.setChecked(True) # Always check this on startup
+            if session_data.get('timing_method') == 'high_precision':
+                self.high_precision_timing_radio.setChecked(True)
+            else:
+                self.standard_timing_radio.setChecked(True)
+            
+            self.current_table_font_size = session_data.get('table_font_size', DEFAULT_TABLE_FONT_SIZE)
+            self.font_size_spinbox.setValue(self.current_table_font_size)
+            self.streamdeck_font_spinbox.setValue(session_data.get('streamdeck_font_size', DEFAULT_STREAMDECK_FONT_SIZE))
+            
+            self.count_in_bg_color = session_data.get('count_in_bg_color', DEFAULT_COUNT_IN_BG_COLOR)
+            self.count_in_font_size = session_data.get('count_in_font_size', DEFAULT_COUNT_IN_FONT_SIZE)
+            self.track_play_bg_color = session_data.get('track_play_bg_color', DEFAULT_TRACK_PLAY_BG_COLOR)
+            self.track_play_font_size = session_data.get('track_play_font_size', DEFAULT_TRACK_PLAY_FONT_SIZE)
+            self.count_in_color_button.setStyleSheet(f"background-color: {self.count_in_bg_color};")
+            self.count_in_font_spinbox.setValue(self.count_in_font_size)
+            self.track_play_color_button.setStyleSheet(f"background-color: {self.track_play_bg_color};")
+            self.track_play_font_spinbox.setValue(self.track_play_font_size)
+            self.apply_overlay_styles()
+
+            self.undo_history = deque(session_data.get('undo_history', []), maxlen=MAX_UNDO_LEVELS)
+
+            self._apply_setlist_data(session_data.get('tracks', []), session_data.get('setlist_name', 'Untitled Setlist'))
+            
+            self.test_track_path = session_data.get('test_track_path')
+            self.test_track_bpm_input.setText(session_data.get('test_track_bpm', '120'))
+            if self.test_track_path and os.path.exists(self.test_track_path):
+                self.test_file_label.setText(os.path.basename(self.test_track_path))
+                self.test_file_label.setStyleSheet("font-style: normal; color: #d4d4d4;")
+                self.play_test_button.setEnabled(True)
+            else:
+                self.test_track_path = None
+
+            # Restore scrub/loop settings.
+            self.scrub_lock_checkbox.setChecked(session_data.get('scrub_locked', False))
+            self.loop_checkbox.setChecked(session_data.get('loop_enabled', False))
+            self.loop_bpm_spinbox.setValue(session_data.get('loop_bpm', 120))
+            self.loop_start_bar_spinbox.setValue(session_data.get('loop_start_bar', 1))
+            self.loop_end_bar_spinbox.setValue(session_data.get('loop_end_bar', 8))
+            self._update_scrub_controls_state()
+
+            self.status_label.setText(f"Status: Restored previous session: {session_data.get('setlist_name', '')}")
+        except (json.JSONDecodeError, FileNotFoundError): 
+            self.status_label.setText("Status: Could not load previous session file.")
+
+    def rename_setlist_title(self):
+        """Renames the setlist title based on user input."""
+        new_name = self.setlist_name_input.text().strip()
+        if new_name:
+            self.title_label.setText(new_name)
+            self.undo_history.clear()
+            self.update_undo_button_state()
+
+    def add_tracks(self):
+        """Opens a file dialog to add one or more video tracks to the setlist."""
+        files, _ = QFileDialog.getOpenFileNames(self, "Select Track Files", "d:\\", "Media Files (*.mov *.wav);;Video Files (*.mov);;Audio Files (*.wav)")
+        if not files: return
+        for file_path in files:
+            # Avoid adding duplicate tracks.
+            if file_path in [t.get('path') for t in self.tracks]: continue
+            if not self.available_hotkeys:
+                self.status_label.setText("Status: No more hotkeys available.")
+                break
+            
+            hotkey = self.available_hotkeys.pop(0)
+            duration = self.get_track_duration(file_path)
+            self.tracks.append({
+                'type': 'track', 
+                'path': file_path, 
+                'hotkey': hotkey, 
+                'duration': duration, 
+                'linked': False,
+                'send_start_port1': True,
+                'send_start_port2': False,
+                'send_start_port3': False,
+                'sync_show_enabled': False,
+                'sync_show_file': '',
+            })
+            self.rebuild_hotkey_map()
+        self.populate_table()
+
+    def add_encore_divider(self):
+        """Adds a visual divider to the setlist."""
+        encore_count = sum(1 for item in self.tracks if item['type'] == 'divider')
+        self.tracks.append({'type': 'divider', 'text': f'ENCORE {encore_count + 1}'})
+        self.populate_table()
+
+    def get_track_duration(self, file_path):
+        """Uses mplayer to get the duration of a media file (video or audio)."""
+        if not os.path.exists(MPLAYER_PATH):
+            print(f"MPlayer executable not found at {MPLAYER_PATH}")
+            return 0
+        try:
+            normalized_path = os.path.normpath(file_path)
+            mplayer_dir = os.path.dirname(MPLAYER_PATH)
+            # Command to get video info without playing audio/video.
+            cmd = [MPLAYER_PATH, "-vo", "null", "-ao", "null", "-identify", "-frames", "0", normalized_path]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30, cwd=mplayer_dir, creationflags=subprocess.CREATE_NO_WINDOW)
+            # Parse the output for the duration.
+            for line in result.stdout.splitlines():
+                if line.startswith("ID_LENGTH="):
+                    return float(line.split('=')[1])
+            print(f"Could not find ID_LENGTH for {file_path}")
+            return 0
+        except (subprocess.CalledProcessError, FileNotFoundError, ValueError, subprocess.TimeoutExpired) as e:
+            print(f"Could not get duration for {file_path}: {e}")
+            return 0
+
+    def remove_item(self, row_index):
+        """Removes an item (track or divider) from the setlist."""
+        if self.currently_playing_row == row_index:
+            self.clear_highlight()
+        
+        item_to_remove = self.tracks.pop(row_index)
+        
+        # Add to undo history
+        self.undo_history.append({'index': row_index, 'item': item_to_remove})
+        self.update_undo_button_state()
+
+        # If it was a track, return its hotkey to the available pool.
+        if item_to_remove['type'] == 'track':
+            hotkey = item_to_remove['hotkey']
+            if hotkey not in self.available_hotkeys:
+                self.available_hotkeys.append(hotkey)
+                self.available_hotkeys.sort()
+        
+        self.rebuild_hotkey_map()
+        self.populate_table()
+    
+    def undo_delete(self):
+        """Restores the last deleted item from the undo history."""
+        if not self.undo_history:
+            return
+        
+        last_deleted = self.undo_history.pop()
+        index = last_deleted['index']
+        item = last_deleted['item']
+        
+        # If a track was restored, reclaim its hotkey if still valid, or assign a new one.
+        if item.get('type') == 'track':
+            hotkey = item.get('hotkey')
+            valid_hotkeys = set(self._generate_hotkeys())
+            if hotkey in valid_hotkeys and hotkey in self.available_hotkeys:
+                self.available_hotkeys.remove(hotkey)
+            elif hotkey not in valid_hotkeys:
+                # Legacy/invalid hotkey — assign a new valid one.
+                if self.available_hotkeys:
+                    item['hotkey'] = self.available_hotkeys.pop(0)
+                else:
+                    item['hotkey'] = ''
+
+        self.tracks.insert(index, item)
+        self.rebuild_hotkey_map()
+        self.populate_table()
+        self.update_undo_button_state()
+
+    def update_undo_button_state(self):
+        """Enables or disables the undo button based on history."""
+        self.undo_button.setEnabled(len(self.undo_history) > 0 and not self.is_live_mode)
+
+    def populate_table(self):
+        """Clears and repopulates the setlist table from the self.tracks data."""
+        self.table.setRowCount(0)
+        for i, item in enumerate(self.tracks):
+            self.table.insertRow(i)
+            
+            tooltip_text = ""
+            if item.get('type') == 'track':
+                tooltip_text = f"Filename: {os.path.basename(item['path'])}\nDuration: {self.format_duration(item.get('duration', 0))}"
+
+            if item.get('type') == 'divider':
+                # --- Create Divider Row ---
+                self.table.setSpan(i, 0, 1, self.table.columnCount() - 1)
+                self.table.setRowHeight(i, 25)
+                encore_item = QTableWidgetItem(item.get('text', 'ENCORE'))
+                encore_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                encore_item.setBackground(QColor("#007acc"))
+                encore_item.setForeground(QColor(Qt.GlobalColor.white))
+                font = QFont("Segoe UI", self.current_table_font_size); font.setBold(False)
+                encore_item.setFont(font)
+                self.table.setItem(i, 0, encore_item)
+                
+                # Create a centered remove button for the divider row.
+                remove_button = QPushButton("X"); remove_button.clicked.connect(lambda checked, i=i: self.remove_item(i))
+                remove_button.setFixedSize(20, 20)
+                remove_button.setStyleSheet("background-color: #c0392b; color: white; font-weight: bold; border-radius: 4px; font-size: 12px;")
+                button_container = QWidget()
+                button_layout = QHBoxLayout(button_container)
+                button_layout.addWidget(remove_button)
+                button_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                button_layout.setContentsMargins(0,0,0,0)
+                self.table.setCellWidget(i, 9, button_container)
+            else: 
+                # --- Create Track Row ---
+                table_font = QFont("Segoe UI", self.current_table_font_size)
+                
+                hotkey_item = QTableWidgetItem(item['hotkey'].upper())
+                hotkey_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                hotkey_item.setFlags(hotkey_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                hotkey_item.setFont(table_font)
+                hotkey_item.setToolTip(tooltip_text)
+                self.table.setItem(i, 0, hotkey_item)
+                
+                track_name_input = QLineEdit(self.track_name_data.get(item['path'], os.path.splitext(os.path.basename(item['path']))[0]))
+                track_name_input.setFont(table_font)
+                track_name_input.textChanged.connect(lambda text, path=item['path']: self.update_track_name(path, text))
+                track_name_input.setToolTip(tooltip_text)
+                self.table.setCellWidget(i, 1, track_name_input)
+                
+                def create_linked_checkbox(row_idx, track_item):
+                    linked_container = QWidget()
+                    linked_layout = QHBoxLayout(linked_container)
+                    linked_cb = QCheckBox()
+                    linked_cb.setStyleSheet("QCheckBox::indicator { width: 12px; height: 12px; }")
+                    linked_cb.setChecked(track_item.get('linked', False))
+                    linked_cb.toggled.connect(lambda checked, r=row_idx: self.update_linked_setting(checked, r))
+                    linked_layout.addWidget(linked_cb)
+                    linked_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    linked_layout.setContentsMargins(0,0,0,0)
+                    linked_container.setToolTip(tooltip_text)
+                    return linked_container
+
+                self.table.setCellWidget(i, 2, create_linked_checkbox(i, item))
+                
+                bpm_input = QLineEdit(str(self.bpm_data.get(item['path'], 120)))
+                bpm_input.setFont(table_font)
+                bpm_input.textChanged.connect(lambda text, path=item['path']: self.update_bpm(path, text))
+                bpm_input.setToolTip(tooltip_text)
+                self.table.setCellWidget(i, 3, bpm_input)
+                
+                def create_port_checkbox(port_num):
+                    checkbox_container = QWidget()
+                    checkbox_layout = QHBoxLayout(checkbox_container)
+                    checkbox = QCheckBox()
+                    checkbox.setStyleSheet("QCheckBox::indicator { width: 12px; height: 12px; }")
+                    is_checked = item.get(f'send_start_port{port_num}', False)
+                    checkbox.setChecked(is_checked)
+                    checkbox.toggled.connect(lambda checked, i=i, p=port_num: self.update_midi_port_setting(checked, i, p))
+                    checkbox_layout.addWidget(checkbox)
+                    checkbox_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    checkbox_layout.setContentsMargins(0,0,0,0)
+                    checkbox_container.setToolTip(tooltip_text)
+                    return checkbox_container
+
+                self.table.setCellWidget(i, 4, create_port_checkbox(1))
+                self.table.setCellWidget(i, 5, create_port_checkbox(2))
+                self.table.setCellWidget(i, 6, create_port_checkbox(3))
+
+                def create_sync_show_checkbox(row_idx, track_item):
+                    sync_container = QWidget()
+                    sync_layout = QHBoxLayout(sync_container)
+                    sync_cb = QCheckBox()
+                    sync_cb.setStyleSheet("QCheckBox::indicator { width: 12px; height: 12px; }")
+                    sync_cb.setChecked(track_item.get('sync_show_enabled', False))
+                    sync_cb.setToolTip("Tick to trigger the sync-show API when this track starts playing.")
+                    sync_cb.toggled.connect(lambda checked, r=row_idx: self.update_sync_show_enabled(checked, r))
+                    sync_layout.addWidget(sync_cb)
+                    sync_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    sync_layout.setContentsMargins(0, 0, 0, 0)
+                    return sync_container
+
+                self.table.setCellWidget(i, 7, create_sync_show_checkbox(i, item))
+
+                sync_file_input = QLineEdit(item.get('sync_show_file', ''))
+                sync_file_input.setFont(table_font)
+                sync_file_input.setPlaceholderText("e.g. exile.json")
+                sync_file_input.setToolTip("Name of the .json sync-show file to play when this track starts.")
+                sync_file_input.textChanged.connect(lambda text, r=i: self.update_sync_show_file(text, r))
+                self.table.setCellWidget(i, 8, sync_file_input)
+
+                remove_button = QPushButton("X"); remove_button.clicked.connect(lambda checked, i=i: self.remove_item(i))
+                remove_button.setFixedSize(20, 20)
+                remove_button.setStyleSheet("background-color: #c0392b; color: white; font-weight: bold; border-radius: 4px; font-size: 12px;")
+                button_container = QWidget()
+                button_layout = QHBoxLayout(button_container)
+                button_layout.addWidget(remove_button)
+                button_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                button_layout.setContentsMargins(0,0,0,0)
+                button_container.setToolTip(tooltip_text)
+                self.table.setCellWidget(i, 9, button_container)
+        
+        self.apply_table_font_size()
+        self.update_total_running_time()
+        self.toggle_live_mode()
+    
+    def reorder_tracks(self, source_row, dest_row):
+        """Handles the reordering of tracks in the internal data list."""
+        moved_item = self.tracks.pop(source_row)
+        self.tracks.insert(dest_row, moved_item)
+        
+        # After reordering, the hotkey map must be rebuilt and the table repopulated.
+        self.rebuild_hotkey_map()
+        self.populate_table()
+        self.status_label.setText("Status: Setlist order updated.")
+    
+    def rebuild_hotkey_map(self):
+        """Rebuilds the mapping of hotkeys to their row indices."""
+        self.hotkey_map = {item['hotkey']: i for i, item in enumerate(self.tracks) if item['type'] == 'track'}
+
+    def highlight_row(self, row, is_playing):
+        """Applies a visual highlight to a row to indicate its playing."""
+        if row >= len(self.tracks) or self.tracks[row]['type'] == 'divider': return
+        
+        bg_color = self.playing_color if is_playing else self.default_color
+        fg_color = QColor("#000000") if is_playing else QColor("#d4d4d4")
+        
+        font_size = self.current_table_font_size
+        
+        for col in range(self.table.columnCount()):
+            item = self.table.item(row, col)
+            if item:
+                item.setBackground(bg_color)
+                item.setForeground(fg_color)
+                item.setFont(QFont("Segoe UI", font_size))
+
+            widget = self.table.cellWidget(row, col)
+            if widget:
+                # For containers with buttons or checkboxes, only set the background color
+                # to avoid breaking the child widget's intrinsic styling.
+                if col in [2, 4, 5, 6, 7]:
+                    widget.setStyleSheet(f"background-color: {bg_color.name()};")
+                else: # For other widgets like QLineEdit, apply full style.
+                    style_sheet = f"background-color: {bg_color.name()}; color: {fg_color.name()}; font-size: {font_size}pt; border: none;"
+                    widget.setStyleSheet(style_sheet)
+                    # Explicitly set font on child QLineEdit to ensure it applies.
+                    if hasattr(widget, 'findChildren'):
+                        for child_widget in widget.findChildren(QLineEdit):
+                            child_widget.setFont(QFont("Segoe UI", font_size))
+                            child_widget.setStyleSheet(style_sheet)
+
+    def clear_highlight(self):
+        """Removes the highlight from the currently playing row."""
+        if self.currently_playing_row is not None and self.currently_playing_row < self.table.rowCount():
+            self.highlight_row(self.currently_playing_row, is_playing=False)
+        self.currently_playing_row = None
+
+    def update_track_name(self, file_path, name):
+        """Saves the track name to the JSON store when edited."""
+        self.track_name_data[file_path] = name
+        self.save_json_store(TRACK_NAME_STORE_FILE, self.track_name_data)
+
+    def update_bpm(self, file_path, text):
+        """Saves the BPM to the JSON store when edited."""
+        try: 
+            self.bpm_data[file_path] = int(text)
+            self.save_json_store(BPM_STORE_FILE, self.bpm_data)
+        except ValueError:
+            pass # Ignore invalid (non-integer) input.
+        
+    def update_midi_port_setting(self, is_checked, row_index, port_num):
+        """Updates the MIDI port setting for a track."""
+        if 0 <= row_index < len(self.tracks) and self.tracks[row_index]['type'] == 'track':
+            self.tracks[row_index][f'send_start_port{port_num}'] = is_checked
+
+    def update_linked_setting(self, is_checked, row_index):
+        """Updates the linked setting for a track."""
+        if 0 <= row_index < len(self.tracks) and self.tracks[row_index]['type'] == 'track':
+            self.tracks[row_index]['linked'] = is_checked
+
+    def update_sync_show_enabled(self, is_checked, row_index):
+        """Updates the sync-show enabled flag for a track."""
+        if 0 <= row_index < len(self.tracks) and self.tracks[row_index]['type'] == 'track':
+            self.tracks[row_index]['sync_show_enabled'] = is_checked
+
+    def update_sync_show_file(self, text, row_index):
+        """Updates the sync-show .json filename for a track."""
+        if 0 <= row_index < len(self.tracks) and self.tracks[row_index]['type'] == 'track':
+            self.tracks[row_index]['sync_show_file'] = text.strip()
+
+    def save_setlist(self):
+        """Saves the current setlist to a named JSON file."""
+        setlist_name = self.setlist_name_input.text().strip()
+        if not setlist_name: 
+            self.status_label.setText("Status: Please enter a name for the setlist before saving.")
+            return
+            
+        if not os.path.exists(SETLISTS_DIR):
+            os.makedirs(SETLISTS_DIR)
+        file_path = os.path.join(SETLISTS_DIR, f"{setlist_name}.json")
+        
+        setlist_data_to_save = {
+            'tracks': self.tracks,
+            'undo_history': list(self.undo_history),
+            'midi_offset': self.midi_offset_slider.value(),
+            'timing_method': "high_precision" if self.high_precision_timing_radio.isChecked() else "standard",
+            'count_in_duration': int(self.count_in_combo.currentText()),
+            'count_in_bg_color': self.count_in_bg_color,
+            'count_in_font_size': self.count_in_font_size,
+            'track_play_bg_color': self.track_play_bg_color,
+            'track_play_font_size': self.track_play_font_size,
+        }
+        
+        with open(file_path, 'w') as f:
+            json.dump(setlist_data_to_save, f, indent=4)
+        
+        self.title_label.setText(setlist_name)
+        self.status_label.setText(f"Status: Setlist '{setlist_name}' saved successfully.")
+        
+        # Show a temporary "Saved!" notification in the center of the screen.
+        self.save_notification_label.setText(f"Setlist '{setlist_name}' Saved!")
+        self.save_notification_label.adjustSize()
+        center_x = (self.width() - self.save_notification_label.width()) // 2
+        center_y = (self.height() - self.save_notification_label.height()) // 2
+        self.save_notification_label.move(center_x, center_y)
+        self.save_notification_label.raise_()
+        self.save_notification_label.show()
+        QTimer.singleShot(SAVE_POPUP_DURATION_MS, self.save_notification_label.hide)
+    
+    def load_setlist(self):
+        """Loads a setlist from a JSON file."""
+        if self.worker and self.worker.isRunning():
+            self.stop_all_activity()
+        file_path, _ = QFileDialog.getOpenFileName(self, "Load Setlist", SETLISTS_DIR, "JSON Files (*.json)")
+        if not file_path: return
+        with open(file_path, 'r') as f:
+            try: 
+                loaded_data = json.load(f)
+            except json.JSONDecodeError: 
+                self.status_label.setText(f"Status: Error reading invalid setlist file.")
+                return
+        
+        setlist_name = os.path.splitext(os.path.basename(file_path))[0]
+        
+        # Handle both new and old setlist formats.
+        if isinstance(loaded_data, dict):
+            tracks_data = loaded_data.get('tracks', [])
+            self.undo_history = deque(loaded_data.get('undo_history', []), maxlen=MAX_UNDO_LEVELS)
+            self.midi_offset_slider.setValue(loaded_data.get('midi_offset', DEFAULT_MIDI_OFFSET_MS))
+            self.count_in_combo.setCurrentText(str(loaded_data.get('count_in_duration', DEFAULT_COUNT_IN_SECONDS)))
+            if loaded_data.get('timing_method') == 'high_precision':
+                self.high_precision_timing_radio.setChecked(True)
+            else:
+                self.standard_timing_radio.setChecked(True)
+            self.count_in_bg_color = loaded_data.get('count_in_bg_color', DEFAULT_COUNT_IN_BG_COLOR)
+            self.count_in_font_size = loaded_data.get('count_in_font_size', DEFAULT_COUNT_IN_FONT_SIZE)
+            self.track_play_bg_color = loaded_data.get('track_play_bg_color', DEFAULT_TRACK_PLAY_BG_COLOR)
+            self.track_play_font_size = loaded_data.get('track_play_font_size', DEFAULT_TRACK_PLAY_FONT_SIZE)
+            self.count_in_color_button.setStyleSheet(f"background-color: {self.count_in_bg_color};")
+            self.count_in_font_spinbox.setValue(self.count_in_font_size)
+            self.track_play_color_button.setStyleSheet(f"background-color: {self.track_play_bg_color};")
+            self.track_play_font_spinbox.setValue(self.track_play_font_size)
+            self.apply_overlay_styles()
+        else:
+            tracks_data = loaded_data
+            self.undo_history.clear()
+        
+        self._apply_setlist_data(tracks_data, setlist_name)
+        self.update_undo_button_state()
+
+    def _apply_setlist_data(self, setlist_data, setlist_name):
+        """Helper function to apply loaded setlist data to the application state."""
+        self.tracks, self.hotkey_map = [], {}
+        self.available_hotkeys = self._generate_hotkeys()
+        
+        # Backwards compatibility: ensure 'type' key exists.
+        for item in setlist_data:
+            if 'type' not in item:
+                item['type'] = 'track'
+
+        # Recalculate available hotkeys, only consuming valid keys from the loaded data.
+        valid_hotkeys = set(self._generate_hotkeys())
+        loaded_hotkeys = {item['hotkey'] for item in setlist_data if item['type'] == 'track' and item['hotkey'] in valid_hotkeys}
+        self.available_hotkeys = [k for k in self.available_hotkeys if k not in loaded_hotkeys]
+
+        # Backwards compatibility and data validation.
+        for item in setlist_data:
+            if item['type'] == 'track':
+                if 'duration' not in item or item['duration'] == 0:
+                    item['duration'] = self.get_track_duration(item['path'])
+                if 'send_start_port1' not in item:
+                     item['send_start_port1'] = True
+                if 'send_start_port2' not in item: item['send_start_port2'] = False
+                if 'send_start_port3' not in item: item['send_start_port3'] = False
+                if 'linked' not in item: item['linked'] = False
+                if 'sync_show_enabled' not in item: item['sync_show_enabled'] = False
+                if 'sync_show_file' not in item: item['sync_show_file'] = ''
+                # Reassign hotkeys that are not in the valid set (e.g. legacy 'i' assignments).
+                if item['hotkey'] not in valid_hotkeys:
+                    if self.available_hotkeys:
+                        item['hotkey'] = self.available_hotkeys.pop(0)
+                    else:
+                        item['hotkey'] = ''
+        
+        self.tracks = setlist_data
+        self.rebuild_hotkey_map()
+        self.title_label.setText(setlist_name)
+        self.setlist_name_input.setText(setlist_name)
+        self.populate_table()
+
+    def export_setlist(self):
+        """Exports the current setlist as a plain text file to the user's Downloads folder."""
+        tracks_only = [item for item in self.tracks if item['type'] == 'track']
+        if not tracks_only:
+            self.status_label.setText("Status: No tracks to export.")
+            return
+
+        # First pass: collect all track data to determine the max prefix length for alignment
+        track_data = []
+        track_number = 0
+        total_seconds = 0
+        for row_index, item in enumerate(self.tracks):
+            if item['type'] != 'divider':
+                track_number += 1
+                duration = item.get('duration', 0)
+                total_seconds += duration
+                name_widget = self.table.cellWidget(row_index, 1)
+                bpm_widget = self.table.cellWidget(row_index, 3)
+                track_name = (name_widget.text() if name_widget else "").replace('_', ' ').upper()
+                bpm = bpm_widget.text() if bpm_widget else ""
+                duration_str = self.format_duration(duration)
+                track_data.append((track_number, track_name, duration_str, bpm))
+
+        max_prefix_len = max(len(f"{n}. {name}") for n, name, _, _ in track_data)
+
+        # Second pass: build lines with tab-aligned columns
+        lines = []
+        track_data_iter = iter(track_data)
+        for item in self.tracks:
+            if item['type'] == 'divider':
+                lines.append("")
+                lines.append(item.get('text', 'ENCORE'))
+                lines.append("")
+            else:
+                n, track_name, duration_str, bpm = next(track_data_iter)
+                prefix = f"{n}. {track_name}".ljust(max_prefix_len)
+                lines.append(f"{prefix}\t{duration_str}\t{bpm}")
+
+        lines.append("")
+        lines.append(f"Total Time: {self.format_duration(total_seconds, show_hours=True)}")
+        track_count = len([t for t in self.tracks if t['type'] == 'track'])
+        total_with_overhead = total_seconds + (track_count * TRACK_OVERHEAD_SECONDS)
+        lines.append(f"Total Time (incl. {TRACK_OVERHEAD_SECONDS}s gap between songs): {self.format_duration(total_with_overhead, show_hours=True)}")
+
+        setlist_name = self.title_label.text()
+        safe_name = re.sub(r'[\\/*?:"<>|]', '', setlist_name).strip()
+        if not safe_name:
+            safe_name = "setlist"
+        date_str = datetime.date.today().strftime("%Y-%m-%d")
+        filename = f"{safe_name}_setlist_{date_str}.txt"
+        downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+        os.makedirs(downloads_dir, exist_ok=True)
+        file_path = os.path.join(downloads_dir, filename)
+
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
+
+        self.status_label.setText(f"Status: Set list exported to {file_path}")
+
+    @staticmethod
+    def _wrap_button_title(name: str) -> str:
+        """Wrap a button title so each line is at most 7 characters.
+
+        Words are combined onto the same line only when the combined text
+        (including the separating space) stays within 7 characters; otherwise
+        each word starts a new line.  Examples:
+
+        - ``IS A`` (4 chars with space) stays on one line.
+        - ``FALLING AWAY`` (12 chars with space) becomes ``FALLING\\nAWAY``.
+        - ``FROM ME`` (7 chars with space) stays on one line.
+        """
+        words = name.split()
+        if not words:
+            return name
+        lines = []
+        current = words[0]
+        for word in words[1:]:
+            candidate = current + ' ' + word
+            if len(candidate) <= 7:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+        return '\n'.join(lines)
+
+    def export_streamdeck_profile(self):
+        """Generates a Stream Deck .streamDeckProfile bundle from the current setlist.
+
+        Buttons 3–31 of the target profile page are populated in setlist order:
+        track entries become Hotkey Switch actions; divider/encore entries become
+        inert system-close actions (encore1, encore2, …).
+
+        Icons are sourced from:
+            <run directory>\\STREAMDECK ICONS\\GREEN.png   (state 0 – ready/unplayed)
+            <run directory>\\STREAMDECK ICONS\\RED.png     (state 1 – played/done)
+            <run directory>\\STREAMDECK ICONS\\GREY.png    (encore divider buttons)
+
+        The template profile is cloned from:
+            <run directory>\\MESH LIVE TTDM 2026\\
+
+        The generated bundle is zipped and saved to the user's Downloads folder
+        as  <setlist_name>_<date>.streamDeckProfile.
+        """
+        # ── Guard: require at least one track before attempting export ───────
+        has_tracks = any(item['type'] == 'track' for item in self.tracks)
+        if not has_tracks:
+            self.status_label.setText("Status: No tracks to export to Stream Deck profile.")
+            return
+
+        # ── Locate run directory and assets ──────────────────────────────────
+        run_dir = os.path.dirname(os.path.abspath(__file__))
+
+        icons_dir = os.path.join(run_dir, "STREAMDECK ICONS")
+        green_icon_path = os.path.join(icons_dir, "GREEN.png")
+        red_icon_path   = os.path.join(icons_dir, "RED.png")
+        grey_icon_path  = os.path.join(icons_dir, "GREY.png")
+        if not os.path.isfile(green_icon_path):
+            self.status_label.setText(
+                f"Status: Stream Deck export failed – GREEN.png not found in '{icons_dir}'.")
+            return
+        if not os.path.isfile(red_icon_path):
+            self.status_label.setText(
+                f"Status: Stream Deck export failed – RED.png not found in '{icons_dir}'.")
+            return
+        if not os.path.isfile(grey_icon_path):
+            self.status_label.setText(
+                f"Status: Stream Deck export failed – GREY.png not found in '{icons_dir}'.")
+            return
+
+        template_dir = os.path.join(run_dir, "MESH LIVE TTDM 2026")
+        if not os.path.isdir(template_dir):
+            self.status_label.setText(
+                f"Status: Stream Deck export failed – template folder not found at '{template_dir}'.")
+            return
+
+        # ── Profile structure constants ───────────────────────────────────────
+        PROFILE_ROOT = "52FB4CB0-A358-4700-9F38-2B0D2B5BF661.sdProfile"
+        TARGET_PAGE  = "1A0CE7C8-07E7-4B8E-AB58-C2D49FAB0D49"  # page 1 – setlist page (generated)
+        DECK_COLS    = 8   # Stream Deck XL: 8 columns × 4 rows
+
+        # Null key used as a placeholder in the Hotkeys array (no binding)
+        NULL_KEY = {
+            "KeyCmd": False, "KeyCtrl": False, "KeyModifiers": 0,
+            "KeyOption": False, "KeyShift": False,
+            "NativeCode": 146, "QTKeyCode": 33554431, "VKeyCode": -1,
+        }
+
+        try:
+            tmp_dir = tempfile.mkdtemp()
+            try:
+                # ── Clone the template profile into the temp directory ────────
+                dest_root = os.path.join(tmp_dir, "MESH LIVE TTDM 2026")
+                shutil.copytree(template_dir, dest_root)
+
+                target_page_dir     = os.path.join(
+                    dest_root, "Profiles", PROFILE_ROOT, "Profiles", TARGET_PAGE)
+                target_manifest_path = os.path.join(target_page_dir, "manifest.json")
+                target_images_dir   = os.path.join(target_page_dir, "Images")
+                os.makedirs(target_images_dir, exist_ok=True)
+
+                # ── Copy the three state icons into the page's Images folder ─
+                shutil.copy2(green_icon_path, os.path.join(target_images_dir, "GREEN.png"))
+                shutil.copy2(red_icon_path,   os.path.join(target_images_dir, "RED.png"))
+                shutil.copy2(grey_icon_path,  os.path.join(target_images_dir, "GREY.png"))
+
+                # ── Load and update the page manifest ─────────────────────────
+                with open(target_manifest_path, 'r', encoding='utf-8') as f:
+                    manifest = json.load(f)
+
+                # Compute the set of button positions for buttons 3–31
+                button_positions = set()
+                for btn_num in range(3, 32):
+                    idx = btn_num - 1
+                    button_positions.add(f"{idx % DECK_COLS},{idx // DECK_COLS}")
+
+                # Keep all existing entries that are NOT in the buttons 3–31 range
+                # (e.g. navigation buttons, buttons 1–2 which stay from the template)
+                new_actions = {
+                    pos: action
+                    for pos, action in manifest["Controllers"][0]["Actions"].items()
+                    if pos not in button_positions
+                }
+
+                # Assign up to 29 setlist items to buttons 3–31.
+                # Tracks → Hotkey Switch actions; dividers → inert Close actions.
+                encore_counter = 0
+                for slot, item in enumerate(self.tracks[:29]):
+                    btn_num = slot + 3
+                    idx     = btn_num - 1
+                    pos     = f"{idx % DECK_COLS},{idx // DECK_COLS}"
+
+                    if item['type'] == 'divider':
+                        encore_counter += 1
+                        encore_label = f"encore{encore_counter}"
+                        new_actions[pos] = {
+                            "ActionID": str(uuid.uuid4()).upper(),
+                            "LinkedTitle": True,
+                            "Name": "Close",
+                            "Plugin": {
+                                "Name": "Close",
+                                "UUID": "com.elgato.streamdeck.system.close",
+                                "Version": "1.0",
+                            },
+                            "Resources": None,
+                            "Settings": {"forceQuit": False, "path": ""},
+                            "State": 0,
+                            "States": [
+                                {"Image": "Images/GREY.png", "Title": encore_label},
+                            ],
+                            "UUID": "com.elgato.streamdeck.system.close",
+                        }
+                        continue
+
+                    track_name = self.track_name_data.get(
+                        item['path'],
+                        os.path.splitext(os.path.basename(item['path']))[0]
+                    ).replace('_', ' ').upper()
+
+                    hotkey = item.get('hotkey', '')
+                    if hotkey and len(hotkey) == 1:
+                        # Convert the app hotkey character to its keyboard NativeCode:
+                        # digit keys use their ASCII value; letter keys use the
+                        # uppercase ASCII value (Stream Deck VKey convention).
+                        native_code = ord(hotkey) if hotkey.isdigit() else ord(hotkey.upper())
+                        key_entry = {
+                            "KeyCmd": False, "KeyCtrl": False, "KeyModifiers": 0,
+                            "KeyOption": False, "KeyShift": False,
+                            "NativeCode": native_code,
+                            "QTKeyCode": native_code,
+                            "VKeyCode":  native_code,
+                        }
+                        hotkeys_list = [key_entry, key_entry, NULL_KEY, NULL_KEY]
+                    else:
+                        hotkeys_list = [NULL_KEY, NULL_KEY, NULL_KEY, NULL_KEY]
+
+                    new_actions[pos] = {
+                        "ActionID": str(uuid.uuid4()).upper(),
+                        "LinkedTitle": True,
+                        "Name": "Hotkey Switch",
+                        "Plugin": {
+                            "Name": "Hotkey Switch",
+                            "UUID": "com.elgato.streamdeck.system.hotkeyswitch",
+                            "Version": "1.0",
+                        },
+                        "Resources": None,
+                        "Settings": {"Coalesce": True, "Hotkeys": hotkeys_list},
+                        "State": 0,
+                        "States": [
+                            {"Image": "Images/GREEN.png", "Title": self._wrap_button_title(track_name)},
+                            {"Image": "Images/RED.png"},
+                        ],
+                        "UUID": "com.elgato.streamdeck.system.hotkeyswitch",
+                    }
+
+                manifest["Controllers"][0]["Actions"] = new_actions
+
+                with open(target_manifest_path, 'w', encoding='utf-8') as f:
+                    json.dump(manifest, f, separators=(',', ':'))
+
+                # ── Build the output file path ────────────────────────────────
+                setlist_name = self.title_label.text()
+                safe_name = re.sub(r'[\\/*?:"<>|]', '', setlist_name).strip() or "streamdeck"
+                date_str  = datetime.date.today().strftime("%Y-%m-%d")
+                base_name = f"{safe_name}_{date_str}"
+
+                downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+                os.makedirs(downloads_dir, exist_ok=True)
+                zip_path    = os.path.join(downloads_dir, base_name + ".zip")
+                output_path = os.path.join(downloads_dir, base_name + ".streamDeckProfile")
+
+                # ── Zip the cloned bundle ─────────────────────────────────────
+                # Archive entries must be relative to dest_root so that the
+                # archive root contains package.json and Profiles/ directly,
+                # with no wrapping folder (Stream Deck will not import profiles
+                # where these entries are nested inside a sub-folder).
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for root, _dirs, files in os.walk(dest_root):
+                        for file in files:
+                            abs_path = os.path.join(root, file)
+                            arc_name = os.path.relpath(abs_path, dest_root)
+                            zf.write(abs_path, arc_name)
+
+                # ── Rename .zip → .streamDeckProfile ─────────────────────────
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                os.rename(zip_path, output_path)
+
+                self.status_label.setText(
+                    f"Status: Stream Deck profile exported to {output_path}")
+
+                # ── Auto-open the exported profile ────────────────────────────
+                try:
+                    os.startfile(output_path)
+                except (OSError, AttributeError) as open_exc:
+                    self.status_label.setText(
+                        f"Status: Stream Deck profile exported to {output_path}"
+                        f" (could not open automatically: {open_exc})")
+
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        except Exception as exc:
+            self.status_label.setText(f"Status: Stream Deck export failed – {exc}")
+
+    def update_total_running_time(self):
+        """Calculates and displays the total running time for the setlist."""
+        total_seconds = sum(t.get('duration', 0) for t in self.tracks if t['type'] == 'track')
+        total_seconds += len([t for t in self.tracks if t['type'] == 'track']) * TRACK_OVERHEAD_SECONDS
+        self.running_time_label.setText(f"Total Running Time (incl. {TRACK_OVERHEAD_SECONDS}s overhead/track): {self.format_duration(total_seconds, show_hours=True)}")
+
+    def format_duration(self, seconds, show_hours=False):
+        """Formats a duration in seconds to a MM:SS or HH:MM:SS string."""
+        if seconds is None or seconds < 0: return "00:00"
+        total_seconds = int(seconds)
+        mins, secs = divmod(total_seconds, 60)
+        if show_hours:
+            hours, mins = divmod(mins, 60)
+            return f"{hours:02d}:{mins:02d}:{secs:02d}"
+        return f"{mins:02d}:{secs:02d}"
+
+    def on_global_hotkey(self, key):
+        """Handles key presses from the global hotkey listener."""
+        lower_key = key.lower()
+
+        # 'z' key toggles LED 2 on/off regardless of playback state or mode.
+        if lower_key == 'z':
+            self.led2_on = not self.led2_on
+            self.send_led_command("2" if self.led2_on else "4")
+            return
+
+        # If playback is active, only 'q' (STOP) is allowed.
+        if self.worker and self.worker.isRunning() or self.countdown_timer.isActive() or (self.test_worker and self.test_worker.isRunning()):
+            if lower_key == 'q':
+                self.stop_all_activity()
+            else:
+                self.show_danger_message() # Warn user about pressing keys during playback.
+            return
+        
+        # '^' key toggles between EDIT and LIVE modes (for Stream Deck control).
+        if lower_key == '^':
+            self.live_mode_slider.setChecked(not self.live_mode_slider.isChecked())
+            return
+
+        if not self.is_live_mode: return # Ignore hotkeys in EDIT mode.
+        
+        if lower_key in self.hotkey_map:
+            row_index = self.hotkey_map[lower_key]
+            if self.tracks[row_index]['type'] == 'track':
+                 self.start_playback(row_index)
+        elif lower_key == 't':
+            self.play_test_track()
+
+    def start_playback(self, row_index):
+        """Initiates playback for a selected track."""
+        if (self.worker and self.worker.isRunning()) or (self.test_worker and self.test_worker.isRunning()):
+            self.show_danger_message(); return
+        if self.tracks[row_index]['type'] == 'divider': return
+        if self.require_midi_checkbox.isChecked() and not self.midi_available:
+            self.status_label.setText("ERROR: No MIDI hardware detected. Cannot start playback.")
+            self.send_led_command("1")
+            self.show_no_midi_message()
+            return
+        
+        is_countdown_track = (row_index == 0 and self.count_in_test_checkbox.isChecked())
+
+        # Show the "Preparing" overlay unless it's a countdown track.
+        if not is_countdown_track:
+            track_name_widget = self.table.cellWidget(row_index, 1)
+            self.show_preparing_message(track_name_widget.text())
+        
+        if is_countdown_track:
+            self.start_countdown(row_index)
+        else:
+            track = self.tracks[row_index]
+            bpm_widget = self.table.cellWidget(row_index, 3)
+            bpm = int(bpm_widget.text())
+            self.execute_playback(track, bpm, row_index)
+
+    def start_countdown(self, row_index):
+        """Starts the visual countdown timer for the first track."""
+        self.send_led_command("3")  # LED 3: track 1 count-in started
+        self.countdown_seconds = int(self.count_in_combo.currentText())
+        self.countdown_label.setText(str(self.countdown_seconds))
+        self.countdown_label.raise_()
+        self.countdown_label.show()
+        
+        self.countdown_connection = self.countdown_timer.timeout.connect(lambda: self._update_countdown(row_index))
+        self.countdown_timer.start(1000)
+
+    def _update_countdown(self, row_index):
+        """Updates the countdown label each second."""
+        self.countdown_seconds -= 1
+        if self.countdown_seconds > 0:
+            self.countdown_label.setText(str(self.countdown_seconds))
+        else:
+            # When countdown finishes, stop the timer and start the actual playback.
+            self.countdown_timer.stop()
+            if self.countdown_connection:
+                self.countdown_timer.timeout.disconnect(self.countdown_connection)
+                self.countdown_connection = None
+            self.countdown_label.hide()
+            
+            track = self.tracks[row_index]
+            bpm_widget = self.table.cellWidget(row_index, 3)
+            bpm = int(bpm_widget.text())
+            self.execute_playback(track, bpm, row_index)
+
+    def execute_playback(self, track_data, bpm, row_index=None):
+        """Creates and starts a MidiSyncWorker to handle playback."""
+        if self.require_midi_checkbox.isChecked() and not self.midi_available:
+            self.status_label.setText("ERROR: No MIDI hardware detected. Cannot start playback.")
+            self.send_led_command("1")  # LED 1: no MIDI device connected
+            self.show_no_midi_message()
+            return
+        try:
+            # Gather all necessary parameters from the UI.
+            display_num = int(self.display_combo.currentText())
+            preload_time = int(self.preload_combo.currentText())
+            midi_offset = self.midi_offset_slider.value()
+            timing_method = "high_precision" if self.high_precision_timing_radio.isChecked() else "standard"
+            send_start_port1 = track_data.get('send_start_port1', True)
+            send_start_port2 = track_data.get('send_start_port2', False)
+            send_start_port3 = track_data.get('send_start_port3', False)
+            track_path = track_data.get('path')
+        except (ValueError, AttributeError, KeyError) as e: 
+            self.status_label.setText(f"ERROR: Invalid settings or track data. {e}")
+            return
+        
+        self.clear_highlight()
+        if row_index is not None:
+            self.highlight_row(row_index, is_playing=True)
+            self.currently_playing_row = row_index
+        else: # It's the test track
+            self.test_file_label.setStyleSheet("font-weight: bold; color: #27ae60;")
+
+        # Start the flashing "ACTIVE" label.
+        self.active_flash_timer.start()
+        
+        # Create and start the worker thread.
+        require_midi = self.require_midi_checkbox.isChecked()
+        effective_zoom = self.zoom_config if self.apply_zoom_checkbox.isChecked() else {}
+        self.worker = MidiSyncWorker(track_path, bpm, display_num, preload_time, midi_offset, 
+                                     send_start_port1, send_start_port2, send_start_port3, timing_method,
+                                     require_midi, zoom_config=effective_zoom)
+        self.worker.status_update.connect(self.status_label.setText)
+        self.worker.error.connect(lambda msg: self.status_label.setText(f"ERROR: {msg}"))
+        self.worker.finished.connect(self.on_playback_finished)
+        self.worker.ipc_socket_path.connect(self.set_ipc_socket)
+        self.send_led_command("3")  # LED 3 (orange): song is playing
+        self.send_led_command("6")  # LED 6 (green): track active indicator
+
+        # Trigger sync-show if enabled for this track using absolute-time scheduling.
+        # target_start is the wall-clock moment when video position 0 begins.
+        # The HTTP request is dispatched immediately on a daemon thread, so it
+        # reaches the server well before show time = 0.  The worker stores
+        # absolute_start_time and pins the end of the pre-roll to that instant
+        # (see _run_logic), so the video unpauses at target_start regardless of
+        # how long MIDI port setup or thread startup takes.
+        if track_data.get('sync_show_enabled') and track_data.get('sync_show_file'):
+            target_start = time.time() + preload_time
+            # Apply global sync timing trim: positive = sync-show later, negative = earlier.
+            # The local track always starts at target_start; only the remote sync-show
+            # scheduled start is shifted by the trim so that fine-tuning sync alignment
+            # never affects local playback timing.
+            trim_ms = int(self.config.get('sync_show_timing_trim_ms', DEFAULT_SYNC_TIMING_TRIM_MS))
+            trim_sec = trim_ms / 1000.0
+            sync_show_start = target_start + trim_sec
+            print(
+                f"Sync-show: baseline_target={target_start:.3f}s "
+                f"trim={trim_ms:+d}ms "
+                f"sync_show_start={sync_show_start:.3f}s "
+                f"local_start={target_start:.3f}s"
+            )
+            self.trigger_sync_show(track_data['sync_show_file'], start_at=sync_show_start)
+            self.worker.absolute_start_time = target_start
+
+        self.worker.start()
+        # Auto-populate the loop BPM spinbox with the current track's BPM and
+        # recalculate bar→time labels.  Block signals on setValue to prevent a
+        # redundant _on_loop_bar_changed call before the explicit one below.
+        self.loop_bpm_spinbox.blockSignals(True)
+        self.loop_bpm_spinbox.setValue(bpm)
+        self.loop_bpm_spinbox.blockSignals(False)
+        self._on_loop_bar_changed()
+
+    def trigger_sync_show(self, show_file, start_at=None, offset_sec=None):
+        """Calls the show-sync API to play a sync-show file against an absolute start time.
+
+        When ``start_at`` is provided (a Unix timestamp in seconds) the server
+        receives that exact value as ``server_show_start_time``, and all connected
+        clients wait until that instant before starting their animation loop.
+        This eliminates network-latency jitter because both the local video and
+        the remote show share the same wall-clock reference point (both sides
+        must be NTP-synchronised).
+
+        In the absolute-time path ``offset`` is explicitly set to 0 in the URL so
+        that the legacy ``offset=5`` default can never be applied — even as a
+        fallback — and accidentally delay the sync-show by 5 seconds relative to
+        the local video track.
+
+        ``offset_sec`` is the legacy relative-offset fallback used when
+        ``start_at`` is not supplied.  It is kept for backwards compatibility only.
+
+        The HTTP request is sent on a daemon thread so it cannot block or crash
+        the main playback loop.
+        """
+        # Basic validation: show_file must be a bare filename ending in .json,
+        # with no directory separators or path-traversal sequences.
+        show_file = show_file.strip()
+        if (not show_file.lower().endswith('.json')
+                or '/' in show_file or '\\' in show_file or '..' in show_file):
+            print(f"Sync-show: invalid show filename '{show_file}', skipping.")
+            return
+
+        host = self.sync_show_host_input.text().strip().rstrip('/')
+        if not host:
+            host = DEFAULT_SYNC_SHOW_HOST
+        # Use the hard-coded session ID rather than reading from the UI so the
+        # controller is guaranteed to always target the same session.
+        session = DEFAULT_SYNC_SHOW_SESSION
+
+        # Record the active session so stop_sync_show() can clean it up later.
+        self._active_sync_show_host = host
+        self._active_sync_show_session = session
+
+        # Build query parameters.  Prefer absolute start_at; fall back to offset.
+        # In the absolute-time path, offset=0 is sent explicitly so that the server
+        # never applies the legacy 5-second default even if start_at is somehow
+        # absent — that would delay the sync-show by 5 seconds relative to the video.
+        if start_at is not None:
+            params = urllib.parse.urlencode({
+                'name': show_file,
+                'start_at': f'{start_at:.6f}',
+                'offset': '0',
+            })
+        else:
+            effective_offset = offset_sec if offset_sec is not None else 0.0
+            params = urllib.parse.urlencode({'name': show_file, 'offset': f'{effective_offset:.3f}'})
+        url = f"{host}/api/session/{session}/play-show-by-name?{params}"
+        if start_at is not None:
+            print(f"Sync-show: requesting start_at={start_at:.3f}s via {host}")
+
+        def _call():
+            try:
+                req = urllib.request.Request(url, method='POST')
+                # Tailscale issues its own TLS certificates for *.tailc4daa4.ts.net,
+                # but they are not signed by a CA trusted by the system store on all
+                # Windows installs.  Disabling verification is intentional here and
+                # acceptable because the connection is already protected by the
+                # Tailscale WireGuard tunnel.
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+                    body = resp.read().decode('utf-8', errors='replace')
+                    print(f"Sync-show API response: {body}")
+                    # Validate that the server honoured the requested start_at.
+                    # If server_show_start_time differs significantly from start_at
+                    # the remote show will be out of sync with local playback.
+                    # A missing "scheduling" field indicates the server is running
+                    # old code that ignores start_at and uses time.time() instead —
+                    # the server must be restarted to pick up the latest code.
+                    if start_at is not None:
+                        try:
+                            data = json.loads(body)
+                            returned_start = data.get("server_show_start_time")
+                            scheduling = data.get("scheduling")
+                            if returned_start is not None:
+                                delta_ms = (returned_start - start_at) * 1000.0
+                                if abs(delta_ms) > 50:
+                                    if scheduling is None:
+                                        print(
+                                            f"Sync-show WARNING: server returned "
+                                            f"server_show_start_time={returned_start:.3f}s "
+                                            f"but start_at={start_at:.3f}s was requested "
+                                            f"(delta={delta_ms:+.0f}ms). "
+                                            "The server appears to be running old code that "
+                                            "ignores start_at — restart show-sync to fix sync."
+                                        )
+                                    else:
+                                        print(
+                                            f"Sync-show WARNING: server_show_start_time mismatch: "
+                                            f"requested start_at={start_at:.3f}s, "
+                                            f"got {returned_start:.3f}s "
+                                            f"(delta={delta_ms:+.0f}ms)."
+                                        )
+                                else:
+                                    print(
+                                        f"Sync-show: start_at honored "
+                                        f"(server_show_start_time={returned_start:.3f}s, "
+                                        f"delta={delta_ms:+.1f}ms)"
+                                    )
+                        except (json.JSONDecodeError, KeyError, TypeError):
+                            pass
+            except Exception as exc:
+                # Non-fatal: log but never crash the playback flow.
+                print(f"Sync-show API error ({url}): {exc}")
+
+        threading.Thread(target=_call, daemon=True).start()
+
+    def stop_sync_show(self):
+        """Sends a stop command to the active sync-show session (fire-and-forget).
+
+        Called when the operator presses ``q`` (or otherwise triggers
+        ``stop_all_activity``) so that connected phone/browser clients are told
+        to halt the animation loop.  Non-fatal: errors are logged but never
+        propagate to the caller.
+        """
+        host = self._active_sync_show_host
+        session = self._active_sync_show_session
+        self._active_sync_show_host = None
+        self._active_sync_show_session = None
+
+        if not host or not session:
+            return
+
+        url = f"{host}/api/session/{session}/stop"
+
+        def _call():
+            try:
+                req = urllib.request.Request(url, method='POST')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with urllib.request.urlopen(req, context=ctx, timeout=5) as resp:
+                    body = resp.read().decode('utf-8', errors='replace')
+                    print(f"Sync-show STOP response: {body}")
+            except Exception as exc:
+                print(f"Sync-show STOP error ({url}): {exc}")
+
+        threading.Thread(target=_call, daemon=True).start()
+
+    def set_ipc_socket(self, path):
+        """Receives the IPC socket path from the worker thread."""
+        self.current_ipc_socket = path
+        self._position_poller.set_socket(path)
+        self._update_scrub_controls_state()
+
+    def stop_all_activity(self):
+        """Centralized method to stop any running playback, countdown, or test."""
+        if self.countdown_timer.isActive():
+            self.countdown_timer.stop()
+            if self.countdown_connection:
+                try: self.countdown_timer.timeout.disconnect(self.countdown_connection)
+                except TypeError: pass
+                self.countdown_connection = None
+            self.countdown_label.hide()
+            self.status_label.setText("Status: Countdown aborted.")
+
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+            # Attempt to quit mpv gracefully via its socket.
+            if self.current_ipc_socket:
+                try:
+                    with open(self.current_ipc_socket, "w", encoding='utf-8') as ipc:
+                        ipc.write('{ "command": ["quit"] }\n')
+                except Exception as e:
+                    print(f"Stop Playback: Error sending quit command: {e}")
+            self.worker.wait() # Wait for thread to finish.
+
+        if self.test_worker and self.test_worker.isRunning():
+            self.test_worker.stop()
+            self.test_worker.wait()
+
+        # Stop the calibration loop if it is active.
+        if self.calib_loop_active:
+            self.stop_calib_loop()
+
+        # Clean up any active sync-show session so remote clients stop their
+        # animation loop when the operator presses q (or any other stop path).
+        self.stop_sync_show()
+
+        self.active_flash_timer.stop()
+        self.active_label.hide()
+        self.send_led_command("4")  # Turn off all LEDs when playback is manually stopped.
+        self._reset_scrub_controls()
+
+    def on_playback_finished(self):
+        """Cleans up the UI and state after playback finishes."""
+        finished_row = self.currently_playing_row
+        self.clear_highlight()
+        self.test_file_label.setStyleSheet("font-style: italic; color: #888;") # Reset test label style
+        self.status_label.setText("Status: Ready. Press a hotkey to play a track.")
+        self.active_flash_timer.stop()
+        self.active_label.hide()
+        if self.worker:
+            self.worker.deleteLater()
+        self.worker = None
+        self.current_ipc_socket = None
+        self._reset_scrub_controls()
+
+        # Turn off all LEDs when any track finishes.
+        self.send_led_command("4")  # "4" turns all LEDs off
+
+        # Auto-play next track if the finished track was linked.
+        if finished_row is not None and finished_row < len(self.tracks):
+            finished_track = self.tracks[finished_row]
+            if finished_track.get('type') == 'track' and finished_track.get('linked', False):
+                # Find the next track in the setlist (skip dividers).
+                next_row = finished_row + 1
+                while next_row < len(self.tracks) and self.tracks[next_row].get('type') == 'divider':
+                    next_row += 1
+                if next_row < len(self.tracks) and self.tracks[next_row].get('type') == 'track':
+                    next_track = self.tracks[next_row]
+                    track_name_widget = self.table.cellWidget(next_row, 1)
+                    if track_name_widget:
+                        self.show_preparing_message(track_name_widget.text())
+                    bpm_widget = self.table.cellWidget(next_row, 3)
+                    try:
+                        bpm = int(bpm_widget.text()) if bpm_widget else 120
+                    except (ValueError, AttributeError):
+                        bpm = 120
+                    self.execute_playback(next_track, bpm, next_row)
+
+    def on_test_finished(self, port_num):
+        """Resets the UI for the MIDI port test controls."""
+        self.test_port_buttons[port_num].setText("Start Test")
+        self.test_port_buttons[port_num].setStyleSheet("")
+        self.set_test_controls_enabled(not self.is_live_mode)
+        self.play_test_button.setEnabled(not self.is_live_mode and self.test_track_path is not None)
+        if self.test_worker:
+            self.test_worker.deleteLater()
+        self.test_worker = None
+        self.running_test_port = None
+
+    def run_port_test(self, port_num):
+        """Starts or stops a MIDI port test."""
+        if self.worker and self.worker.isRunning():
+            self.show_danger_message(); return
+
+        # If the test for this port is already running, stop it.
+        if self.running_test_port == port_num and self.test_worker:
+            self.stop_all_activity()
+            return
+
+        # Don't allow multiple tests at once.
+        if self.test_worker:
+            self.show_danger_message(); return
+
+        is_enabled = self.test_port_enabled_cbs[port_num].isChecked()
+        if not is_enabled:
+            self.status_label.setText(f"Status: Port {port_num} test is disabled.")
+            return
+
+        try:
+            bpm = int(self.test_port_bpm_inputs[port_num].text())
+        except ValueError:
+            self.status_label.setText(f"Status: Invalid BPM for Port {port_num} test.")
+            return
+
+        send_start = self.test_port_start_cbs[port_num].isChecked()
+        
+        self.test_worker = MidiTestWorker(port_num, bpm, send_start)
+        self.test_worker.status_update.connect(self.status_label.setText)
+        self.test_worker.error.connect(lambda msg: self.status_label.setText(f"ERROR: {msg}"))
+        self.test_worker.finished.connect(self.on_test_finished)
+        
+        self.running_test_port = port_num
+        self.test_port_buttons[port_num].setText("Stop Test")
+        self.test_port_buttons[port_num].setStyleSheet("background-color: #e74c3c; color: white;")
+        self.set_test_controls_enabled(False, except_port=port_num)
+        self.play_test_button.setEnabled(False) 
+        
+        self.test_worker.start()
+
+    def show_danger_message(self):
+        """Shows a large, temporary warning overlay."""
+        self.danger_label.raise_()
+        self.danger_label.show()
+        QTimer.singleShot(2500, self.danger_label.hide)
+
+    def show_no_midi_message(self):
+        """Shows a large, temporary warning overlay when MIDI is not connected."""
+        self.no_midi_label.raise_()
+        self.no_midi_label.show()
+        QTimer.singleShot(2500, self.no_midi_label.hide)
+
+    def show_preparing_message(self, track_name):
+        """Shows a temporary "Preparing" overlay."""
+        self.preparing_label.raise_()
+        self.preparing_label.show()
+        self.preparing_label.setText(f"PREPARING:\n{track_name}")
+        QTimer.singleShot(PREPARING_OVERLAY_DURATION_MS, self.preparing_label.hide)
+    
+    def toggle_active_label_visibility(self):
+        """Toggles the visibility of the 'ACTIVE' label to create a flashing effect."""
+        self.active_label.setVisible(not self.active_label.isVisible())
+
+    # ------------------------------------------------------------------ #
+    # Scrub & Loop
+    # ------------------------------------------------------------------ #
+
+    def _lc_send_ipc(self, command_str):
+        """Sends a JSON command string to the currently active mpv instance."""
+        if self.current_ipc_socket:
+            _lc_send_ipc_command(self.current_ipc_socket, command_str)
+
+    @staticmethod
+    def _bars_to_seconds(bar, bpm):
+        """Convert a 1-based bar number to an absolute playback time in seconds.
+
+        Assumes 4/4 time and that the track starts at bar 1 from time zero.
+        Bar 1 → 0.0 s, Bar 2 → 240/BPM s, etc.
+        240 = 4 beats/bar × 60 seconds/beat at 1 BPM.
+        """
+        # 4 beats per bar × 60 s/beat = 240 s/bar at 1 BPM
+        seconds_per_bar = 240.0 / max(1, bpm)
+        return (bar - 1) * seconds_per_bar
+
+    def _on_position_updated(self, pos: float, dur: float):
+        """Slot called by PositionPoller (via signal) whenever mpv reports a new position."""
+        self._current_playback_pos = pos
+        self._current_track_duration = dur
+        if self._slider_being_dragged:
+            return
+        if dur > 0:
+            slider_val = int((pos / dur) * 1000)
+            self.scrub_slider.blockSignals(True)
+            self.scrub_slider.setValue(slider_val)
+            self.scrub_slider.blockSignals(False)
+        self.scrub_pos_label.setText(self.format_duration(pos))
+        self.scrub_dur_label.setText(self.format_duration(dur))
+
+    def _on_scrub_slider_moved(self, value: int):
+        """Called continuously while the user drags the scrub slider handle."""
+        self._slider_being_dragged = True
+        if self._current_track_duration > 0:
+            pos = (value / 1000.0) * self._current_track_duration
+            self.scrub_pos_label.setText(self.format_duration(pos))
+
+    def _on_scrub_slider_released(self):
+        """Called when the user releases the scrub slider — seek mpv to the chosen position."""
+        if not self._slider_being_dragged:
+            return
+        self._slider_being_dragged = False
+        if self.current_ipc_socket and self._current_track_duration > 0:
+            value = self.scrub_slider.value()
+            pos = (value / 1000.0) * self._current_track_duration
+            self._lc_send_ipc(json.dumps({"command": ["seek", pos, "absolute"]}))
+
+    def _on_loop_bar_changed(self):
+        """Recalculate loop A/B times whenever the bar spinboxes or BPM changes."""
+        bpm = self.loop_bpm_spinbox.value()
+        start_bar = self.loop_start_bar_spinbox.value()
+        end_bar = self.loop_end_bar_spinbox.value()
+
+        self._loop_a_seconds = self._bars_to_seconds(start_bar, bpm)
+        # Bar B is inclusive: the loop plays through the *end* of bar B,
+        # which is the same as the *start* of bar B+1.
+        self._loop_b_seconds = self._bars_to_seconds(end_bar + 1, bpm)
+
+        self.loop_a_time_label.setText(f"({self.format_duration(self._loop_a_seconds)})")
+        self.loop_b_time_label.setText(f"({self.format_duration(self._loop_b_seconds)})")
+
+        if self.loop_checkbox.isChecked() and self.current_ipc_socket:
+            self._lc_send_ipc(json.dumps({"command": ["set_property", "ab-loop-a", self._loop_a_seconds]}))
+            self._lc_send_ipc(json.dumps({"command": ["set_property", "ab-loop-b", self._loop_b_seconds]}))
+
+    def _on_loop_toggled(self, checked: bool):
+        """Enable or disable mpv's A-B loop when the loop checkbox is toggled."""
+        if not self.current_ipc_socket:
+            return
+        if checked:
+            # Recalculate from bars and send to mpv.
+            self._on_loop_bar_changed()
+        else:
+            self._lc_send_ipc(json.dumps({"command": ["set_property", "ab-loop-a", "no"]}))
+            self._lc_send_ipc(json.dumps({"command": ["set_property", "ab-loop-b", "no"]}))
+
+    def _on_scrub_lock_changed(self, checked: bool):
+        """Lock or unlock the scrub/loop controls."""
+        self._update_scrub_controls_state()
+
+    def _update_scrub_controls_state(self):
+        """Refresh enabled/disabled state for all scrub and loop widgets."""
+        is_playing = self.worker is not None and self.worker.isRunning()
+        locked = self.scrub_lock_checkbox.isChecked()
+        self.scrub_slider.setEnabled(is_playing and not locked)
+        self.loop_bpm_spinbox.setEnabled(not locked)
+        self.loop_start_bar_spinbox.setEnabled(not locked)
+        self.loop_end_bar_spinbox.setEnabled(not locked)
+        self.loop_checkbox.setEnabled(not locked)
+
+    def _reset_scrub_controls(self):
+        """Reset scrub slider and labels to their idle state when playback stops."""
+        self._position_poller.set_socket(None)
+        self._current_track_duration = 0.0
+        self._current_playback_pos = 0.0
+        self._slider_being_dragged = False
+        self.scrub_slider.blockSignals(True)
+        self.scrub_slider.setValue(0)
+        self.scrub_slider.blockSignals(False)
+        self.scrub_pos_label.setText("--:--")
+        self.scrub_dur_label.setText("--:--")
+        self._update_scrub_controls_state()
+
+    def select_test_file(self):
+        """Opens a file dialog to select a video file for testing."""
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Test File", "d:\\", "Media Files (*.mov *.mp4 *.wav);;Video Files (*.mov *.mp4);;Audio Files (*.wav)")
+        if file_path:
+            self.test_track_path = file_path
+            self.test_file_label.setText(os.path.basename(file_path))
+            self.test_file_label.setStyleSheet("font-style: normal; color: #d4d4d4;")
+            self.play_test_button.setEnabled(True)
+            # Also enable the calibration loop button now that a test file is available.
+            if not self.is_live_mode:
+                self.calib_loop_button.setEnabled(True)
+
+    def play_test_track(self):
+        """Plays the selected test track with all MIDI ports enabled."""
+        if (self.worker and self.worker.isRunning()) or (self.test_worker and self.test_worker.isRunning()):
+            self.show_danger_message(); return
+        if not self.test_track_path:
+            self.status_label.setText("Status: No test track selected."); return
+        if self.require_midi_checkbox.isChecked() and not self.midi_available:
+            self.status_label.setText("ERROR: No MIDI hardware detected. Cannot start test track.")
+            self.send_led_command("1")
+            self.show_no_midi_message()
+            return
+        
+        self.show_preparing_message(os.path.basename(self.test_track_path))
+        
+        try:
+            bpm = int(self.test_track_bpm_input.text())
+        except (ValueError, KeyError):
+             self.status_label.setText("Status: Invalid BPM for test track."); return
+
+        test_track_data = {
+            'path': self.test_track_path,
+            'send_start_port1': True,
+            'send_start_port2': True,
+            'send_start_port3': True,
+        }
+        self.execute_playback(test_track_data, bpm)
+
+    # --- Sync Calibration Loop Methods ---
+
+    def toggle_calib_loop(self):
+        """Starts or stops the sync calibration loop."""
+        if self.calib_loop_active:
+            self.stop_calib_loop()
+        else:
+            self._start_calib_loop()
+
+    def _start_calib_loop(self):
+        """Validates preconditions and starts the calibration loop."""
+        if not self.test_track_path:
+            self.status_label.setText("Status: No test track selected for calibration.")
+            return
+        if self.require_midi_checkbox.isChecked() and not self.midi_available:
+            self.status_label.setText("ERROR: No MIDI hardware detected. Cannot start calibration loop.")
+            self.show_no_midi_message()
+            return
+        if (self.worker and self.worker.isRunning()) or (self.test_worker and self.test_worker.isRunning()):
+            self.show_danger_message()
+            return
+        try:
+            int(self.test_track_bpm_input.text())
+        except ValueError:
+            self.status_label.setText("Status: Invalid BPM for calibration loop.")
+            return
+
+        self.calib_loop_active = True
+        self.calib_loop_button.setText("Stop Calib Loop")
+        self.calib_loop_button.setStyleSheet("background-color: #e74c3c; color: white; font-size: 11px; padding: 3px 6px;")
+        # Lock the duration spinbox while the loop is running.
+        self.calib_loop_duration_spinbox.setEnabled(False)
+        self._start_calib_iteration()
+
+    def _start_calib_iteration(self):
+        """Launches a single iteration of the calibration loop."""
+        if not self.calib_loop_active or not self.test_track_path:
+            return
+        try:
+            bpm = int(self.test_track_bpm_input.text())
+        except ValueError:
+            self.stop_calib_loop()
+            self.status_label.setText("Status: Invalid BPM, calibration loop stopped.")
+            return
+
+        duration = self.calib_loop_duration_spinbox.value()
+        display_num = int(self.display_combo.currentText())
+        preload_time = int(self.preload_combo.currentText())
+        midi_offset = self.midi_offset_slider.value()
+        timing_method = "high_precision" if self.high_precision_timing_radio.isChecked() else "standard"
+        require_midi = self.require_midi_checkbox.isChecked()
+        effective_zoom = self.zoom_config if self.apply_zoom_checkbox.isChecked() else {}
+
+        self.calib_loop_worker = MidiSyncWorker(
+            self.test_track_path, bpm, display_num, preload_time, midi_offset,
+            True, True, True, timing_method, require_midi,
+            max_duration_sec=duration, zoom_config=effective_zoom
+        )
+        self.calib_loop_worker.status_update.connect(self.status_label.setText)
+        self.calib_loop_worker.error.connect(self._on_calib_error)
+        self.calib_loop_worker.finished.connect(self._on_calib_iteration_finished)
+        self.calib_loop_worker.ipc_socket_path.connect(self._set_calib_loop_ipc)
+        self.active_flash_timer.start()
+        self.calib_loop_worker.start()
+        self.status_label.setText(
+            f"Status: Calib loop playing ({duration}s, offset {midi_offset:+d} ms)..."
+        )
+
+    def _set_calib_loop_ipc(self, path):
+        """Stores the IPC socket path for the active calibration loop mpv instance."""
+        self.calib_loop_ipc_socket = path
+
+    def _on_calib_error(self, msg):
+        """Handles errors emitted by the calibration loop worker."""
+        self.status_label.setText(f"Calibration error: {msg}")
+        self.stop_calib_loop()
+
+    def _on_calib_iteration_finished(self):
+        """Called when one calibration loop iteration finishes."""
+        if self.calib_loop_worker:
+            self.calib_loop_worker.deleteLater()
+        self.calib_loop_worker = None
+        self.calib_loop_ipc_socket = None
+
+        if self.calib_loop_active:
+            # Schedule the next iteration after a brief gap so the event loop stays responsive.
+            self.calib_loop_restart_timer.start()
+        else:
+            self.active_flash_timer.stop()
+            self.active_label.hide()
+
+    def stop_calib_loop(self):
+        """Stops the calibration loop and cleans up all related resources."""
+        self.calib_loop_active = False
+        self.calib_loop_restart_timer.stop()
+
+        if self.calib_loop_worker and self.calib_loop_worker.isRunning():
+            self.calib_loop_worker.stop()
+            if self.calib_loop_ipc_socket:
+                try:
+                    with open(self.calib_loop_ipc_socket, "w", encoding='utf-8') as ipc:
+                        ipc.write('{ "command": ["quit"] }\n')
+                except Exception as e:
+                    print(f"Calib loop stop: Error sending quit to mpv: {e}")
+            self.calib_loop_worker.wait()
+
+        if self.calib_loop_worker:
+            self.calib_loop_worker.deleteLater()
+        self.calib_loop_worker = None
+        self.calib_loop_ipc_socket = None
+
+        self.active_flash_timer.stop()
+        self.active_label.hide()
+        self.calib_loop_button.setText("Start Calib Loop")
+        self.calib_loop_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
+        self.calib_loop_duration_spinbox.setEnabled(True)
+        self.status_label.setText("Status: Calibration loop stopped.")
+        self.send_led_command("4")
+
+    def resizeEvent(self, event):
+        """Ensures the overlay labels resize with the main window."""
+        super().resizeEvent(event)
+        self.danger_label.setGeometry(0, 0, self.width(), self.height())
+        self.countdown_label.setGeometry(0, 0, self.width(), self.height())
+        self.preparing_label.setGeometry(0, 0, self.width(), self.height())
+        self.no_midi_label.setGeometry(0, 0, self.width(), self.height())
+        if self.save_notification_label.isVisible():
+            center_x = (self.width() - self.save_notification_label.width()) // 2
+            center_y = (self.height() - self.save_notification_label.height()) // 2
+            self.save_notification_label.move(center_x, center_y)
+    
+    def closeEvent(self, event):
+        """Handles the application close event."""
+        # Save the current session and config.
+        self.save_session()
+        self.save_config()
+        
+        # Stop background threads gracefully.
+        self.hotkey_listener.stop()
+        self.hotkey_listener.wait()
+        self.stop_all_activity()
+
+        # Close the Arduino serial connection if open.
+        if self.arduino_serial is not None and self.arduino_serial.is_open:
+            self.send_led_command("4")  # Turn all LEDs off before closing
+            self.arduino_serial.close()
+        
+        event.accept()
+
+# --- Main Execution Block ---
+if __name__ == '__main__':
+    # Create the QApplication instance.
+    app = QApplication(sys.argv)
+    # Set a base style and apply the custom dark stylesheet.
+    app.setStyle("Fusion")
+    app.setStyleSheet(DARK_STYLESHEET)
+    # Create and show the main window maximised so all controls are visible on
+    # a 1920×1080 laptop display without any scrolling.
+    controller = LiveController()
+    controller.showMaximized()
+    # Start the application's event loop.
+    sys.exit(app.exec())
