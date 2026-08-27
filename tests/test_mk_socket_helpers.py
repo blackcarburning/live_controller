@@ -29,7 +29,9 @@ def test_make_unique_mpv_pipe_name_stays_under_macos_limit():
 
 
 def test_make_unique_mpv_pipe_name_falls_back_for_long_prefix():
-    pipe_path = _make_unique_mpv_pipe_name("mpv_socket_with_a_very_long_prefix_that_forces_a_short_fallback_name")
+    long_prefix = "mpv_socket_" + ("verylong_" * 12)
+    pipe_path = _make_unique_mpv_pipe_name(long_prefix)
     assert pipe_path.startswith("/tmp/mpv_")
+    assert long_prefix not in pipe_path
     assert pipe_path.endswith(".sock")
     assert len(pipe_path.encode("utf-8")) <= 100

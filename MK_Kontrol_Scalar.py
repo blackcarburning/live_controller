@@ -1121,6 +1121,7 @@ class MidiSyncWorker(QThread):
         self.status_update.emit(f"Starting mpv on screen {self.display_num}...")
         self.mpv_process = subprocess.Popen(
             mpv_cmd,
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
@@ -3712,7 +3713,8 @@ class LiveControllerMac(QWidget):
                         [resolved] + version_args,
                         capture_output=True,
                         text=True,
-                        timeout=5,
+                        timeout=2,
+                        stdin=subprocess.DEVNULL,
                         check=False,
                     )
                     version_line = first_non_empty_line(result.stdout) or first_non_empty_line(result.stderr) or "<no version output>"
@@ -3728,7 +3730,7 @@ class LiveControllerMac(QWidget):
         except Exception as exc:
             log(f"ERROR: mpv preflight failed: {exc}")
         try:
-            check_binary("mplayer", ["-v"], "WARNING")
+            check_binary("mplayer", ["-version"], "WARNING")
         except Exception as exc:
             log(f"WARNING: mplayer preflight failed: {exc}")
         try:
