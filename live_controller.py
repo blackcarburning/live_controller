@@ -580,27 +580,50 @@ def _build_vf_for_zones(zoom_config):
     free_placement_enabled = bool(migrated.get("free_placement_enabled", False))
     if free_placement_enabled and out_w > 0 and out_h > 0:
         n = len(enabled)
-        split_tags = "[base_src]" + "".join(f"[z{i}]" for i in range(n))
-        graph_parts = [
-            f"split={n + 1}{split_tags}",
-            f"[base_src]scale={out_w}:{out_h},drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill[base]",
-        ]
-        for i, z in enumerate(enabled):
-            graph_parts.append(f"[z{i}]{_zone_vf(z)}[c{i}]")
-        overlay_input = "[base]"
-        for i, z in enumerate(enabled):
-            overlay_output = f"[o{i}]"
-            overlay_part = (
-                f"{overlay_input}[c{i}]overlay=x={int(z.get('place_x', 0))}:"
-                f"y={int(z.get('place_y', 0))}"
+
+        if n == 1:
+            # Single zone: apply crop/scale/etc. then pad to canvas with black fill,
+            # placing the zone at (place_x, place_y).  No split needed.
+            z = enabled[0]
+            px = max(0, int(z.get('place_x', 0)))
+            py = max(0, int(z.get('place_y', 0)))
+            return (
+                f"lavfi=[{_zone_vf(z)},pad={out_w}:{out_h}:{px}:{py}:black"
+                f"{_composite_suffix(skip_pad=True)},setsar=1]"
             )
+
+        # Multiple zones: split the source once per zone, place zone 0 on a black
+        # canvas via pad, then overlay remaining zones in order.
+        # Using pad (rather than a split-derived drawbox canvas) avoids pixel-format
+        # and SAR issues that can cause the graph to be silently rejected by ffmpeg.
+        split_tags = "".join(f"[z{i}]" for i in range(n))
+        split_part = f"split={n}{split_tags}"
+
+        z0 = enabled[0]
+        px0 = max(0, int(z0.get('place_x', 0)))
+        py0 = max(0, int(z0.get('place_y', 0)))
+        zone0_part = f"[z0]{_zone_vf(z0)},pad={out_w}:{out_h}:{px0}:{py0}:black[canvas]"
+
+        zone_parts = [f"[z{i}]{_zone_vf(enabled[i])}[c{i}]" for i in range(1, n)]
+
+        overlay_parts = []
+        current = "[canvas]"
+        for i in range(1, n):
+            z = enabled[i]
+            px = max(0, int(z.get('place_x', 0)))
+            py = max(0, int(z.get('place_y', 0)))
             if i == n - 1:
-                overlay_part += f"{_composite_suffix(skip_pad=True)},setsar=1"
+                overlay_parts.append(
+                    f"{current}[c{i}]overlay=x={px}:y={py}"
+                    f"{_composite_suffix(skip_pad=True)},setsar=1"
+                )
             else:
-                overlay_part += overlay_output
-            graph_parts.append(overlay_part)
-            overlay_input = overlay_output
-        return f"lavfi=[{';'.join(graph_parts)}]"
+                next_out = f"[o{i}]"
+                overlay_parts.append(f"{current}[c{i}]overlay=x={px}:y={py}{next_out}")
+                current = next_out
+
+        graph = ";".join([split_part, zone0_part] + zone_parts + overlay_parts)
+        return f"lavfi=[{graph}]"
 
     # setsar=1 is appended to every filter graph so that mpv uses the composite's
     # own pixel dimensions for display-aspect-ratio calculations, rather than
@@ -686,7 +709,7 @@ def _build_external_preview_mpv_command(
         "--no-osc",
         "--no-input-default-bindings",
         "--really-quiet",
-        "--msg-level=vf=v,lavfi=v",
+        "--msg-level=vf=warn,lavfi=warn",
         "--keep-open=yes",
     ]
     if is_video_source:
@@ -864,6 +887,7 @@ class MidiSyncWorker(QThread):
                 "--no-input-default-bindings",
                 "--no-border",
                 "--really-quiet",
+                "--msg-level=vf=warn,lavfi=warn",
                 "--video-sync=audio",
                 "--keep-open=no",
                 self.video_file
