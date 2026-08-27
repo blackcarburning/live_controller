@@ -799,10 +799,8 @@ def _build_vf_for_zones(zoom_config):
 
     n = len(enabled)
     zone_sizes = [_zone_out_size(z) for z in enabled]
-    if direction == "horizontal":
-        target_h = max(s[1] for s in zone_sizes)
-    else:
-        target_w = max(s[0] for s in zone_sizes)
+    target_h = max(s[1] for s in zone_sizes)
+    target_w = max(s[0] for s in zone_sizes)
 
     split_tags = "".join(f"[z{i}]" for i in range(n))
     split_part = f"split={n}{split_tags}"
@@ -842,10 +840,6 @@ def _send_mpv_ipc_command(ipc_path, command, max_attempts=2, retry_delay=0.05):
             if i < attempts - 1:
                 time.sleep(retry_delay)
     return False, last_error
-
-
-def _lc_query_mpv_property(ipc_path, prop):
-    return _query_ipc_property(ipc_path, prop)
 
 
 class DraggableTableWidget(QTableWidget):
@@ -1074,18 +1068,21 @@ class MidiSyncWorker(QThread):
                 while self._is_running and time.time() < wait_until:
                     time.sleep(0.01)
 
-            self.status_update.emit(f"Starting mpv on screen {self.display_num}...")
-            self.mpv_process = subprocess.Popen(mpv_cmd)
-            self.ipc_socket_path.emit(socket_path)
-            socket_deadline = time.perf_counter() + 5.0
-            while not os.path.exists(socket_path) and time.perf_counter() < socket_deadline and self._is_running:
-                time.sleep(0.02)
-
             tick_interval = 60.0 / max(1, self.bpm) / 24.0
             pre_roll_end_time = time.perf_counter() + self.preload_time
+            mpv_launch_time = max(time.perf_counter(), pre_roll_end_time - MPV_LAUNCH_HEAD_START_SECONDS)
             next_tick = time.perf_counter()
+            launched = False
             while self._is_running and time.perf_counter() < pre_roll_end_time:
                 now = time.perf_counter()
+                if not launched and now >= mpv_launch_time:
+                    self.status_update.emit(f"Starting mpv on screen {self.display_num}...")
+                    self.mpv_process = subprocess.Popen(mpv_cmd)
+                    self.ipc_socket_path.emit(socket_path)
+                    socket_deadline = time.perf_counter() + 5.0
+                    while not os.path.exists(socket_path) and time.perf_counter() < socket_deadline and self._is_running:
+                        time.sleep(0.02)
+                    launched = True
                 if now >= next_tick:
                     for midiout in self.midi_outputs.values():
                         midiout.send_message([CLOCK_BYTE])
@@ -1097,6 +1094,13 @@ class MidiSyncWorker(QThread):
 
             if not self._is_running:
                 raise InterruptedError("Playback stopped by user during preload")
+            if self.mpv_process is None:
+                self.status_update.emit(f"Starting mpv on screen {self.display_num}...")
+                self.mpv_process = subprocess.Popen(mpv_cmd)
+                self.ipc_socket_path.emit(socket_path)
+                socket_deadline = time.perf_counter() + 5.0
+                while not os.path.exists(socket_path) and time.perf_counter() < socket_deadline and self._is_running:
+                    time.sleep(0.02)
 
             offset_sec = self.midi_offset_ms / 1000.0
             midi_start_time = time.perf_counter()
@@ -1214,19 +1218,8 @@ class ZoomCropCanvas(QWidget):
         painter.drawRect(self.rect().adjusted(1, 1, -2, -2))
 
 
-class StretchCanvas(QWidget):
-    config_changed = pyqtSignal(dict)
-
-    def __init__(self, zone_config=None, parent=None):
-        super().__init__(parent)
-        self.zone_config = dict(zone_config or _default_zone())
-        self.setMinimumHeight(120)
-
-    def paintEvent(self, _event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#1c1c1e"))
-        painter.setPen(QPen(QColor("#636366"), 1))
-        painter.drawRect(self.rect().adjusted(1, 1, -2, -2))
+class StretchCanvas(ZoomCropCanvas):
+    pass
 
 
 class MultiZoomScaleDialog(QDialog):
@@ -2925,14 +2918,6 @@ class LiveControllerMac(QWidget):
         if 0 <= row_index < len(self.tracks) and self.tracks[row_index].get('type') == 'track':
             self.tracks[row_index][key_name] = bool(checked)
 
-    def update_sync_show_enabled(self, row_index, checked):
-        if 0 <= row_index < len(self.tracks) and self.tracks[row_index].get('type') == 'track':
-            self.tracks[row_index]['sync_show_enabled'] = bool(checked)
-
-    def update_sync_show_file(self, row_index, file_name):
-        if 0 <= row_index < len(self.tracks) and self.tracks[row_index].get('type') == 'track':
-            self.tracks[row_index]['sync_show_file'] = file_name or ""
-
     def save_setlist(self):
         setlist_name = self.setlist_name_input.text().strip()
         if not setlist_name:
@@ -3499,8 +3484,15 @@ class LiveControllerMac(QWidget):
         self._loop_b_seconds = end_sec
         self.loop_a_time_label.setText(f"({self.format_duration(start_sec)})")
         self.loop_b_time_label.setText(f"({self.format_duration(end_sec)})")
-        if self.loop_checkbox.isChecked():
-            self._on_loop_toggled(True)
+        if self.loop_checkbox.isChecked() and self.current_ipc_socket:
+            _send_ipc_command(
+                self.current_ipc_socket,
+                json.dumps({"command": ["set_property", "ab-loop-a", self._loop_a_seconds]}),
+            )
+            _send_ipc_command(
+                self.current_ipc_socket,
+                json.dumps({"command": ["set_property", "ab-loop-b", self._loop_b_seconds]}),
+            )
 
     def _on_loop_toggled(self, checked: bool):
         self._on_loop_bar_changed()
@@ -3667,11 +3659,12 @@ class LiveControllerMac(QWidget):
         self.calib_button.setText("Start")
 
     def trigger_sync_show(self, show_file, start_at=None, offset_sec=None):
+        session = self.sync_show_session_input.text().strip() or DEFAULT_SYNC_SHOW_SESSION
+        host = (self.sync_show_host_input.text().strip() or DEFAULT_SYNC_SHOW_HOST).rstrip("/")
+        self.active_sync_show_session = session
+
         def _worker():
             try:
-                host = (self.sync_show_host_input.text().strip() or DEFAULT_SYNC_SHOW_HOST).rstrip("/")
-                session = DEFAULT_SYNC_SHOW_SESSION
-                self.active_sync_show_session = session
                 query = {"session": session, "show_file": show_file}
                 if start_at is not None:
                     query["start_at"] = f"{float(start_at):.6f}"
@@ -3680,7 +3673,9 @@ class LiveControllerMac(QWidget):
                     query["offset"] = f"{float(offset_sec):.6f}"
                 url = f"{host}/api/start-show?{urllib.parse.urlencode(query)}"
                 # Intentionally disable cert verification: operator deployments use private cert chains.
-                ctx = ssl._create_unverified_context()
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
                 with urllib.request.urlopen(url, context=ctx, timeout=4) as resp:
                     body = resp.read().decode("utf-8", errors="replace")
                 self._debug_log(f"sync-show start response: {body[:500]}")
@@ -3690,18 +3685,21 @@ class LiveControllerMac(QWidget):
         threading.Thread(target=_worker, daemon=True).start()
 
     def stop_sync_show(self):
-        if not self.active_sync_show_session:
+        session = self.active_sync_show_session
+        if not session:
             return
+        host = (self.sync_show_host_input.text().strip() or DEFAULT_SYNC_SHOW_HOST).rstrip("/")
+        self.active_sync_show_session = None
         def _worker():
             try:
-                host = (self.sync_show_host_input.text().strip() or DEFAULT_SYNC_SHOW_HOST).rstrip("/")
-                url = f"{host}/api/stop-show?{urllib.parse.urlencode({'session': self.active_sync_show_session})}"
-                ctx = ssl._create_unverified_context()
+                url = f"{host}/api/stop-show?{urllib.parse.urlencode({'session': session})}"
+                # Intentionally disable cert verification: operator deployments use private cert chains.
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
                 urllib.request.urlopen(url, context=ctx, timeout=4).read()
             except Exception as exc:
                 self._debug_log(f"sync-show stop failed: {exc}")
-            finally:
-                self.active_sync_show_session = None
         threading.Thread(target=_worker, daemon=True).start()
 
     def load_zoom_config(self):
@@ -3740,8 +3738,6 @@ class LiveControllerMac(QWidget):
         try:
             for port in list_ports.comports():
                 dev = getattr(port, "device", "")
-                if dev.startswith("/dev/tty."):
-                    continue
                 if "/dev/cu.usb" not in dev:
                     continue
                 try:
