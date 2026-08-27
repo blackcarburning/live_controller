@@ -5993,7 +5993,8 @@ class LiveControllerMac(QWidget):
             output_display_num = DEFAULT_VIDEO_SCREEN_NUMBER
         dialog = MultiZoomScaleDialog(self.zoom_config, output_display_num=output_display_num, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.zoom_config = dialog.collect_config()
+            cfg = dialog.result_config if dialog.result_config is not None else dialog.collect_config()
+            self.zoom_config = _migrate_zoom_config(cfg)
             self.save_zoom_config()
             self._update_zoom_status_label()
             QMessageBox.information(
