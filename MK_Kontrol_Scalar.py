@@ -361,7 +361,7 @@ QSlider::sub-page:horizontal:disabled {
 KATTMAN_LOGO_HTML = (
     '<span style="color:#f2f2f7; font-weight:700; font-size:22px; letter-spacing:4px;">'
     'K<span style="color:#0a84ff;">&#9650;</span>TTM'
-    '<span style="color:#0a84ff;">&#9650;</span>N&nbsp;&nbsp;KONTROL&nbsp;&nbsp;KOMPLETE'
+    '<span style="color:#0a84ff;">&#9650;</span>N&nbsp;&nbsp;KOMPLETE&nbsp;&nbsp;KONTROL'
     '</span>'
 )
 
@@ -3540,7 +3540,7 @@ class LiveControllerMac(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Kattman Komplete Kontreol")
+        self.setWindowTitle("Kattman Komplete Kontrol")
 
         # Debug console (created early so _debug_log works immediately).
         self._debug_console = DebugConsoleWindow(self)
