@@ -3,10 +3,9 @@
 # Author: blackcarburning
 #
 # Description:
-# A macOS-compatible version of live_fallback.py.
-# A stripped-down video-only live performance controller for macOS.
-# Uses mpv for video playback, PyQt6 for the GUI, and supports global
-# hotkeys, setlist management, and full session persistence.
+# A macOS-native live performance controller with synchronized playback,
+# MIDI clock support, multi-zone zoom/scale compositing, Stream Deck export,
+# and full setlist/session persistence.
 #
 # macOS Installation
 # ------------------
@@ -14,7 +13,7 @@
 #       brew install mpv mplayer
 #
 # 2. Install Python packages:
-#       pip install PyQt6 pynput
+#       pip install PyQt6 pynput python-rtmidi psutil pyserial
 #
 # 3. Grant Accessibility / Input Monitoring permissions:
 #    Global hotkeys require macOS to trust your terminal or Python runtime.
@@ -29,6 +28,7 @@
 import sys
 import os
 import re
+import ssl
 import ctypes
 import ctypes.util
 import signal
@@ -39,13 +39,31 @@ import threading
 import time
 import json
 import shutil
+import uuid
+import zipfile
+import urllib.request
+import urllib.parse
 from collections import deque
 from datetime import datetime
 
 # --- Third-Party Library Imports ---
 # Requires: pynput
 # Install with: pip install pynput
-from pynput import keyboard as pynput_keyboard
+import pynput.keyboard as pynput_keyboard
+try:
+    import rtmidi
+except Exception:
+    rtmidi = None
+try:
+    import psutil
+except Exception:
+    psutil = None
+try:
+    import serial
+    from serial.tools import list_ports
+except Exception:
+    serial = None
+    list_ports = None
 
 # --- PyQt6 Imports ---
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
@@ -53,8 +71,8 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QGroupBox, QLabel, QFileDialog, QSizePolicy, QComboBox,
                              QAbstractButton, QAbstractItemView, QCheckBox,
                              QGridLayout, QSpinBox, QColorDialog, QTextEdit, QDialog,
-                             QSlider)
-from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer
+                             QSlider, QRadioButton, QTabWidget, QMessageBox)
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer, QRect
 from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen, QTextCursor
 
 
@@ -94,17 +112,22 @@ MPLAYER_PATH = _find_executable('mplayer')
 
 # JSON files for persistent storage — mac-specific names avoid clobbering Windows data.
 TRACK_NAME_STORE_FILE = "mac_track_names.json"
+BPM_STORE_FILE = "mac_bpm_store.json"
 CONFIG_FILE = "mac_fallback_config.json"
 SESSION_FILE = "mac_fallback_session.json"
+ZOOM_CONFIG_FILE = "mac_zoom_config.json"
+ZOOM_FRAME_SNAPSHOT = "mac_zoom_frame_snapshot.png"
 SETLISTS_DIR = "setlists"
 
 # Default settings for playback and display
 DEFAULT_VIDEO_SCREEN_NUMBER = 1
 DEFAULT_LOAD_DELAY_SECONDS = 5
+DEFAULT_MIDI_OFFSET_MS = 0
 DEFAULT_COUNT_IN_SECONDS = 20
 DEFAULT_TABLE_FONT_SIZE = 11           # Compact: was 16 on Windows
 DEFAULT_COUNT_IN_FONT_SIZE = 120       # Compact: was 250 on Windows
 DEFAULT_TRACK_PLAY_FONT_SIZE = 50      # Compact: was 80 on Windows
+DEFAULT_STREAMDECK_FONT_SIZE = 12
 DEFAULT_COUNT_IN_BG_COLOR = "#c80000"
 DEFAULT_TRACK_PLAY_BG_COLOR = "#00c800"
 TRACK_OVERHEAD_SECONDS = 15
@@ -114,6 +137,7 @@ MAX_UNDO_LEVELS = 30
 PREPARING_OVERLAY_DURATION_MS = 2000
 ACTIVE_FLASH_INTERVAL_MS = 500
 SAVE_POPUP_DURATION_MS = 3000
+MPV_LAUNCH_HEAD_START_SECONDS = 2
 # Delay (ms) before the second focus-restore pass after stopping playback on macOS.
 # macOS may reassign focus during fullscreen/maximize teardown; a deferred re-activation
 # ensures the main window reliably ends up in front after pressing q.
@@ -123,6 +147,21 @@ MACOS_FOCUS_RESTORE_DELAY_MS = 250
 _DEFAULT_DIALOG_DIR = os.path.join(os.path.expanduser("~"), "Movies")
 if not os.path.isdir(_DEFAULT_DIALOG_DIR):
     _DEFAULT_DIALOG_DIR = os.path.expanduser("~")
+
+# --- MIDI Protocol Bytes ---
+START_BYTE = 0xFA
+STOP_BYTE = 0xFC
+CLOCK_BYTE = 0xF8
+SPP_BYTE = 0xF2
+
+# --- Sync-Show API Defaults ---
+DEFAULT_SYNC_SHOW_HOST = "https://meshlive.blackcarburning.com"
+DEFAULT_SYNC_SHOW_SESSION = "0e49315f"
+DEFAULT_SYNC_TIMING_TRIM_MS = 0
+
+# --- Zoom compositor defaults ---
+NUM_ZONES = 5
+_ZONE_COLORS = ["#00e676", "#ff9800", "#2196f3", "#e040fb", "#ffeb3b"]
 
 # --- Modern macOS-Dark Stylesheet ---
 MODERN_STYLESHEET = """
@@ -633,6 +672,176 @@ def _query_ipc_property(socket_path, prop):
     return None
 
 
+def _default_zone():
+    return {
+        "enabled": False,
+        "crop_x": 0, "crop_y": 0, "crop_w": 1920, "crop_h": 1080,
+        "scale_w": -1, "scale_h": -1,
+        "border_px": 0,
+        "offset_y": 0,
+        "mode": "crop",
+    }
+
+
+def _migrate_zoom_config(cfg):
+    def _backfill_composite(d):
+        d.setdefault("out_w", -1)
+        d.setdefault("out_h", -1)
+        d.setdefault("out_sim_enabled", False)
+        d.setdefault("comp_crop_x", 0)
+        d.setdefault("comp_crop_y", 0)
+        d.setdefault("comp_crop_w", 0)
+        d.setdefault("comp_crop_h", 0)
+        d.setdefault("comp_scale_w", -1)
+        d.setdefault("comp_scale_h", -1)
+
+    if not cfg:
+        zones = [_default_zone() for _ in range(NUM_ZONES)]
+        zones[0]["enabled"] = True
+        result = {"zones": zones, "stack_direction": "horizontal", "frame_snapshot_path": ""}
+        _backfill_composite(result)
+        return result
+    if "zones" in cfg:
+        zones = list(cfg["zones"])
+        while len(zones) < NUM_ZONES:
+            zones.append(_default_zone())
+        for z in zones:
+            z.setdefault("border_px", 0)
+            z.setdefault("offset_y", 0)
+            z.setdefault("mode", "crop")
+        result = {
+            "zones": zones[:NUM_ZONES],
+            "stack_direction": cfg.get("stack_direction", "horizontal"),
+            "frame_snapshot_path": cfg.get("frame_snapshot_path", ""),
+        }
+        for k in ("out_w", "out_h", "out_sim_enabled",
+                  "comp_crop_x", "comp_crop_y", "comp_crop_w", "comp_crop_h",
+                  "comp_scale_w", "comp_scale_h"):
+            if k in cfg:
+                result[k] = cfg[k]
+        _backfill_composite(result)
+        return result
+    zone0 = {
+        "enabled": cfg.get("enabled", True),
+        "crop_x": cfg.get("crop_x", 0),
+        "crop_y": cfg.get("crop_y", 0),
+        "crop_w": cfg.get("crop_w", 1920),
+        "crop_h": cfg.get("crop_h", 1080),
+        "scale_w": cfg.get("scale_w", -1),
+        "scale_h": cfg.get("scale_h", -1),
+        "border_px": 0,
+        "offset_y": 0,
+        "mode": "crop",
+    }
+    zones = [zone0] + [_default_zone() for _ in range(NUM_ZONES - 1)]
+    result = {"zones": zones, "stack_direction": "horizontal", "frame_snapshot_path": ""}
+    _backfill_composite(result)
+    return result
+
+
+def _build_vf_for_zones(zoom_config):
+    if not zoom_config:
+        return None
+    if "zones" not in zoom_config and not zoom_config.get("enabled"):
+        return None
+    migrated = _migrate_zoom_config(zoom_config)
+    zones = migrated.get("zones", [])
+    direction = migrated.get("stack_direction", "horizontal")
+    enabled = [z for z in zones if z.get("enabled") and z.get("crop_w", 0) > 0]
+    if not enabled:
+        return None
+
+    def _zone_vf(z):
+        vf = f"crop={z['crop_w']}:{z['crop_h']}:{z['crop_x']}:{z['crop_y']}"
+        sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
+        if sw > 0 and sh > 0:
+            vf += f",scale={sw}:{sh}"
+        border = z.get("border_px", 0)
+        if border > 0:
+            vf += f",pad=iw+{2*border}:ih+{2*border}:{border}:{border}:black"
+        offset_y = int(z.get("offset_y", 0))
+        if offset_y != 0:
+            abs_offset = abs(offset_y)
+            pad_y = max(offset_y, 0)
+            crop_y = max(-offset_y, 0)
+            vf += f",pad=iw:ih+{abs_offset}:0:{pad_y}:black,crop=iw:ih:0:{crop_y}"
+        return vf
+
+    def _zone_out_size(z):
+        sw, sh = z.get("scale_w", -1), z.get("scale_h", -1)
+        w = sw if sw > 0 else z["crop_w"]
+        h = sh if sh > 0 else z["crop_h"]
+        border = z.get("border_px", 0)
+        return w + 2 * border, h + 2 * border
+
+    comp_crop_w = int(migrated.get("comp_crop_w", 0))
+    comp_crop_h = int(migrated.get("comp_crop_h", 0))
+    comp_crop_x = int(migrated.get("comp_crop_x", 0))
+    comp_crop_y = int(migrated.get("comp_crop_y", 0))
+    comp_scale_w = int(migrated.get("comp_scale_w", -1))
+    comp_scale_h = int(migrated.get("comp_scale_h", -1))
+    out_w = int(migrated.get("out_w", -1))
+    out_h = int(migrated.get("out_h", -1))
+    out_sim_enabled = bool(migrated.get("out_sim_enabled", False))
+
+    def _composite_suffix():
+        parts = []
+        if comp_crop_w > 0 and comp_crop_h > 0:
+            parts.append(f"crop={comp_crop_w}:{comp_crop_h}:{comp_crop_x}:{comp_crop_y}")
+        if comp_scale_w > 0 and comp_scale_h > 0:
+            parts.append(f"scale={comp_scale_w}:{comp_scale_h}")
+        if out_sim_enabled and out_w > 0 and out_h > 0:
+            parts.append(f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:black")
+        return "," + ",".join(parts) if parts else ""
+
+    if len(enabled) == 1:
+        return f"lavfi=[{_zone_vf(enabled[0])}{_composite_suffix()},setsar=1]"
+
+    n = len(enabled)
+    zone_sizes = [_zone_out_size(z) for z in enabled]
+    target_h = max(s[1] for s in zone_sizes)
+    target_w = max(s[0] for s in zone_sizes)
+
+    split_tags = "".join(f"[z{i}]" for i in range(n))
+    split_part = f"split={n}{split_tags}"
+
+    def _zone_segment(z, size, i):
+        vf_str = _zone_vf(z)
+        out_w_z, out_h_z = size
+        if direction == "horizontal" and out_h_z < target_h:
+            vf_str += f",pad=iw:{target_h}:0:0:black"
+        elif direction == "vertical" and out_w_z < target_w:
+            vf_str += f",pad={target_w}:ih:0:0:black"
+        return f"[z{i}]{vf_str}[c{i}]"
+
+    crop_parts = [_zone_segment(z, zone_sizes[i], i) for i, z in enumerate(enabled)]
+    stack_inputs = "".join(f"[c{i}]" for i in range(n))
+    stack_fn = "vstack" if direction == "vertical" else "hstack"
+    stack_part = f"{stack_inputs}{stack_fn}=inputs={n}{_composite_suffix()},setsar=1"
+    graph = ";".join([split_part] + crop_parts + [stack_part])
+    return f"lavfi=[{graph}]"
+
+
+def _make_unique_mpv_pipe_name(prefix):
+    # macOS divergence: Unix-domain socket path under tempdir (no Windows named pipes).
+    return os.path.join(tempfile.gettempdir(), f"{prefix}_{os.getpid()}_{uuid.uuid4().hex}.sock")
+
+
+def _send_mpv_ipc_command(ipc_path, command, max_attempts=2, retry_delay=0.05):
+    payload = json.dumps({"command": command}, ensure_ascii=False)
+    attempts = max(1, max_attempts)
+    last_error = "Unknown IPC error."
+    for i in range(attempts):
+        try:
+            _send_ipc_command(ipc_path, payload)
+            return True, ""
+        except Exception as exc:
+            last_error = str(exc)
+            if i < attempts - 1:
+                time.sleep(retry_delay)
+    return False, last_error
+
+
 class DraggableTableWidget(QTableWidget):
     """A QTableWidget subclass that supports drag-and-drop row reordering."""
     rows_reordered = pyqtSignal(int, int)
@@ -713,119 +922,240 @@ class GlobalHotkeyListener(QThread):
             self._listener.stop()
 
 
-class VideoPlaybackWorker(QThread):
-    """A worker thread for managing video/audio playback via mpv (macOS)."""
-    finished = pyqtSignal()
+class MidiTestWorker(QThread):
+    finished = pyqtSignal(int)
     error = pyqtSignal(str)
     status_update = pyqtSignal(str)
-    ipc_socket_path = pyqtSignal(str)
 
-    def __init__(self, video_file, display_num, preload_time, audio_only_mode=False):
+    def __init__(self, port_num, bpm, send_start):
         super().__init__()
-        self.video_file = video_file
-        self.display_num = display_num
-        self.preload_time = preload_time
-        self.audio_only_mode = audio_only_mode
-        self.mpv_process = None
+        self.port_num = port_num
+        self.bpm = bpm
+        self.send_start = send_start
         self._is_running = True
+        self.midiout = None
 
     def stop(self):
         self._is_running = False
 
     def run(self):
-        """Launches mpv (paused), waits for preload, unpauses via Unix socket, then monitors."""
+        if rtmidi is None:
+            self.error.emit("python-rtmidi not installed.")
+            self.finished.emit(self.port_num)
+            return
+        try:
+            self.status_update.emit(f"Testing MIDI port {self.port_num} at {self.bpm} BPM...")
+            self.midiout = rtmidi.MidiOut()
+            self.midiout.open_port(self.port_num)
+            if self.send_start:
+                self.midiout.send_message([SPP_BYTE, 0, 0])
+                self.midiout.send_message([START_BYTE])
+            tick_interval = 60.0 / max(1, self.bpm) / 24.0
+            next_tick = time.perf_counter()
+            while self._is_running:
+                if time.perf_counter() >= next_tick:
+                    self.midiout.send_message([CLOCK_BYTE])
+                    next_tick += tick_interval
+                time.sleep(0.001)
+        except Exception as e:
+            self.error.emit(f"MIDI test error on port {self.port_num}: {e}")
+        finally:
+            try:
+                if self.midiout and self.midiout.is_port_open():
+                    if self.send_start:
+                        self.midiout.send_message([STOP_BYTE])
+                    self.midiout.close_port()
+            except Exception:
+                pass
+            self.finished.emit(self.port_num)
+
+
+class MidiSyncWorker(QThread):
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+    status_update = pyqtSignal(str)
+    ipc_socket_path = pyqtSignal(str)
+
+    def __init__(self, video_file, bpm, display_num, preload_time, midi_offset_ms,
+                 send_start_port1, send_start_port2, send_start_port3, timing_method,
+                 require_midi=True, max_duration_sec=0, zoom_config=None,
+                 absolute_start_time=None, audio_only_mode=False):
+        super().__init__()
+        self.video_file = video_file
+        self.bpm = bpm
+        self.display_num = display_num
+        self.preload_time = preload_time
+        self.midi_offset_ms = midi_offset_ms
+        self.send_start_port1 = send_start_port1
+        self.send_start_port2 = send_start_port2
+        self.send_start_port3 = send_start_port3
+        self.timing_method = timing_method
+        self.require_midi = require_midi
+        self.max_duration_sec = max_duration_sec
+        self.zoom_config = zoom_config or {}
+        self.absolute_start_time = absolute_start_time
+        self.audio_only_mode = audio_only_mode
+        self.mpv_process = None
+        self._is_running = True
+        self.midi_outputs = {}
+
+    def stop(self):
+        self._is_running = False
+
+    def run(self):
         if not os.path.exists(self.video_file):
             self.error.emit(f"File not found: '{self.video_file}'")
             return
+        if rtmidi is not None:
+            for port_num in (1, 2, 3):
+                try:
+                    midiout = rtmidi.MidiOut()
+                    midiout.open_port(port_num)
+                    self.midi_outputs[port_num] = midiout
+                except Exception:
+                    pass
+        if not self.midi_outputs and self.require_midi:
+            self.error.emit("No MIDI ports available.")
+            return
 
-        mpv_bin = MPV_PATH
-        if not os.path.isabs(mpv_bin) or not os.path.exists(mpv_bin):
-            # Try to resolve again at runtime in case PATH changed.
-            mpv_bin = _find_executable('mpv')
+        if self.timing_method == 'high_precision':
+            self.run_high_precision()
+        else:
+            self.run_standard()
 
-        # Unix domain socket in the system temp directory.
-        socket_name = f"mpv_socket_{int(time.time())}"
-        full_socket_path = os.path.join(tempfile.gettempdir(), socket_name)
+    def run_standard(self):
+        self._run_logic(is_high_precision=False)
 
+    def run_high_precision(self):
+        # macOS divergence: no Windows multimedia timer API; high-precision mode is busy-wait only.
+        self._run_logic(is_high_precision=True)
+
+    def _run_logic(self, is_high_precision):
+        mpv_bin = MPV_PATH if (os.path.isabs(MPV_PATH) and os.path.exists(MPV_PATH)) else _find_executable('mpv')
+        socket_path = _make_unique_mpv_pipe_name("mpv_socket")
         file_ext = os.path.splitext(self.video_file)[1].lower()
         is_audio_only = file_ext == '.wav' or self.audio_only_mode
-
+        mpv_cmd = [
+            mpv_bin,
+            f"--input-ipc-server={socket_path}",
+            "--pause",
+            "--really-quiet",
+            "--keep-open=no",
+        ]
+        if self.max_duration_sec > 0:
+            mpv_cmd.append(f"--length={self.max_duration_sec}")
         if is_audio_only:
-            mpv_cmd = [
-                mpv_bin,
-                f"--input-ipc-server={full_socket_path}",
-                "--pause",
-                "--no-video",
-                "--really-quiet",
-                "--keep-open=no",
-                self.video_file,
-            ]
+            mpv_cmd.append("--no-video")
         else:
-            mpv_cmd = [
-                mpv_bin,
-                f"--input-ipc-server={full_socket_path}",
-                "--pause",
+            mpv_cmd += [
                 "--fullscreen",
                 f"--fs-screen={self.display_num}",
                 "--no-osd-bar",
                 "--no-osc",
                 "--no-input-default-bindings",
                 "--no-border",
-                "--really-quiet",
                 "--video-sync=audio",
-                "--keep-open=no",
-                self.video_file,
             ]
+            vf_str = _build_vf_for_zones(self.zoom_config)
+            if vf_str:
+                mpv_cmd.append(f"--vf={vf_str}")
+        mpv_cmd.append(self.video_file)
 
+        started_ports = []
         try:
-            self.status_update.emit(f"Starting mpv on screen {self.display_num}...")
-            # No CREATE_NO_WINDOW or other Windows flags on macOS.
-            self.mpv_process = subprocess.Popen(mpv_cmd)
-            self.ipc_socket_path.emit(full_socket_path)
+            if self.absolute_start_time is not None:
+                wait_until = self.absolute_start_time - self.preload_time
+                while self._is_running and time.time() < wait_until:
+                    time.sleep(0.01)
 
-            # Wait for the preload time before unpausing.
-            self.status_update.emit(f"Pre-loading for {self.preload_time}s...")
-            end_time = time.perf_counter() + self.preload_time
-            while time.perf_counter() < end_time and self._is_running:
-                if self.mpv_process.poll() is not None:
-                    raise InterruptedError("mpv closed prematurely during preload")
-                time.sleep(0.1)
+            tick_interval = 60.0 / max(1, self.bpm) / 24.0
+            pre_roll_end_time = time.perf_counter() + self.preload_time
+            mpv_launch_time = max(time.perf_counter(), pre_roll_end_time - MPV_LAUNCH_HEAD_START_SECONDS)
+            next_tick = time.perf_counter()
+            launched = False
+            while self._is_running and time.perf_counter() < pre_roll_end_time:
+                now = time.perf_counter()
+                if not launched and now >= mpv_launch_time:
+                    self.status_update.emit(f"Starting mpv on screen {self.display_num}...")
+                    self.mpv_process = subprocess.Popen(mpv_cmd)
+                    self.ipc_socket_path.emit(socket_path)
+                    socket_deadline = time.perf_counter() + 5.0
+                    while not os.path.exists(socket_path) and time.perf_counter() < socket_deadline and self._is_running:
+                        time.sleep(0.02)
+                    launched = True
+                if now >= next_tick:
+                    for midiout in self.midi_outputs.values():
+                        midiout.send_message([CLOCK_BYTE])
+                    next_tick += tick_interval
+                if is_high_precision:
+                    pass
+                else:
+                    time.sleep(0.001)
 
             if not self._is_running:
                 raise InterruptedError("Playback stopped by user during preload")
+            if self.mpv_process is None:
+                self.status_update.emit(f"Starting mpv on screen {self.display_num}...")
+                self.mpv_process = subprocess.Popen(mpv_cmd)
+                self.ipc_socket_path.emit(socket_path)
+                socket_deadline = time.perf_counter() + 5.0
+                while not os.path.exists(socket_path) and time.perf_counter() < socket_deadline and self._is_running:
+                    time.sleep(0.02)
 
-            # Wait for the Unix socket file to appear (up to 5 additional seconds).
-            socket_deadline = time.perf_counter() + 5.0
-            while not os.path.exists(full_socket_path) and time.perf_counter() < socket_deadline:
-                time.sleep(0.05)
+            offset_sec = self.midi_offset_ms / 1000.0
+            midi_start_time = time.perf_counter()
+            video_unpause_time = midi_start_time + offset_sec
+            for port_num, midiout in self.midi_outputs.items():
+                send_start = {
+                    1: self.send_start_port1,
+                    2: self.send_start_port2,
+                    3: self.send_start_port3,
+                }.get(port_num, False)
+                if send_start:
+                    midiout.send_message([SPP_BYTE, 0, 0])
+                    midiout.send_message([START_BYTE])
+                    started_ports.append(port_num)
 
-            # Unpause mpv via the Unix domain socket.
+            while self._is_running and time.perf_counter() < video_unpause_time:
+                if is_high_precision:
+                    pass
+                else:
+                    time.sleep(0.001)
+            _send_ipc_command(socket_path, '{ "command": ["set_property", "pause", false] }')
             self.status_update.emit(f"PLAYING: {os.path.basename(self.video_file)}")
-            _send_ipc_command(full_socket_path, '{ "command": ["set_property", "pause", false] }')
 
-            # Poll until mpv exits or is stopped.
-            while self.mpv_process.poll() is None and self._is_running:
-                time.sleep(0.1)
-
-            if self._is_running:
-                self.status_update.emit("mpv closed. Stopping.")
-            else:
-                self.status_update.emit("Playback stopped by user.")
-
+            next_tick = time.perf_counter()
+            while self._is_running and self.mpv_process.poll() is None:
+                now = time.perf_counter()
+                if now >= next_tick:
+                    for midiout in self.midi_outputs.values():
+                        midiout.send_message([CLOCK_BYTE])
+                    next_tick += tick_interval
+                if is_high_precision:
+                    pass
+                else:
+                    time.sleep(0.001)
         except Exception as e:
             self.error.emit(f"Playback error: {e}")
         finally:
-            self.cleanup(full_socket_path)
+            self.cleanup(socket_path, started_ports)
 
-    def cleanup(self, socket_path=None):
-        """Cleans up the mpv process and removes the Unix socket file."""
-        self.status_update.emit("Cleaning up...")
+    def cleanup(self, socket_path=None, started_ports=None):
+        started_ports = started_ports or []
         if self.mpv_process and self.mpv_process.poll() is None:
             self.mpv_process.terminate()
         if socket_path and os.path.exists(socket_path):
             try:
                 os.unlink(socket_path)
             except OSError:
+                pass
+        for port_num, midiout in self.midi_outputs.items():
+            try:
+                if port_num in started_ports:
+                    midiout.send_message([STOP_BYTE])
+                if midiout.is_port_open():
+                    midiout.close_port()
+            except Exception:
                 pass
         self.finished.emit()
 
@@ -871,6 +1201,63 @@ class PositionPoller(QThread):
                     except Exception:
                         pass
             time.sleep(self._POLL_INTERVAL)
+
+
+class ZoomCropCanvas(QWidget):
+    config_changed = pyqtSignal(dict)
+
+    def __init__(self, zone_config=None, parent=None):
+        super().__init__(parent)
+        self.zone_config = dict(zone_config or _default_zone())
+        self.setMinimumHeight(120)
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("#1c1c1e"))
+        painter.setPen(QPen(QColor("#636366"), 1))
+        painter.drawRect(self.rect().adjusted(1, 1, -2, -2))
+
+
+class StretchCanvas(ZoomCropCanvas):
+    pass
+
+
+class MultiZoomScaleDialog(QDialog):
+    def __init__(self, zoom_config, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Multi-Zone Zoom / Scale")
+        self.resize(840, 520)
+        self._cfg = _migrate_zoom_config(zoom_config)
+        root = QVBoxLayout(self)
+        tabs = QTabWidget()
+        for i in range(NUM_ZONES):
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            layout.addWidget(QLabel(f"Zone {i + 1}"))
+            layout.addWidget(ZoomCropCanvas(self._cfg["zones"][i], tab))
+            layout.addWidget(StretchCanvas(self._cfg["zones"][i], tab))
+            tabs.addTab(tab, f"Zone {i + 1}")
+        comp_tab = QWidget()
+        comp_layout = QVBoxLayout(comp_tab)
+        comp_layout.addWidget(QLabel("Composite Output"))
+        tabs.addTab(comp_tab, "Composite")
+        final_tab = QWidget()
+        final_layout = QVBoxLayout(final_tab)
+        final_layout.addWidget(QLabel("Final Preview"))
+        tabs.addTab(final_tab, "Preview")
+        root.addWidget(tabs, 1)
+        button_row = QHBoxLayout()
+        apply_btn = QPushButton("Apply")
+        cancel_btn = QPushButton("Cancel")
+        apply_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        button_row.addStretch(1)
+        button_row.addWidget(apply_btn)
+        button_row.addWidget(cancel_btn)
+        root.addLayout(button_row)
+
+    def collect_config(self):
+        return _migrate_zoom_config(self._cfg)
 
 
 class Switch(QAbstractButton):
@@ -1008,7 +1395,10 @@ class LiveControllerMac(QWidget):
 
         self.config = self.load_config()
         self.track_name_data = self.load_json_store(TRACK_NAME_STORE_FILE)
+        self.bpm_store = self.load_json_store(BPM_STORE_FILE)
+        self.zoom_config = self.load_zoom_config()
         self.worker = None
+        self.test_worker = None
         self.current_ipc_socket = None
         self.is_live_mode = False
         self.tracks = []
@@ -1018,6 +1408,10 @@ class LiveControllerMac(QWidget):
         self.currently_playing_row = None
         self._user_stopped = False
         self.test_track_path = None
+        self.absolute_start_time = None
+        self.active_sync_show_session = None
+        self.streamdeck_font_size = DEFAULT_STREAMDECK_FONT_SIZE
+        self.led2_on = False
 
         self.current_table_font_size = DEFAULT_TABLE_FONT_SIZE
         self.playing_color = QColor("#30d158")
@@ -1036,6 +1430,20 @@ class LiveControllerMac(QWidget):
         self._slider_being_dragged = False      # True while user holds the scrub slider
         self._loop_a_seconds = 0.0             # loop start point (seconds)
         self._loop_b_seconds = 0.0             # loop end point (seconds)
+        self._loop_bpm = 120
+        self._loop_start_bar = 1
+        self._loop_end_bar = 8
+
+        self.midi_available = False
+        self.rtmidi_available = rtmidi is not None
+        self.pyserial_available = serial is not None
+        if self.rtmidi_available:
+            try:
+                test_out = rtmidi.MidiOut()
+                self.midi_available = test_out.get_port_count() > 0
+            except Exception:
+                self.midi_available = False
+        self.arduino_serial = self._connect_arduino()
 
         # Background thread that polls mpv's playback position without blocking the UI.
         self._position_poller = PositionPoller()
@@ -1064,6 +1472,16 @@ class LiveControllerMac(QWidget):
         self._start_hotkey_listener()
         self.load_session()
         self._debug_log("App started.")
+        if self.midi_available:
+            self.send_led_command("4")
+        else:
+            self.send_led_command("1")
+        if rtmidi is None:
+            self._debug_log("python-rtmidi not installed; MIDI features disabled.")
+        if psutil is None:
+            self._debug_log("psutil not installed; running without extra process priority hints.")
+        if serial is None:
+            self._debug_log("pyserial not installed; Arduino LED controls disabled.")
 
         # UI-freeze watchdog: fires every 500 ms from the main thread.
         # _last_heartbeat is set immediately before the timer starts so the
@@ -1123,11 +1541,27 @@ class LiveControllerMac(QWidget):
             "font-size: 10px; padding: 3px 10px; border-radius: 5px;"
         )
         self.export_setlist_button.clicked.connect(self.export_setlist)
+        self.export_streamdeck_button = QPushButton("Export StreamDeck")
+        self.export_streamdeck_button.setStyleSheet(
+            "background-color: #103020; color: #30d158; border: 1px solid #2b7a52; "
+            "font-size: 10px; padding: 3px 10px; border-radius: 5px;"
+        )
+        self.export_streamdeck_button.clicked.connect(self.export_streamdeck_profile)
+        self.streamdeck_font_spinbox = QSpinBox()
+        self.streamdeck_font_spinbox.setRange(6, 36)
+        self.streamdeck_font_spinbox.setValue(self.streamdeck_font_size)
+        self.streamdeck_font_spinbox.setSuffix(" pt")
+        self.streamdeck_font_spinbox.setFixedWidth(68)
+        export_buttons_row = QHBoxLayout()
+        export_buttons_row.setSpacing(4)
+        export_buttons_row.addWidget(self.export_setlist_button)
+        export_buttons_row.addWidget(self.export_streamdeck_button)
+        export_buttons_row.addWidget(self.streamdeck_font_spinbox)
 
         title_layout.addWidget(logo_label)
         title_layout.addWidget(self.title_label)
         title_layout.addWidget(self.running_time_label)
-        title_layout.addWidget(self.export_setlist_button, 0, Qt.AlignmentFlag.AlignCenter)
+        title_layout.addLayout(export_buttons_row)
 
         # Right: mode toggle
         right_container = QWidget()
@@ -1186,14 +1620,19 @@ class LiveControllerMac(QWidget):
         main_layout = QHBoxLayout()
         main_layout.setSpacing(10)
         self.table = DraggableTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["Key", "Track Name", "Link", "Secs", "Del"])
+        self.table.setColumnCount(10)
+        self.table.setHorizontalHeaderLabels(["Key", "Name", "Lnk", "BPM", "C", "R1", "R2", "Syn", "Secs", "Del"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setMinimumSectionSize(10)
         self.table.setColumnWidth(0, 42)
         self.table.setColumnWidth(2, 36)
-        self.table.setColumnWidth(3, 46)
-        self.table.setColumnWidth(4, 36)
+        self.table.setColumnWidth(3, 44)
+        self.table.setColumnWidth(4, 28)
+        self.table.setColumnWidth(5, 30)
+        self.table.setColumnWidth(6, 30)
+        self.table.setColumnWidth(7, 34)
+        self.table.setColumnWidth(8, 46)
+        self.table.setColumnWidth(9, 36)
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(False)
         self.table.setAlternatingRowColors(True)
@@ -1321,7 +1760,130 @@ class LiveControllerMac(QWidget):
         font_size_layout.addWidget(self.apply_font_button)
         settings_layout.addWidget(QLabel("List Font:"), 4, 0)
         settings_layout.addLayout(font_size_layout, 4, 1)
+        self.require_midi_checkbox = QCheckBox("Require MIDI")
+        self.require_midi_checkbox.setChecked(True)
+        settings_layout.addWidget(self.require_midi_checkbox, 5, 0, 1, 2)
+        self.midi_offset_slider = QSlider(Qt.Orientation.Horizontal)
+        self.midi_offset_slider.setRange(-500, 500)
+        self.midi_offset_slider.setValue(DEFAULT_MIDI_OFFSET_MS)
+        self.midi_offset_spinbox = QSpinBox()
+        self.midi_offset_spinbox.setRange(-500, 500)
+        self.midi_offset_spinbox.setValue(DEFAULT_MIDI_OFFSET_MS)
+        self.midi_offset_spinbox.setSuffix(" ms")
+        self.midi_offset_spinbox.setFixedWidth(76)
+        self.midi_offset_slider.valueChanged.connect(self.midi_offset_spinbox.setValue)
+        self.midi_offset_spinbox.valueChanged.connect(self.midi_offset_slider.setValue)
+        midi_offset_row = QHBoxLayout()
+        midi_offset_row.setSpacing(4)
+        midi_offset_row.addWidget(self.midi_offset_slider, 1)
+        midi_offset_row.addWidget(self.midi_offset_spinbox)
+        self.midi_offset_reset_btn = QPushButton("Reset")
+        self.midi_offset_reset_btn.setFixedWidth(52)
+        self.midi_offset_reset_btn.clicked.connect(lambda: self.midi_offset_spinbox.setValue(DEFAULT_MIDI_OFFSET_MS))
+        midi_offset_row.addWidget(self.midi_offset_reset_btn)
+        settings_layout.addWidget(QLabel("MIDI Offset:"), 6, 0)
+        settings_layout.addLayout(midi_offset_row, 6, 1)
+        self.timing_standard_radio = QRadioButton("Std")
+        self.timing_high_precision_radio = QRadioButton("HP")
+        self.timing_standard_radio.setChecked(True)
+        timing_row = QHBoxLayout()
+        timing_row.setSpacing(4)
+        timing_row.addWidget(self.timing_standard_radio)
+        timing_row.addWidget(self.timing_high_precision_radio)
+        settings_layout.addWidget(QLabel("Timing:"), 7, 0)
+        settings_layout.addLayout(timing_row, 7, 1)
+        self.no_midi_overlay = QLabel("NO MIDI INTERFACE DETECTED")
+        self.no_midi_overlay.setStyleSheet("color: #ff453a; font-size: 10px; font-weight: 700;")
+        self.no_midi_overlay.setVisible(not self.midi_available)
+        settings_layout.addWidget(self.no_midi_overlay, 8, 0, 1, 2)
         settings_group.setLayout(settings_layout)
+
+        midi_ports_group = QGroupBox("MIDI Port Testing")
+        midi_ports_layout = QGridLayout()
+        midi_ports_layout.setContentsMargins(4, 6, 4, 4)
+        midi_ports_layout.setSpacing(3)
+        midi_ports_layout.addWidget(QLabel("Port"), 0, 0)
+        midi_ports_layout.addWidget(QLabel("On"), 0, 1)
+        midi_ports_layout.addWidget(QLabel("Start"), 0, 2)
+        midi_ports_layout.addWidget(QLabel("BPM"), 0, 3)
+        midi_ports_layout.addWidget(QLabel("Test"), 0, 4)
+        self.midi_port_controls = {}
+        for row, (label, port_num) in enumerate((("Click", 1), ("Rich1", 2), ("Rich2", 3)), start=1):
+            midi_ports_layout.addWidget(QLabel(label), row, 0)
+            enabled_cb = QCheckBox()
+            enabled_cb.setChecked(True)
+            start_cb = QCheckBox()
+            bpm_spin = QSpinBox()
+            bpm_spin.setRange(40, 280)
+            bpm_spin.setValue(120)
+            bpm_spin.setFixedWidth(62)
+            test_btn = QPushButton("Start")
+            test_btn.setFixedWidth(58)
+            test_btn.clicked.connect(lambda _c=False, p=port_num: self.toggle_midi_test(p))
+            midi_ports_layout.addWidget(enabled_cb, row, 1)
+            midi_ports_layout.addWidget(start_cb, row, 2)
+            midi_ports_layout.addWidget(bpm_spin, row, 3)
+            midi_ports_layout.addWidget(test_btn, row, 4)
+            self.midi_port_controls[port_num] = {
+                "enabled": enabled_cb,
+                "send_start": start_cb,
+                "bpm": bpm_spin,
+                "button": test_btn,
+                "worker": None,
+            }
+        midi_ports_group.setLayout(midi_ports_layout)
+
+        sync_show_group = QGroupBox("Sync Show API")
+        sync_show_layout = QGridLayout()
+        sync_show_layout.setContentsMargins(4, 6, 4, 4)
+        sync_show_layout.setSpacing(3)
+        self.sync_show_host_input = QLineEdit()
+        self.sync_show_host_input.setPlaceholderText(DEFAULT_SYNC_SHOW_HOST)
+        self.sync_show_session_input = QLineEdit()
+        self.sync_show_session_input.setText(DEFAULT_SYNC_SHOW_SESSION)
+        self.sync_show_session_input.setEnabled(False)
+        self.sync_show_trim_spinbox = QSpinBox()
+        self.sync_show_trim_spinbox.setRange(-5000, 5000)
+        self.sync_show_trim_spinbox.setValue(DEFAULT_SYNC_TIMING_TRIM_MS)
+        self.sync_show_trim_spinbox.setSuffix(" ms")
+        sync_show_layout.addWidget(QLabel("Host"), 0, 0)
+        sync_show_layout.addWidget(self.sync_show_host_input, 0, 1)
+        sync_show_layout.addWidget(QLabel("Session"), 1, 0)
+        sync_show_layout.addWidget(self.sync_show_session_input, 1, 1)
+        sync_show_layout.addWidget(QLabel("Trim"), 2, 0)
+        sync_show_layout.addWidget(self.sync_show_trim_spinbox, 2, 1)
+        sync_show_group.setLayout(sync_show_layout)
+
+        calibration_group = QGroupBox("Sync Calibration")
+        calibration_layout = QHBoxLayout()
+        calibration_layout.setContentsMargins(4, 6, 4, 4)
+        calibration_layout.setSpacing(4)
+        self.calib_duration_spinbox = QSpinBox()
+        self.calib_duration_spinbox.setRange(1, 20)
+        self.calib_duration_spinbox.setValue(8)
+        self.calib_duration_spinbox.setSuffix(" s")
+        self.calib_duration_spinbox.setToolTip("Runs an auto-restart loop with mpv --length for iterative sync calibration.")
+        self.calib_button = QPushButton("Start")
+        self.calib_button.clicked.connect(self.toggle_calib_loop)
+        calibration_layout.addWidget(QLabel("Duration:"))
+        calibration_layout.addWidget(self.calib_duration_spinbox)
+        calibration_layout.addWidget(self.calib_button)
+        calibration_group.setLayout(calibration_layout)
+
+        zoom_group = QGroupBox("Zoom / Scale")
+        zoom_layout = QHBoxLayout()
+        zoom_layout.setContentsMargins(4, 6, 4, 4)
+        zoom_layout.setSpacing(4)
+        self.apply_zoom_checkbox = QCheckBox("Apply")
+        self.apply_zoom_checkbox.setChecked(False)
+        self.zoom_status_label = QLabel("Not configured")
+        self.zoom_status_label.setStyleSheet("font-size: 10px; color: #636366;")
+        self.zoom_button = QPushButton("Configure…")
+        self.zoom_button.clicked.connect(self.open_zoom_dialog)
+        zoom_layout.addWidget(self.apply_zoom_checkbox)
+        zoom_layout.addWidget(self.zoom_button)
+        zoom_layout.addWidget(self.zoom_status_label, 1)
+        zoom_group.setLayout(zoom_layout)
 
         # Test Track group (full-width, single compact row)
         test_track_group = QGroupBox("Test Track")
@@ -1372,28 +1934,41 @@ class LiveControllerMac(QWidget):
         scrub_row.addWidget(self.scrub_slider, 1)
         scrub_row.addWidget(self.scrub_dur_label)
 
-        # Loop points row: [A: --:--] [B: --:--] [Loop A→B]
-        # Each button combines the label and current time so the loop point text
-        # is always visible inside the button itself.
+        # Bar-based loop row: BPM / Bar A / Bar B / Loop A→B.
         loop_row = QHBoxLayout()
         loop_row.setSpacing(3)
-        self.loop_set_a_btn = QPushButton("A: --:--")
-        self.loop_set_a_btn.setFixedWidth(82)
-        self.loop_set_a_btn.setEnabled(False)
-        self.loop_set_a_btn.setToolTip("Mark the current playback position as loop start (A).")
-        self.loop_set_a_btn.clicked.connect(self._set_loop_a)
-        self.loop_set_b_btn = QPushButton("B: --:--")
-        self.loop_set_b_btn.setFixedWidth(82)
-        self.loop_set_b_btn.setEnabled(False)
-        self.loop_set_b_btn.setToolTip("Mark the current playback position as loop end (B).")
-        self.loop_set_b_btn.clicked.connect(self._set_loop_b)
+        self.loop_bpm_spinbox = QSpinBox()
+        self.loop_bpm_spinbox.setRange(40, 280)
+        self.loop_bpm_spinbox.setValue(120)
+        self.loop_bpm_spinbox.setFixedWidth(56)
+        self.loop_bpm_spinbox.valueChanged.connect(self._on_loop_bar_changed)
+        self.loop_start_bar_spinbox = QSpinBox()
+        self.loop_start_bar_spinbox.setRange(1, 9999)
+        self.loop_start_bar_spinbox.setValue(1)
+        self.loop_start_bar_spinbox.setFixedWidth(54)
+        self.loop_start_bar_spinbox.valueChanged.connect(self._on_loop_bar_changed)
+        self.loop_end_bar_spinbox = QSpinBox()
+        self.loop_end_bar_spinbox.setRange(1, 9999)
+        self.loop_end_bar_spinbox.setValue(8)
+        self.loop_end_bar_spinbox.setFixedWidth(54)
+        self.loop_end_bar_spinbox.valueChanged.connect(self._on_loop_bar_changed)
+        self.loop_a_time_label = QLabel("(00:00)")
+        self.loop_a_time_label.setStyleSheet("font-size: 10px; color: #aeaeb2;")
+        self.loop_b_time_label = QLabel("(00:15)")
+        self.loop_b_time_label.setStyleSheet("font-size: 10px; color: #aeaeb2;")
         self.loop_checkbox = QCheckBox("Loop A→B")
         self.loop_checkbox.setToolTip(
             "When checked, mpv will repeat the section between loop points A and B continuously."
         )
         self.loop_checkbox.toggled.connect(self._on_loop_toggled)
-        loop_row.addWidget(self.loop_set_a_btn)
-        loop_row.addWidget(self.loop_set_b_btn)
+        loop_row.addWidget(QLabel("BPM:"))
+        loop_row.addWidget(self.loop_bpm_spinbox)
+        loop_row.addWidget(QLabel("A:"))
+        loop_row.addWidget(self.loop_start_bar_spinbox)
+        loop_row.addWidget(self.loop_a_time_label)
+        loop_row.addWidget(QLabel("B:"))
+        loop_row.addWidget(self.loop_end_bar_spinbox)
+        loop_row.addWidget(self.loop_b_time_label)
         loop_row.addWidget(self.loop_checkbox)
         loop_row.addStretch(1)
 
@@ -1559,12 +2134,28 @@ class LiveControllerMac(QWidget):
         row_mid = QHBoxLayout()
         row_mid.setSpacing(6)
         row_mid.addWidget(scrub_loop_group)
-        right_col = QVBoxLayout()
-        right_col.setSpacing(3)
-        right_col.addWidget(overlay_colours_group)
-        right_col.addWidget(color_scheme_group)
-        right_col.addWidget(app_group)
-        row_mid.addLayout(right_col)
+        self.right_tabs = QTabWidget()
+        self.right_tabs.setDocumentMode(True)
+        look_tab = QWidget()
+        look_layout = QVBoxLayout(look_tab)
+        look_layout.setContentsMargins(0, 0, 0, 0)
+        look_layout.setSpacing(3)
+        look_layout.addWidget(overlay_colours_group)
+        look_layout.addWidget(color_scheme_group)
+        look_layout.addWidget(app_group)
+        look_layout.addStretch(1)
+        midi_tab = QWidget()
+        midi_layout = QVBoxLayout(midi_tab)
+        midi_layout.setContentsMargins(0, 0, 0, 0)
+        midi_layout.setSpacing(3)
+        midi_layout.addWidget(midi_ports_group)
+        midi_layout.addWidget(sync_show_group)
+        midi_layout.addWidget(calibration_group)
+        midi_layout.addWidget(zoom_group)
+        midi_layout.addStretch(1)
+        self.right_tabs.addTab(look_tab, "Look")
+        self.right_tabs.addTab(midi_tab, "Sync")
+        row_mid.addWidget(self.right_tabs)
 
         controls_area.addLayout(row_top)
         controls_area.addWidget(test_track_group)
@@ -1620,6 +2211,9 @@ class LiveControllerMac(QWidget):
         self.live_mode_slider.setChecked(True)
         self.toggle_live_mode()
         self.populate_table()
+        self._on_loop_bar_changed()
+        if self.zoom_config:
+            self.zoom_status_label.setText("Configured")
         self.apply_overlay_styles()
 
     # ------------------------------------------------------------------ #
@@ -1792,6 +2386,8 @@ class LiveControllerMac(QWidget):
         self.count_in_test_checkbox.setEnabled(is_edit_mode)
         self.quit_button.setEnabled(is_edit_mode)
         self.export_setlist_button.setEnabled(is_edit_mode)
+        self.export_streamdeck_button.setEnabled(is_edit_mode)
+        self.streamdeck_font_spinbox.setEnabled(is_edit_mode)
         self.setlist_name_input.setEnabled(is_edit_mode)
         self.table.setDragEnabled(is_edit_mode)
         self.rename_button.setEnabled(is_edit_mode)
@@ -1804,6 +2400,19 @@ class LiveControllerMac(QWidget):
         self.track_play_color_button.setEnabled(is_edit_mode)
         self.track_play_font_spinbox.setEnabled(is_edit_mode)
         self.audio_only_checkbox.setEnabled(is_edit_mode)
+        self.require_midi_checkbox.setEnabled(is_edit_mode)
+        self.midi_offset_slider.setEnabled(is_edit_mode)
+        self.midi_offset_spinbox.setEnabled(is_edit_mode)
+        self.midi_offset_reset_btn.setEnabled(is_edit_mode)
+        self.timing_standard_radio.setEnabled(is_edit_mode)
+        self.timing_high_precision_radio.setEnabled(is_edit_mode)
+        self.sync_show_host_input.setEnabled(is_edit_mode)
+        self.sync_show_trim_spinbox.setEnabled(is_edit_mode)
+        self.calib_duration_spinbox.setEnabled(is_edit_mode)
+        self.calib_button.setEnabled(True)
+        self.apply_zoom_checkbox.setEnabled(is_edit_mode)
+        self.zoom_button.setEnabled(is_edit_mode)
+        self.set_test_controls_enabled(is_edit_mode)
         # Color scheme controls — only available in edit mode.
         for swatch in self._scheme_swatches.values():
             swatch.setEnabled(is_edit_mode)
@@ -1818,7 +2427,7 @@ class LiveControllerMac(QWidget):
             if i < len(self.tracks):
                 item = self.tracks[i]
                 if item['type'] == 'track':
-                    for col in [1, 2, 3]:
+                    for col in [1, 2, 3, 4, 5, 6, 7, 8]:
                         if widget := self.table.cellWidget(i, col):
                             widget.setEnabled(is_edit_mode)
 
@@ -1840,6 +2449,7 @@ class LiveControllerMac(QWidget):
         keys.remove('q')
         keys.remove('t')
         keys.remove('i')
+        keys.remove('z')
         return keys
 
     # ------------------------------------------------------------------ #
@@ -1847,7 +2457,13 @@ class LiveControllerMac(QWidget):
     # ------------------------------------------------------------------ #
 
     def load_config(self):
-        defaults = {"display": DEFAULT_VIDEO_SCREEN_NUMBER, "preload": DEFAULT_LOAD_DELAY_SECONDS}
+        defaults = {
+            "display": DEFAULT_VIDEO_SCREEN_NUMBER,
+            "preload": DEFAULT_LOAD_DELAY_SECONDS,
+            "sync_show_host": DEFAULT_SYNC_SHOW_HOST,
+            "sync_show_session": DEFAULT_SYNC_SHOW_SESSION,
+            "sync_show_timing_trim_ms": DEFAULT_SYNC_TIMING_TRIM_MS,
+        }
         if not os.path.exists(CONFIG_FILE):
             return defaults
         try:
@@ -1861,12 +2477,18 @@ class LiveControllerMac(QWidget):
     def save_config(self):
         self.config['display'] = int(self.display_combo.currentText())
         self.config['preload'] = int(self.preload_combo.currentText())
+        self.config['sync_show_host'] = self.sync_show_host_input.text().strip()
+        self.config['sync_show_session'] = self.sync_show_session_input.text().strip() or DEFAULT_SYNC_SHOW_SESSION
+        self.config['sync_show_timing_trim_ms'] = int(self.sync_show_trim_spinbox.value())
         with open(CONFIG_FILE, 'w') as f:
             json.dump(self.config, f, indent=4)
 
     def apply_config_to_ui(self):
         self.display_combo.setCurrentText(str(self.config.get("display", DEFAULT_VIDEO_SCREEN_NUMBER)))
         self.preload_combo.setCurrentText(str(self.config.get("preload", DEFAULT_LOAD_DELAY_SECONDS)))
+        self.sync_show_host_input.setText(self.config.get('sync_show_host', DEFAULT_SYNC_SHOW_HOST))
+        self.sync_show_session_input.setText(self.config.get('sync_show_session', DEFAULT_SYNC_SHOW_SESSION))
+        self.sync_show_trim_spinbox.setValue(int(self.config.get('sync_show_timing_trim_ms', DEFAULT_SYNC_TIMING_TRIM_MS)))
         self.check_display_setting()
 
     def setting_changed(self):
@@ -1914,6 +2536,14 @@ class LiveControllerMac(QWidget):
             'audio_only': self.audio_only_checkbox.isChecked(),
             'scrub_locked': self.scrub_lock_checkbox.isChecked(),
             'loop_enabled': self.loop_checkbox.isChecked(),
+            'loop_bpm': self.loop_bpm_spinbox.value(),
+            'loop_start_bar': self.loop_start_bar_spinbox.value(),
+            'loop_end_bar': self.loop_end_bar_spinbox.value(),
+            'midi_offset_ms': self.midi_offset_spinbox.value(),
+            'timing_method': 'high_precision' if self.timing_high_precision_radio.isChecked() else 'standard',
+            'require_midi': self.require_midi_checkbox.isChecked(),
+            'streamdeck_font_size': self.streamdeck_font_spinbox.value(),
+            'apply_zoom': self.apply_zoom_checkbox.isChecked(),
             'color_scheme': self._color_scheme,
         }
         with open(SESSION_FILE, 'w') as f:
@@ -1956,7 +2586,18 @@ class LiveControllerMac(QWidget):
 
             self.scrub_lock_checkbox.setChecked(session_data.get('scrub_locked', False))
             self.loop_checkbox.setChecked(session_data.get('loop_enabled', False))
+            self.loop_bpm_spinbox.setValue(int(session_data.get('loop_bpm', 120)))
+            self.loop_start_bar_spinbox.setValue(int(session_data.get('loop_start_bar', 1)))
+            self.loop_end_bar_spinbox.setValue(int(session_data.get('loop_end_bar', 8)))
+            self.midi_offset_spinbox.setValue(int(session_data.get('midi_offset_ms', DEFAULT_MIDI_OFFSET_MS)))
+            self.require_midi_checkbox.setChecked(bool(session_data.get('require_midi', True)))
+            timing_method = session_data.get('timing_method', 'standard')
+            self.timing_high_precision_radio.setChecked(timing_method == 'high_precision')
+            self.timing_standard_radio.setChecked(timing_method != 'high_precision')
+            self.streamdeck_font_spinbox.setValue(int(session_data.get('streamdeck_font_size', DEFAULT_STREAMDECK_FONT_SIZE)))
+            self.apply_zoom_checkbox.setChecked(bool(session_data.get('apply_zoom', False)))
             self._update_scrub_controls_state()
+            self._on_loop_bar_changed()
 
             self.test_track_path = session_data.get('test_track_path')
             if self.test_track_path and os.path.exists(self.test_track_path):
@@ -2009,6 +2650,13 @@ class LiveControllerMac(QWidget):
                 'hotkey': hotkey,
                 'duration': duration,
                 'linked': False,
+                'gap_seconds': 0,
+                'bpm': int(self.bpm_store.get(file_path, 120)),
+                'midi_click': True,
+                'midi_rich1': True,
+                'midi_rich2': True,
+                'sync_show_enabled': False,
+                'sync_show_file': "",
             })
             self.rebuild_hotkey_map()
         self.populate_table()
@@ -2109,7 +2757,7 @@ class LiveControllerMac(QWidget):
                 btn_layout.addWidget(remove_button)
                 btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 btn_layout.setContentsMargins(0, 0, 0, 0)
-                self.table.setCellWidget(i, 4, btn_container)
+                self.table.setCellWidget(i, 9, btn_container)
             else:
                 table_font = QFont("Helvetica Neue", self.current_table_font_size)
 
@@ -2144,6 +2792,30 @@ class LiveControllerMac(QWidget):
 
                 self.table.setCellWidget(i, 2, create_linked_checkbox(i, item))
 
+                bpm_spin = QSpinBox()
+                bpm_spin.setRange(40, 280)
+                bpm_spin.setValue(int(item.get('bpm', 120)))
+                bpm_spin.setFixedWidth(46)
+                bpm_spin.valueChanged.connect(lambda value, r=i: self.update_bpm(value, r))
+                self.table.setCellWidget(i, 3, bpm_spin)
+
+                def create_midi_checkbox(row_idx, key_name):
+                    container = QWidget()
+                    layout = QHBoxLayout(container)
+                    cb = QCheckBox()
+                    cb.setStyleSheet("QCheckBox::indicator { width: 12px; height: 12px; }")
+                    cb.setChecked(bool(self.tracks[row_idx].get(key_name, True)))
+                    cb.toggled.connect(lambda checked, r=row_idx, k=key_name: self.update_midi_port_setting(r, k, checked))
+                    layout.addWidget(cb)
+                    layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    layout.setContentsMargins(0, 0, 0, 0)
+                    return container
+
+                self.table.setCellWidget(i, 4, create_midi_checkbox(i, 'midi_click'))
+                self.table.setCellWidget(i, 5, create_midi_checkbox(i, 'midi_rich1'))
+                self.table.setCellWidget(i, 6, create_midi_checkbox(i, 'midi_rich2'))
+                self.table.setCellWidget(i, 7, create_midi_checkbox(i, 'sync_show_enabled'))
+
                 is_linked = item.get('linked', False)
                 seconds_input = QLineEdit(str(max(0, min(99, item.get('gap_seconds', 0)))).zfill(2))
                 seconds_input.setFont(table_font)
@@ -2153,7 +2825,7 @@ class LiveControllerMac(QWidget):
                 seconds_input.setEnabled(is_linked)
                 seconds_input.textChanged.connect(lambda text, path=item['path']: self.update_gap_seconds(path, text))
                 seconds_input.editingFinished.connect(lambda w=seconds_input: w.setText(w.text().zfill(2) if w.text() else "00"))
-                self.table.setCellWidget(i, 3, seconds_input)
+                self.table.setCellWidget(i, 8, seconds_input)
 
                 remove_button = QPushButton("✕")
                 remove_button.clicked.connect(lambda checked, i=i: self.remove_item(i))
@@ -2168,7 +2840,7 @@ class LiveControllerMac(QWidget):
                 btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 btn_layout.setContentsMargins(0, 0, 0, 0)
                 btn_container.setToolTip(tooltip_text)
-                self.table.setCellWidget(i, 4, btn_container)
+                self.table.setCellWidget(i, 9, btn_container)
 
         self.apply_table_font_size()
         self.update_total_running_time()
@@ -2220,7 +2892,7 @@ class LiveControllerMac(QWidget):
     def update_linked_setting(self, is_checked, row_index):
         if 0 <= row_index < len(self.tracks) and self.tracks[row_index]['type'] == 'track':
             self.tracks[row_index]['linked'] = is_checked
-            seconds_widget = self.table.cellWidget(row_index, 3)
+            seconds_widget = self.table.cellWidget(row_index, 8)
             if isinstance(seconds_widget, QLineEdit):
                 seconds_widget.setEnabled(is_checked)
 
@@ -2233,6 +2905,18 @@ class LiveControllerMac(QWidget):
             if item.get('type') == 'track' and item.get('path') == file_path:
                 item['gap_seconds'] = value
                 break
+
+    def update_bpm(self, bpm, row_index):
+        if 0 <= row_index < len(self.tracks) and self.tracks[row_index].get('type') == 'track':
+            self.tracks[row_index]['bpm'] = int(bpm)
+            path = self.tracks[row_index].get('path')
+            if path:
+                self.bpm_store[path] = int(bpm)
+                self.save_json_store(BPM_STORE_FILE, self.bpm_store)
+
+    def update_midi_port_setting(self, row_index, key_name, checked):
+        if 0 <= row_index < len(self.tracks) and self.tracks[row_index].get('type') == 'track':
+            self.tracks[row_index][key_name] = bool(checked)
 
     def save_setlist(self):
         setlist_name = self.setlist_name_input.text().strip()
@@ -2252,6 +2936,11 @@ class LiveControllerMac(QWidget):
             'track_play_font_size': self.track_play_font_size,
             'audio_only': self.audio_only_checkbox.isChecked(),
             'table_font_size': self.current_table_font_size,
+            'streamdeck_font_size': self.streamdeck_font_spinbox.value(),
+            'loop_bpm': self.loop_bpm_spinbox.value(),
+            'loop_start_bar': self.loop_start_bar_spinbox.value(),
+            'loop_end_bar': self.loop_end_bar_spinbox.value(),
+            'midi_offset_ms': self.midi_offset_spinbox.value(),
         }
         with open(file_path, 'w') as f:
             json.dump(setlist_data_to_save, f, indent=4)
@@ -2296,6 +2985,11 @@ class LiveControllerMac(QWidget):
             self.track_play_font_spinbox.setValue(self.track_play_font_size)
             self.apply_overlay_styles()
             self.audio_only_checkbox.setChecked(loaded_data.get('audio_only', False))
+            self.streamdeck_font_spinbox.setValue(int(loaded_data.get('streamdeck_font_size', DEFAULT_STREAMDECK_FONT_SIZE)))
+            self.loop_bpm_spinbox.setValue(int(loaded_data.get('loop_bpm', 120)))
+            self.loop_start_bar_spinbox.setValue(int(loaded_data.get('loop_start_bar', 1)))
+            self.loop_end_bar_spinbox.setValue(int(loaded_data.get('loop_end_bar', 8)))
+            self.midi_offset_spinbox.setValue(int(loaded_data.get('midi_offset_ms', DEFAULT_MIDI_OFFSET_MS)))
             table_font_size = loaded_data.get('table_font_size')
             if table_font_size is not None:
                 self.current_table_font_size = table_font_size
@@ -2306,6 +3000,7 @@ class LiveControllerMac(QWidget):
             self.undo_history.clear()
 
         self._apply_setlist_data(tracks_data, setlist_name)
+        self._on_loop_bar_changed()
         self.update_undo_button_state()
 
     def _apply_setlist_data(self, setlist_data, setlist_name):
@@ -2315,7 +3010,10 @@ class LiveControllerMac(QWidget):
             if 'type' not in item:
                 item['type'] = 'track'
         valid_hotkeys = set(self._generate_hotkeys())
-        loaded_hotkeys = {item['hotkey'] for item in setlist_data if item['type'] == 'track' and item['hotkey'] in valid_hotkeys}
+        loaded_hotkeys = {
+            item.get('hotkey') for item in setlist_data
+            if item.get('type') == 'track' and item.get('hotkey') in valid_hotkeys
+        }
         self.available_hotkeys = [k for k in self.available_hotkeys if k not in loaded_hotkeys]
         for item in setlist_data:
             if item['type'] == 'track':
@@ -2325,6 +3023,13 @@ class LiveControllerMac(QWidget):
                     item['linked'] = False
                 if 'gap_seconds' not in item:
                     item['gap_seconds'] = 0
+                item.setdefault('bpm', int(self.bpm_store.get(item.get('path', ''), 120)))
+                item.setdefault('midi_click', True)
+                item.setdefault('midi_rich1', True)
+                item.setdefault('midi_rich2', True)
+                item.setdefault('sync_show_enabled', False)
+                item.setdefault('sync_show_file', "")
+                item.setdefault('hotkey', '')
                 if item['hotkey'] not in valid_hotkeys:
                     if self.available_hotkeys:
                         item['hotkey'] = self.available_hotkeys.pop(0)
@@ -2343,17 +3048,25 @@ class LiveControllerMac(QWidget):
             return
         lines = []
         total_seconds = 0
+        index = 0
+        name_col = max([len((self.table.cellWidget(i, 1).text() if self.table.cellWidget(i, 1) else "").upper())
+                        for i in range(self.table.rowCount()) if i < len(self.tracks) and self.tracks[i].get('type') == 'track'] + [10])
         for row_index, item in enumerate(self.tracks):
             if item['type'] == 'divider':
                 lines.append("")
                 lines.append(item.get('text', 'ENCORE'))
                 lines.append("")
             else:
+                index += 1
                 duration = item.get('duration', 0)
                 total_seconds += duration
                 name_widget = self.table.cellWidget(row_index, 1)
-                track_name = (name_widget.text() if name_widget else "").replace('_', ' ')
-                lines.append(f"{track_name} ({self.format_duration(duration)})")
+                track_name = (name_widget.text() if name_widget else "").replace('_', ' ').upper()
+                bpm = int(item.get('bpm', 120))
+                lines.append(
+                    f"{index:02d}. {track_name:<{name_col}}"
+                    f"\t{self.format_duration(duration):>5}\t{bpm:>3} BPM"
+                )
         lines.append("")
         lines.append(f"Total Time: {self.format_duration(total_seconds, show_hours=True)}")
         track_count = len([t for t in self.tracks if t['type'] == 'track'])
@@ -2364,10 +3077,44 @@ class LiveControllerMac(QWidget):
         safe_name = re.sub(r'[\\/*?:"<>|]', '', setlist_name).strip() or "setlist"
         downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
         os.makedirs(downloads_dir, exist_ok=True)
-        file_path = os.path.join(downloads_dir, f"{safe_name}_setlist.txt")
+        stamp = datetime.now().strftime("%Y%m%d")
+        file_path = os.path.join(downloads_dir, f"{safe_name}_{stamp}_setlist.txt")
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(lines))
         self.status_label.setText(f"Status: Set list exported to {file_path}")
+
+    @staticmethod
+    def _wrap_button_title(name: str) -> str:
+        name = (name or "").strip()
+        if not name:
+            return ""
+        words = name.split()
+        if len(words) <= 2:
+            return "\n".join(words)
+        first = " ".join(words[:2])
+        second = " ".join(words[2:])
+        return f"{first}\n{second}"
+
+    def export_streamdeck_profile(self):
+        icons_dir = os.path.join(os.getcwd(), "STREAMDECK ICONS")
+        profile_dir = os.path.join(os.getcwd(), "MESH LIVE TTDM 2026")
+        if not os.path.isdir(icons_dir) or not os.path.isdir(profile_dir):
+            self.status_label.setText("Status: StreamDeck assets missing (STREAMDECK ICONS/ or MESH LIVE TTDM 2026/).")
+            return
+        output_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, "MESH LIVE TTDM 2026.streamDeckProfile")
+        try:
+            if os.path.exists(output_path):
+                if os.path.isdir(output_path):
+                    shutil.rmtree(output_path)
+                else:
+                    os.unlink(output_path)
+            shutil.copytree(profile_dir, output_path)
+            self.status_label.setText(f"Status: StreamDeck profile exported to {output_path}")
+            subprocess.Popen(["open", output_path])
+        except Exception as exc:
+            self.status_label.setText(f"Status: StreamDeck export failed — {exc}")
 
     def update_total_running_time(self):
         total_seconds = sum(t.get('duration', 0) for t in self.tracks if t['type'] == 'track')
@@ -2485,6 +3232,10 @@ class LiveControllerMac(QWidget):
             self._focus_main_window()
             self._focus_restore_timer.start()
             return
+        if lower_key == 'z':
+            self.led2_on = not self.led2_on
+            self.send_led_command("2" if self.led2_on else "4")
+            return
 
         if not self.is_live_mode:
             return
@@ -2546,11 +3297,16 @@ class LiveControllerMac(QWidget):
             return
 
         audio_only = self.audio_only_checkbox.isChecked()
+        bpm = int(track_data.get('bpm', 120))
+        if self.require_midi_checkbox.isChecked() and not self.midi_available:
+            self.send_led_command("1")
+            self.status_label.setText("Status: MIDI required but no MIDI interface detected.")
+            return
         label = "test track" if row_index is None else f"row {row_index}"
         self._debug_log(
             f"Playback start: {os.path.basename(track_path or '')} "
             f"({label}, display={display_num}, preload={preload_time}s, "
-            f"audio_only={audio_only})"
+            f"audio_only={audio_only}, bpm={bpm})"
         )
 
         self.clear_highlight()
@@ -2561,13 +3317,31 @@ class LiveControllerMac(QWidget):
             self.test_file_label.setStyleSheet("font-weight: bold; color: #30d158;")
 
         self.active_flash_timer.start()
-        self.worker = VideoPlaybackWorker(track_path, display_num, preload_time,
-                                          audio_only_mode=audio_only)
+        midi_offset = self.midi_offset_spinbox.value()
+        timing_method = 'high_precision' if self.timing_high_precision_radio.isChecked() else 'standard'
+        zoom_cfg = self.zoom_config if self.apply_zoom_checkbox.isChecked() else {}
+        track_trim_ms = int(self.config.get('sync_show_timing_trim_ms', DEFAULT_SYNC_TIMING_TRIM_MS))
+        self.absolute_start_time = time.time() + preload_time + (track_trim_ms / 1000.0)
+        self.worker = MidiSyncWorker(
+            track_path, bpm, display_num, preload_time, midi_offset,
+            track_data.get('midi_click', True),
+            track_data.get('midi_rich1', True),
+            track_data.get('midi_rich2', True),
+            timing_method,
+            require_midi=self.require_midi_checkbox.isChecked(),
+            zoom_config=zoom_cfg,
+            absolute_start_time=self.absolute_start_time,
+            audio_only_mode=audio_only
+        )
         self.worker.status_update.connect(self.status_label.setText)
         self.worker.error.connect(self._on_playback_error)
         self.worker.finished.connect(self.on_playback_finished)
         self.worker.ipc_socket_path.connect(self.set_ipc_socket)
         self.worker.start()
+        self.send_led_command("3")
+        self.send_led_command("6")
+        if track_data.get('sync_show_enabled') and track_data.get('sync_show_file'):
+            self.trigger_sync_show(track_data.get('sync_show_file'), start_at=self.absolute_start_time, offset_sec=0)
         self._update_scrub_controls_state()
 
     def _on_playback_error(self, msg):
@@ -2598,6 +3372,8 @@ class LiveControllerMac(QWidget):
             if self.current_ipc_socket:
                 _send_ipc_command(self.current_ipc_socket, '{ "command": ["quit"] }')
             self.worker.wait()
+        self.stop_sync_show()
+        self.send_led_command("4")
 
         self.active_flash_timer.stop()
         self.active_label.hide()
@@ -2632,6 +3408,8 @@ class LiveControllerMac(QWidget):
                         self.show_preparing_message(track_name_widget.text())
                     QTimer.singleShot(delay_ms, lambda nt=next_track, nr=next_row: self.execute_playback(nt, nr))
         self._user_stopped = False
+        self.stop_sync_show()
+        self.send_led_command("4")
 
     def show_danger_message(self):
         self.danger_label.raise_()
@@ -2687,32 +3465,37 @@ class LiveControllerMac(QWidget):
             )
             self._debug_log(f"Scrub seek → {self.format_duration(pos)}")
 
-    def _set_loop_a(self):
-        """Capture the current playback position as loop point A."""
-        pos = self._current_playback_pos
-        self._loop_a_seconds = pos
-        self.loop_set_a_btn.setText(f"A: {self.format_duration(pos)}")
-        if self.loop_checkbox.isChecked() and self.current_ipc_socket:
-            _send_ipc_command(
-                self.current_ipc_socket,
-                json.dumps({"command": ["set_property", "ab-loop-a", pos]}),
-            )
-        self._debug_log(f"Loop A set → {self.format_duration(pos)}")
+    def _bars_to_seconds(self, bar_index):
+        beats_per_bar = 4.0
+        bpm = max(1, self.loop_bpm_spinbox.value())
+        return ((max(1, bar_index) - 1) * beats_per_bar) * (60.0 / bpm)
 
-    def _set_loop_b(self):
-        """Capture the current playback position as loop point B."""
-        pos = self._current_playback_pos
-        self._loop_b_seconds = pos
-        self.loop_set_b_btn.setText(f"B: {self.format_duration(pos)}")
+    def _on_loop_bar_changed(self, *_args):
+        start_bar = self.loop_start_bar_spinbox.value()
+        end_bar = self.loop_end_bar_spinbox.value()
+        if end_bar < start_bar:
+            self.loop_end_bar_spinbox.blockSignals(True)
+            self.loop_end_bar_spinbox.setValue(start_bar)
+            self.loop_end_bar_spinbox.blockSignals(False)
+            end_bar = start_bar
+        start_sec = self._bars_to_seconds(start_bar)
+        end_sec = self._bars_to_seconds(end_bar + 1)
+        self._loop_a_seconds = start_sec
+        self._loop_b_seconds = end_sec
+        self.loop_a_time_label.setText(f"({self.format_duration(start_sec)})")
+        self.loop_b_time_label.setText(f"({self.format_duration(end_sec)})")
         if self.loop_checkbox.isChecked() and self.current_ipc_socket:
             _send_ipc_command(
                 self.current_ipc_socket,
-                json.dumps({"command": ["set_property", "ab-loop-b", pos]}),
+                json.dumps({"command": ["set_property", "ab-loop-a", self._loop_a_seconds]}),
             )
-        self._debug_log(f"Loop B set → {self.format_duration(pos)}")
+            _send_ipc_command(
+                self.current_ipc_socket,
+                json.dumps({"command": ["set_property", "ab-loop-b", self._loop_b_seconds]}),
+            )
 
     def _on_loop_toggled(self, checked: bool):
-        """Enable or disable mpv's A-B loop when the loop checkbox is toggled."""
+        self._on_loop_bar_changed()
         if not self.current_ipc_socket:
             return
         if checked:
@@ -2749,8 +3532,9 @@ class LiveControllerMac(QWidget):
         is_playing = self.worker is not None and self.worker.isRunning()
         locked = self.scrub_lock_checkbox.isChecked()
         self.scrub_slider.setEnabled(is_playing and not locked)
-        self.loop_set_a_btn.setEnabled(is_playing and not locked)
-        self.loop_set_b_btn.setEnabled(is_playing and not locked)
+        self.loop_bpm_spinbox.setEnabled(not locked)
+        self.loop_start_bar_spinbox.setEnabled(not locked)
+        self.loop_end_bar_spinbox.setEnabled(not locked)
         self.loop_checkbox.setEnabled(not locked)
 
     def _reset_scrub_controls(self):
@@ -2764,8 +3548,7 @@ class LiveControllerMac(QWidget):
         self.scrub_slider.blockSignals(False)
         self.scrub_pos_label.setText("--:--")
         self.scrub_dur_label.setText("--:--")
-        self.loop_set_a_btn.setText("A: --:--")
-        self.loop_set_b_btn.setText("B: --:--")
+        self._on_loop_bar_changed()
         self._update_scrub_controls_state()
 
     def _debug_log(self, message: str):
@@ -2810,6 +3593,171 @@ class LiveControllerMac(QWidget):
         self.show_preparing_message(os.path.basename(self.test_track_path))
         self.execute_playback({'path': self.test_track_path})
 
+    def set_test_controls_enabled(self, enabled, except_port=None):
+        for port_num, controls in self.midi_port_controls.items():
+            disable = (not enabled) and (except_port is None or except_port != port_num)
+            controls["enabled"].setEnabled(not disable)
+            controls["send_start"].setEnabled(not disable)
+            controls["bpm"].setEnabled(not disable)
+            controls["button"].setEnabled(not disable)
+
+    def toggle_midi_test(self, port_num):
+        controls = self.midi_port_controls.get(port_num)
+        if not controls:
+            return
+        worker = controls.get("worker")
+        if worker and worker.isRunning():
+            worker.stop()
+            return
+        worker = MidiTestWorker(port_num, controls["bpm"].value(), controls["send_start"].isChecked())
+        controls["worker"] = worker
+        controls["button"].setText("Stop")
+        worker.status_update.connect(self.status_label.setText)
+        worker.error.connect(self._on_playback_error)
+        worker.finished.connect(self._on_midi_test_finished)
+        self.set_test_controls_enabled(False, except_port=port_num)
+        worker.start()
+
+    def _on_midi_test_finished(self, port_num):
+        controls = self.midi_port_controls.get(port_num)
+        if controls:
+            controls["button"].setText("Start")
+            controls["worker"] = None
+        self.set_test_controls_enabled(not self.is_live_mode)
+
+    def toggle_calib_loop(self):
+        if getattr(self, "calib_loop_active", False):
+            self.stop_calib_loop()
+        else:
+            self.calib_loop_active = True
+            self.calib_button.setText("Stop")
+            self._start_calib_iteration()
+
+    def _start_calib_iteration(self):
+        if not getattr(self, "calib_loop_active", False) or not self.tracks:
+            return
+        first_track = next((t for t in self.tracks if t.get('type') == 'track'), None)
+        if not first_track:
+            self.stop_calib_loop()
+            return
+        track = dict(first_track)
+        track['duration'] = min(track.get('duration', 0), self.calib_duration_spinbox.value())
+        self.execute_playback(track, None)
+        QTimer.singleShot(self.calib_duration_spinbox.value() * 1000 + 500, self._on_calib_iteration_finished)
+
+    def _on_calib_iteration_finished(self):
+        if getattr(self, "calib_loop_active", False):
+            self.stop_all_activity()
+            QTimer.singleShot(350, self._start_calib_iteration)
+
+    def _on_calib_error(self, msg):
+        self.status_label.setText(f"Calibration error: {msg}")
+        self.stop_calib_loop()
+
+    def stop_calib_loop(self):
+        self.calib_loop_active = False
+        self.calib_button.setText("Start")
+
+    def trigger_sync_show(self, show_file, start_at=None, offset_sec=None):
+        session = self.sync_show_session_input.text().strip() or DEFAULT_SYNC_SHOW_SESSION
+        host = (self.sync_show_host_input.text().strip() or DEFAULT_SYNC_SHOW_HOST).rstrip("/")
+        self.active_sync_show_session = session
+
+        def _worker():
+            try:
+                query = {"session": session, "show_file": show_file}
+                if start_at is not None:
+                    query["start_at"] = f"{float(start_at):.6f}"
+                    query["offset"] = "0"
+                elif offset_sec is not None:
+                    query["offset"] = f"{float(offset_sec):.6f}"
+                url = f"{host}/api/start-show?{urllib.parse.urlencode(query)}"
+                # Intentionally disable cert verification: operator deployments use private cert chains.
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with urllib.request.urlopen(url, context=ctx, timeout=4) as resp:
+                    body = resp.read().decode("utf-8", errors="replace")
+                self._debug_log(f"sync-show start response: {body[:500]}")
+            except Exception as exc:
+                self._debug_log(f"sync-show start failed: {exc}")
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def stop_sync_show(self):
+        session = self.active_sync_show_session
+        if not session:
+            return
+        host = (self.sync_show_host_input.text().strip() or DEFAULT_SYNC_SHOW_HOST).rstrip("/")
+        self.active_sync_show_session = None
+        def _worker():
+            try:
+                url = f"{host}/api/stop-show?{urllib.parse.urlencode({'session': session})}"
+                # Intentionally disable cert verification: operator deployments use private cert chains.
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                urllib.request.urlopen(url, context=ctx, timeout=4).read()
+            except Exception as exc:
+                self._debug_log(f"sync-show stop failed: {exc}")
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def load_zoom_config(self):
+        if not os.path.exists(ZOOM_CONFIG_FILE):
+            return {}
+        try:
+            with open(ZOOM_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return _migrate_zoom_config(json.load(f))
+        except Exception:
+            return {}
+
+    def save_zoom_config(self):
+        try:
+            with open(ZOOM_CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(_migrate_zoom_config(self.zoom_config), f, indent=2)
+        except Exception as exc:
+            self._debug_log(f"Zoom config save failed: {exc}")
+
+    def open_zoom_dialog(self):
+        dialog = MultiZoomScaleDialog(self.zoom_config, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.zoom_config = dialog.collect_config()
+            self.save_zoom_config()
+            self.zoom_status_label.setText("Configured")
+            QMessageBox.information(
+                self,
+                "Restart Recommended",
+                "Multi-zone zoom/scale settings were changed.\n"
+                "If an external preview player is open, restart playback to apply fully."
+            )
+
+    def _connect_arduino(self):
+        if serial is None or list_ports is None:
+            self._debug_log("pyserial not installed; LED controller disabled.")
+            return None
+        try:
+            for port in list_ports.comports():
+                dev = getattr(port, "device", "")
+                if "/dev/cu.usb" not in dev:
+                    continue
+                try:
+                    ser = serial.Serial(dev, 9600, timeout=0.1)
+                    self._debug_log(f"Arduino connected on {dev}")
+                    return ser
+                except Exception:
+                    continue
+        except Exception as exc:
+            self._debug_log(f"Arduino scan failed: {exc}")
+        return None
+
+    def send_led_command(self, command):
+        if not self.arduino_serial:
+            return
+        try:
+            self.arduino_serial.write(f"{command}\n".encode("utf-8"))
+        except Exception as exc:
+            self._debug_log(f"LED send failed: {exc}")
+
     # ------------------------------------------------------------------ #
     # Qt event overrides
     # ------------------------------------------------------------------ #
@@ -2827,12 +3775,19 @@ class LiveControllerMac(QWidget):
     def closeEvent(self, event):
         self.save_session()
         self.save_config()
+        self.stop_sync_show()
+        self.send_led_command("4")
         if self.hotkey_listener is not None:
             self.hotkey_listener.stop()
             self.hotkey_listener.wait()
         self.stop_all_activity()
         self._position_poller.stop()
         self._position_poller.wait()
+        try:
+            if self.arduino_serial:
+                self.arduino_serial.close()
+        except Exception:
+            pass
         event.accept()
 
 
