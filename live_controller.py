@@ -656,6 +656,31 @@ def _build_external_preview_mpv_command(
     return cmd
 
 
+def _build_multizone_capture_preview_mpv_command(mpv_path, ipc_path, video_path):
+    """Build the windowed mpv command used for Multi-Zone frame capture preview.
+
+    ``--ontop`` keeps the preview visible while the operator clicks back into the
+    compositor controls to play, pause, scrub, and capture a frame. mpv already
+    raises a newly opened window normally, so no extra focus flag or follow-up
+    IPC property write is needed here.
+    """
+    return [
+        mpv_path,
+        f"--input-ipc-server={ipc_path}",
+        "--pause",
+        "--no-fullscreen",
+        "--geometry=800x600",
+        "--title=Multi-Zone Preview — navigate then click Capture Frame",
+        "--ontop",
+        "--no-osd-bar",
+        "--no-osc",
+        "--no-input-default-bindings",
+        "--loop-file=inf",
+        "--really-quiet",
+        video_path,
+    ]
+
+
 def _send_mpv_ipc_command(ipc_path, command, max_attempts=2, retry_delay=0.05):
     """Send a JSON IPC command to an mpv named pipe with bounded retries."""
     if not ipc_path:
@@ -2932,20 +2957,7 @@ class MultiZoomScaleDialog(QDialog):
     def _launch_mpv(self, video_path):
         self._stop_mpv()
         self._ipc_path = _make_unique_mpv_pipe_name("mpv_mzoom")
-        cmd = [
-            MPV_PATH,
-            f"--input-ipc-server={self._ipc_path}",
-            "--pause",
-            "--no-fullscreen",
-            "--geometry=800x600",
-            "--title=Multi-Zone Preview — navigate then click Capture Frame",
-            "--no-osd-bar",
-            "--no-osc",
-            "--no-input-default-bindings",
-            "--loop-file=inf",
-            "--really-quiet",
-            video_path,
-        ]
+        cmd = _build_multizone_capture_preview_mpv_command(MPV_PATH, self._ipc_path, video_path)
         try:
             self._mpv_process = subprocess.Popen(cmd)
             for btn in (self._play_btn, self._pause_btn, self._capture_btn,

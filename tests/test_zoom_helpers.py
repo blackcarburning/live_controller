@@ -237,6 +237,25 @@ def _build_external_preview_mpv_command(
     return cmd
 
 
+def _build_multizone_capture_preview_mpv_command(mpv_path, ipc_path, video_path):
+    cmd = [
+        mpv_path,
+        f"--input-ipc-server={ipc_path}",
+        "--pause",
+        "--no-fullscreen",
+        "--geometry=800x600",
+        "--title=Multi-Zone Preview — navigate then click Capture Frame",
+        "--ontop",
+        "--no-osd-bar",
+        "--no-osc",
+        "--no-input-default-bindings",
+        "--loop-file=inf",
+        "--really-quiet",
+        video_path,
+    ]
+    return cmd
+
+
 # ---------------------------------------------------------------------------
 # _migrate_zoom_config tests
 # ---------------------------------------------------------------------------
@@ -637,4 +656,18 @@ def test_external_preview_video_command_loops():
     assert "--loop-file=inf" in cmd
     assert "--image-display-duration=inf" not in cmd
     assert "--pause" not in cmd
+    assert cmd[-1] == r"c:\videos\clip.mp4"
+
+
+def test_multizone_capture_preview_command_stays_on_top():
+    cmd = _build_multizone_capture_preview_mpv_command(
+        r"c:\mpv\mpv.exe",
+        r"\\.\pipe\mpv_mzoom_test",
+        r"c:\videos\clip.mp4",
+    )
+    assert "--ontop" in cmd
+    assert "--pause" in cmd
+    assert "--no-fullscreen" in cmd
+    assert "--geometry=800x600" in cmd
+    assert "--loop-file=inf" in cmd
     assert cmd[-1] == r"c:\videos\clip.mp4"
