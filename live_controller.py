@@ -583,8 +583,7 @@ def _build_vf_for_zones(zoom_config):
         split_tags = "[base_src]" + "".join(f"[z{i}]" for i in range(n))
         graph_parts = [
             f"split={n + 1}{split_tags}",
-            (f"[base_src]crop=1:1:0:0,scale={out_w}:{out_h},"
-             f"drawbox=x=0:y=0:w=iw:h=ih:color=black@1:t=fill[base]")
+            f"[base_src]scale={out_w}:{out_h},drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill[base]",
         ]
         for i, z in enumerate(enabled):
             graph_parts.append(f"[z{i}]{_zone_vf(z)}[c{i}]")
@@ -687,6 +686,7 @@ def _build_external_preview_mpv_command(
         "--no-osc",
         "--no-input-default-bindings",
         "--really-quiet",
+        "--msg-level=vf=v,lavfi=v",
         "--keep-open=yes",
     ]
     if is_video_source:
@@ -875,6 +875,8 @@ class MidiSyncWorker(QThread):
         if not is_audio_only:
             vf_str = _build_vf_for_zones(self.zoom_config)
             if vf_str:
+                print(f"[playback] vf: {vf_str}")
+                self.status_update.emit(f"Video filter: {vf_str}")
                 mpv_cmd.insert(-1, f"--vf={vf_str}")
         
         try:
@@ -3804,6 +3806,9 @@ class MultiZoomScaleDialog(QDialog):
         self._ext_preview_source_path = source_path
         vf_str = _build_vf_for_zones(self._collect_config())
         self._ext_preview_vf = vf_str or ""
+        if self._ext_preview_vf:
+            print(f"[external preview] vf: {self._ext_preview_vf}")
+            self._status.setText(f"Video filter: {self._ext_preview_vf}")
 
         cmd = _build_external_preview_mpv_command(
             MPV_PATH,

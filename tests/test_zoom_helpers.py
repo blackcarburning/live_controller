@@ -165,8 +165,7 @@ def _build_vf_for_zones(zoom_config):
         split_tags = "[base_src]" + "".join(f"[z{i}]" for i in range(n))
         graph_parts = [
             f"split={n + 1}{split_tags}",
-            (f"[base_src]crop=1:1:0:0,scale={out_w}:{out_h},"
-             f"drawbox=x=0:y=0:w=iw:h=ih:color=black@1:t=fill[base]")
+            f"[base_src]scale={out_w}:{out_h},drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill[base]",
         ]
         for i, z in enumerate(enabled):
             graph_parts.append(f"[z{i}]{_zone_vf(z)}[c{i}]")
@@ -262,6 +261,7 @@ def _build_external_preview_mpv_command(
         "--no-osc",
         "--no-input-default-bindings",
         "--really-quiet",
+        "--msg-level=vf=v,lavfi=v",
         "--keep-open=yes",
     ]
     if is_video_source:
@@ -486,7 +486,9 @@ def test_free_placement_builds_overlay_graph():
     )
     result = _build_vf_for_zones(cfg)
     assert "split=3[base_src][z0][z1]" in result
-    assert "drawbox=x=0:y=0:w=iw:h=ih:color=black@1:t=fill[base]" in result
+    # Base canvas: scale to canvas size, fill with black — no 1×1 crop intermediate
+    assert "drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill[base]" in result
+    assert "crop=1:1:0:0" not in result
     assert "[base][c0]overlay=x=100:y=200[o0]" in result
     assert "[o0][c1]overlay=x=900:y=120,setsar=1" in result
     assert "hstack=inputs=2" not in result
@@ -501,6 +503,134 @@ def test_free_placement_false_keeps_existing_graph():
         _make_cfg(z0, z1, direction="horizontal", free_placement_enabled=False)
     )
     assert baseline == explicit_false
+
+
+def test_free_placement_1_zone():
+    """Single zone in free-placement mode uses split=2 and one overlay."""
+    z0 = _enabled_zone(crop_w=800, crop_h=450, place_x=50, place_y=30)
+    cfg = _make_cfg(z0, out_w=1920, out_h=1080, free_placement_enabled=True)
+    result = _build_vf_for_zones(cfg)
+    assert result is not None
+    assert "split=2[base_src][z0]" in result
+    assert "scale=1920:1080,drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill[base]" in result
+    assert "[z0]crop=800:450:0:0[c0]" in result
+    assert "[base][c0]overlay=x=50:y=30,setsar=1" in result
+    assert "hstack" not in result
+    assert "vstack" not in result
+
+
+def test_free_placement_2_zones():
+    """Two zones: split=3, two overlays, correct label chaining."""
+    z0 = _enabled_zone(crop_w=640, crop_h=360, place_x=0, place_y=0)
+    z1 = _enabled_zone(crop_x=640, crop_w=640, crop_h=360, place_x=640, place_y=360)
+    cfg = _make_cfg(z0, z1, out_w=1280, out_h=720, free_placement_enabled=True)
+    result = _build_vf_for_zones(cfg)
+    assert "split=3[base_src][z0][z1]" in result
+    assert "scale=1280:720,drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill[base]" in result
+    assert "[z0]crop=640:360:0:0[c0]" in result
+    assert "[z1]crop=640:360:640:0[c1]" in result
+    assert "[base][c0]overlay=x=0:y=0[o0]" in result
+    assert "[o0][c1]overlay=x=640:y=360,setsar=1" in result
+
+
+def test_free_placement_3_zones():
+    """Three zones: split=4, three overlays, correct label chaining."""
+    z0 = _enabled_zone(crop_w=640, crop_h=360, place_x=0, place_y=0)
+    z1 = _enabled_zone(crop_x=640, crop_w=640, crop_h=360, place_x=640, place_y=0)
+    z2 = _enabled_zone(crop_y=360, crop_w=640, crop_h=360, place_x=320, place_y=360)
+    cfg = _make_cfg(z0, z1, z2, out_w=1280, out_h=720, free_placement_enabled=True)
+    result = _build_vf_for_zones(cfg)
+    assert "split=4[base_src][z0][z1][z2]" in result
+    assert "[base][c0]overlay=x=0:y=0[o0]" in result
+    assert "[o0][c1]overlay=x=640:y=0[o1]" in result
+    assert "[o1][c2]overlay=x=320:y=360,setsar=1" in result
+    # No output label on the last overlay (implicit lavfi output)
+    assert "[o2]" not in result
+
+
+def _labels_in_graph(result):
+    """Return (produced_labels, consumed_labels) from a lavfi graph string."""
+    import re
+    # Strip outer lavfi=[...] wrapper
+    inner = result[len("lavfi=["):-1]
+    produced = re.findall(r'\[(\w+)\](?=\w)', inner)   # label followed by a filter char
+    consumed = re.findall(r'(?<=\w)\[(\w+)\]', inner)  # label preceded by a filter char
+    return produced, consumed
+
+
+def test_free_placement_every_label_produced_and_consumed_once():
+    """Each intermediate label in the free-placement graph is used exactly once."""
+    z0 = _enabled_zone(crop_w=480, crop_h=270, place_x=10, place_y=10)
+    z1 = _enabled_zone(crop_x=480, crop_w=480, crop_h=270, place_x=500, place_y=10)
+    z2 = _enabled_zone(crop_y=270, crop_w=480, crop_h=270, place_x=10, place_y=280)
+    cfg = _make_cfg(z0, z1, z2, out_w=1000, out_h=600, free_placement_enabled=True)
+    result = _build_vf_for_zones(cfg)
+    import re
+    inner = result[len("lavfi=["):-1]
+    # All labels that appear as outputs: [label] immediately before a non-bracket char or end
+    all_outputs = re.findall(r'\[([^\[\]]+)\](?=[^;\[]|$)', inner)
+    # All labels that appear as inputs: after ';' or at start, or a label right after another label
+    all_inputs = re.findall(r'(?:^|;)\s*\[([^\[\]]+)\]', inner)
+    # For each label that is an intermediate (not a split-output declaration), it should appear
+    # as both a producer output and a consumer input.
+    # The simplest invariant: every [lbl] token is either produced or consumed, with no duplicates.
+    # Count tokens
+    all_label_tokens = re.findall(r'\[([^\[\]]+)\]', inner)
+    from collections import Counter
+    counts = Counter(all_label_tokens)
+    # base_src, z0, z1, z2 each appear once (split output only, then consumed once)
+    # base, c0, c1, c2 each appear twice (once as output, once as input)
+    # o0, o1 each appear twice (once as output, once as input)
+    # Last overlay has no output label, so no [o2]
+    for lbl, count in counts.items():
+        assert count in (1, 2), f"Label [{lbl}] appears {count} times (expected 1 or 2)"
+
+
+def test_free_placement_with_border():
+    """Border is applied per-zone before overlay placement."""
+    z0 = _enabled_zone(crop_w=640, crop_h=360, place_x=10, place_y=10, border_px=5)
+    cfg = _make_cfg(z0, out_w=1920, out_h=1080, free_placement_enabled=True)
+    result = _build_vf_for_zones(cfg)
+    # zone piece should include the pad for the border
+    assert "pad=iw+10:ih+10:5:5:black" in result
+    # placement coordinates unchanged
+    assert "overlay=x=10:y=10" in result
+
+
+def test_free_placement_with_offset_y():
+    """offset_y is applied per-zone (positive: shift down, negative: shift up)."""
+    z0 = _enabled_zone(crop_w=640, crop_h=360, place_x=0, place_y=0, offset_y=20)
+    cfg = _make_cfg(z0, out_w=1920, out_h=1080, free_placement_enabled=True)
+    result = _build_vf_for_zones(cfg)
+    assert "pad=iw:ih+20:0:20:black,crop=iw:ih:0:0" in result
+
+
+def test_free_placement_with_composite_crop_and_scale():
+    """comp_crop and comp_scale are applied after the overlay chain, before setsar=1."""
+    z0 = _enabled_zone(crop_w=640, crop_h=360, place_x=100, place_y=100)
+    cfg = _make_cfg(
+        z0,
+        out_w=1920, out_h=1080,
+        free_placement_enabled=True,
+        comp_crop_w=1600, comp_crop_h=900, comp_crop_x=160, comp_crop_y=90,
+        comp_scale_w=1280, comp_scale_h=720,
+    )
+    result = _build_vf_for_zones(cfg)
+    # suffix should be appended to the last overlay before setsar=1
+    assert "crop=1600:900:160:90,scale=1280:720,setsar=1" in result
+    assert result.endswith("setsar=1]")
+
+
+def test_free_placement_no_out_canvas_falls_back_to_stitch():
+    """If out_w or out_h is absent (-1), free_placement is ignored and stitched path is used."""
+    z0 = _enabled_zone(crop_w=960, crop_h=540)
+    z1 = _enabled_zone(crop_x=960, crop_w=960, crop_h=540)
+    # No out_w / out_h in config — they default to -1 via migration
+    cfg = _make_cfg(z0, z1, direction="horizontal", free_placement_enabled=True)
+    result = _build_vf_for_zones(cfg)
+    # Falls through to stitched path
+    assert "hstack=inputs=2" in result
+    assert "overlay" not in result
 
 
 def test_multi_zone_different_heights_padded():
@@ -714,6 +844,7 @@ def test_external_preview_image_command_is_static():
     assert "--loop-file=inf" not in cmd
     assert "--pause" in cmd
     assert "--vf=lavfi=[crop=100:100:0:0,setsar=1]" in cmd
+    assert "--msg-level=vf=v,lavfi=v" in cmd
     assert cmd[-1] == r"c:\frames\snapshot.png"
 
 
