@@ -1088,9 +1088,13 @@ class MidiSyncWorker(QThread):
         stderr_text = ""
         if self.mpv_process and self.mpv_process.stderr and self.mpv_process.poll() is not None:
             try:
-                stderr_text = self.mpv_process.stderr.read() or ""
+                _stdout_text, stderr_text = self.mpv_process.communicate(timeout=0.2)
+                stderr_text = stderr_text or ""
             except Exception as exc:
-                stderr_text = f"<stderr read failed: {exc}>"
+                try:
+                    stderr_text = self.mpv_process.stderr.read() or ""
+                except Exception:
+                    stderr_text = f"<stderr read failed: {exc}>"
         self._mpv_stderr_cache = stderr_text
         return stderr_text
 
@@ -1255,7 +1259,11 @@ class MidiSyncWorker(QThread):
             try:
                 self.mpv_process.wait(timeout=1.0)
             except subprocess.TimeoutExpired:
-                pass
+                self.mpv_process.kill()
+                try:
+                    self.mpv_process.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    pass
         self._log_mpv_exit("cleanup")
         if socket_path and os.path.exists(socket_path):
             try:
@@ -3757,9 +3765,9 @@ class LiveControllerMac(QWidget):
                     f"w={geom.width()} h={geom.height()}"
                 )
             configured_display = int(self.config.get("display", DEFAULT_VIDEO_SCREEN_NUMBER))
-            if configured_display > len(screens):
+            if configured_display < 1 or configured_display > len(screens):
                 log(
-                    f"WARNING: Configured display {configured_display} exceeds available screen count {len(screens)}."
+                    f"WARNING: Configured display {configured_display} is outside available screen count {len(screens)}."
                 )
         except Exception as exc:
             log(f"ERROR: display preflight failed: {exc}")
