@@ -27,11 +27,13 @@
 # --- Standard Library Imports ---
 import sys
 import os
+import platform
 import re
 import ssl
 import ctypes
 import ctypes.util
 import signal
+import shlex
 import socket
 import subprocess
 import tempfile
@@ -49,7 +51,10 @@ from datetime import datetime
 # --- Third-Party Library Imports ---
 # Requires: pynput
 # Install with: pip install pynput
-import pynput.keyboard as pynput_keyboard
+try:
+    import pynput.keyboard as pynput_keyboard
+except Exception:
+    pynput_keyboard = None
 try:
     import rtmidi
 except Exception:
@@ -87,6 +92,36 @@ def _find_executable(name):
         if os.path.exists(candidate):
             return candidate
     return name  # Return bare name; subprocess will raise a clear error if missing.
+
+
+_DEBUG_LOG_HOOK = None
+
+
+def _set_debug_log_hook(hook):
+    global _DEBUG_LOG_HOOK
+    _DEBUG_LOG_HOOK = hook
+
+
+def _debug_log_runtime(message):
+    hook = _DEBUG_LOG_HOOK
+    if callable(hook):
+        try:
+            hook(message)
+        except Exception:
+            pass
+
+
+def _format_command_for_log(command):
+    return shlex.join([str(part) for part in command])
+
+
+def _truncate_for_log(text, limit=500):
+    if text is None:
+        return ""
+    text = str(text).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "…"
 
 
 def _is_accessibility_trusted():
@@ -624,14 +659,18 @@ QSlider::sub-page:horizontal:disabled {{
 
 def _send_ipc_command(socket_path, command_str):
     """Sends a JSON command string to mpv via its Unix domain socket."""
+    _debug_log_runtime(f"IPC send → socket={socket_path} command={command_str}")
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(2.0)
         sock.connect(socket_path)
         sock.sendall((command_str + '\n').encode('utf-8'))
         sock.close()
+        _debug_log_runtime(f"IPC success → socket={socket_path} command={command_str}")
+        return True
     except Exception as e:
-        print(f"mpv IPC error: {e}")
+        _debug_log_runtime(f"IPC error → socket={socket_path} command={command_str} error={e}")
+        return False
 
 
 def _query_ipc_property(socket_path, prop):
@@ -667,8 +706,8 @@ def _query_ipc_property(socket_path, prop):
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     pass
         sock.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        _debug_log_runtime(f"IPC query error → socket={socket_path} property={prop} error={exc}")
     return None
 
 
@@ -823,8 +862,15 @@ def _build_vf_for_zones(zoom_config):
 
 
 def _make_unique_mpv_pipe_name(prefix):
-    # macOS divergence: Unix-domain socket path under tempdir (no Windows named pipes).
-    return os.path.join(tempfile.gettempdir(), f"{prefix}_{os.getpid()}_{uuid.uuid4().hex}.sock")
+    # macOS divergence: Unix-domain socket path (no Windows named pipes).
+    # AF_UNIX paths are capped at ~104 bytes on macOS, and the per-user
+    # TMPDIR (/var/folders/<...>/T/) alone eats ~50 of them. Use /tmp and a
+    # short unique suffix so the total stays well under the limit.
+    short_id = uuid.uuid4().hex[:8]
+    path = f"/tmp/{prefix}_{os.getpid()}_{short_id}.sock"
+    if len(path.encode("utf-8")) > 100:
+        path = f"/tmp/mpv_{short_id}.sock"
+    return path
 
 
 def _send_mpv_ipc_command(ipc_path, command, max_attempts=2, retry_delay=0.05):
@@ -833,12 +879,13 @@ def _send_mpv_ipc_command(ipc_path, command, max_attempts=2, retry_delay=0.05):
     last_error = "Unknown IPC error."
     for i in range(attempts):
         try:
-            _send_ipc_command(ipc_path, payload)
-            return True, ""
+            if _send_ipc_command(ipc_path, payload):
+                return True, ""
+            last_error = f"IPC send failed for socket {ipc_path}"
         except Exception as exc:
             last_error = str(exc)
-            if i < attempts - 1:
-                time.sleep(retry_delay)
+        if i < attempts - 1:
+            time.sleep(retry_delay)
     return False, last_error
 
 
@@ -998,6 +1045,8 @@ class MidiSyncWorker(QThread):
         self.mpv_process = None
         self._is_running = True
         self.midi_outputs = {}
+        self._mpv_exit_logged = False
+        self._mpv_stderr_cache = None
 
     def stop(self):
         self._is_running = False
@@ -1030,6 +1079,71 @@ class MidiSyncWorker(QThread):
         # macOS divergence: no Windows multimedia timer API; high-precision mode is busy-wait only.
         self._run_logic(is_high_precision=True)
 
+    def _log_debug(self, message):
+        _debug_log_runtime(message)
+
+    def _read_mpv_stderr(self):
+        if self._mpv_stderr_cache is not None:
+            return self._mpv_stderr_cache
+        stderr_text = ""
+        if self.mpv_process and self.mpv_process.stderr and self.mpv_process.poll() is not None:
+            try:
+                stderr_text = self.mpv_process.stderr.read() or ""
+            except Exception as exc:
+                stderr_text = f"<stderr read failed: {exc}>"
+        self._mpv_stderr_cache = stderr_text
+        return stderr_text
+
+    def _log_mpv_exit(self, context="playback"):
+        if not self.mpv_process or self.mpv_process.poll() is None or self._mpv_exit_logged:
+            return
+        rc = self.mpv_process.returncode
+        stderr_text = _truncate_for_log(self._read_mpv_stderr())
+        msg = f"mpv exited ({context}) with return code {rc}"
+        if stderr_text:
+            msg += f"; stderr={stderr_text}"
+        self._log_debug(msg)
+        self._mpv_exit_logged = True
+
+    def _launch_mpv_and_wait_for_socket(self, mpv_cmd, socket_path):
+        track_exists = os.path.exists(self.video_file)
+        self._log_debug(
+            f"Resolved track path: {self.video_file} (exists={track_exists})"
+        )
+        self._log_debug(
+            f"mpv IPC socket path: {socket_path} ({len(socket_path.encode('utf-8'))} bytes)"
+        )
+        self._log_debug(f"mpv command: {_format_command_for_log(mpv_cmd)}")
+        self.status_update.emit(f"Starting mpv on screen {self.display_num}...")
+        self.mpv_process = subprocess.Popen(
+            mpv_cmd,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self._mpv_exit_logged = False
+        self._mpv_stderr_cache = None
+        self.ipc_socket_path.emit(socket_path)
+        socket_deadline = time.perf_counter() + 5.0
+        while (not os.path.exists(socket_path)
+               and time.perf_counter() < socket_deadline
+               and self._is_running):
+            if self.mpv_process.poll() is not None:
+                stderr_text = _truncate_for_log(self._read_mpv_stderr())
+                self._log_mpv_exit("startup")
+                raise RuntimeError(
+                    "mpv exited before creating its IPC socket "
+                    f"(returncode={self.mpv_process.returncode}, "
+                    f"socket={socket_path}, socket_bytes={len(socket_path.encode('utf-8'))}, "
+                    f"command={_format_command_for_log(mpv_cmd)}, "
+                    f"stderr={stderr_text or '<empty>'})"
+                )
+            time.sleep(0.02)
+        if not os.path.exists(socket_path):
+            raise RuntimeError(
+                f"mpv IPC socket did not appear: {socket_path} "
+                f"({len(socket_path.encode('utf-8'))} bytes)"
+            )
+
     def _run_logic(self, is_high_precision):
         mpv_bin = MPV_PATH if (os.path.isabs(MPV_PATH) and os.path.exists(MPV_PATH)) else _find_executable('mpv')
         socket_path = _make_unique_mpv_pipe_name("mpv_socket")
@@ -1039,7 +1153,7 @@ class MidiSyncWorker(QThread):
             mpv_bin,
             f"--input-ipc-server={socket_path}",
             "--pause",
-            "--really-quiet",
+            "--msg-level=all=warn",
             "--keep-open=no",
         ]
         if self.max_duration_sec > 0:
@@ -1076,12 +1190,7 @@ class MidiSyncWorker(QThread):
             while self._is_running and time.perf_counter() < pre_roll_end_time:
                 now = time.perf_counter()
                 if not launched and now >= mpv_launch_time:
-                    self.status_update.emit(f"Starting mpv on screen {self.display_num}...")
-                    self.mpv_process = subprocess.Popen(mpv_cmd)
-                    self.ipc_socket_path.emit(socket_path)
-                    socket_deadline = time.perf_counter() + 5.0
-                    while not os.path.exists(socket_path) and time.perf_counter() < socket_deadline and self._is_running:
-                        time.sleep(0.02)
+                    self._launch_mpv_and_wait_for_socket(mpv_cmd, socket_path)
                     launched = True
                 if now >= next_tick:
                     for midiout in self.midi_outputs.values():
@@ -1095,12 +1204,7 @@ class MidiSyncWorker(QThread):
             if not self._is_running:
                 raise InterruptedError("Playback stopped by user during preload")
             if self.mpv_process is None:
-                self.status_update.emit(f"Starting mpv on screen {self.display_num}...")
-                self.mpv_process = subprocess.Popen(mpv_cmd)
-                self.ipc_socket_path.emit(socket_path)
-                socket_deadline = time.perf_counter() + 5.0
-                while not os.path.exists(socket_path) and time.perf_counter() < socket_deadline and self._is_running:
-                    time.sleep(0.02)
+                self._launch_mpv_and_wait_for_socket(mpv_cmd, socket_path)
 
             offset_sec = self.midi_offset_ms / 1000.0
             midi_start_time = time.perf_counter()
@@ -1121,7 +1225,8 @@ class MidiSyncWorker(QThread):
                     pass
                 else:
                     time.sleep(0.001)
-            _send_ipc_command(socket_path, '{ "command": ["set_property", "pause", false] }')
+            if not _send_ipc_command(socket_path, '{ "command": ["set_property", "pause", false] }'):
+                raise RuntimeError(f"Failed to unpause mpv via IPC socket {socket_path}")
             self.status_update.emit(f"PLAYING: {os.path.basename(self.video_file)}")
 
             next_tick = time.perf_counter()
@@ -1135,6 +1240,7 @@ class MidiSyncWorker(QThread):
                     pass
                 else:
                     time.sleep(0.001)
+            self._log_mpv_exit("playback")
         except Exception as e:
             self.error.emit(f"Playback error: {e}")
         finally:
@@ -1144,6 +1250,11 @@ class MidiSyncWorker(QThread):
         started_ports = started_ports or []
         if self.mpv_process and self.mpv_process.poll() is None:
             self.mpv_process.terminate()
+            try:
+                self.mpv_process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                pass
+        self._log_mpv_exit("cleanup")
         if socket_path and os.path.exists(socket_path):
             try:
                 os.unlink(socket_path)
@@ -1192,7 +1303,7 @@ class PositionPoller(QThread):
         while self._running:
             with self._socket_lock:
                 path = self._socket_path
-            if path:
+            if path and os.path.exists(path):
                 pos = _query_ipc_property(path, "time-pos")
                 dur = _query_ipc_property(path, "duration")
                 if pos is not None and dur is not None:
@@ -1307,7 +1418,7 @@ class DebugConsoleWindow(QDialog):
     everything to the clipboard in one click.
     """
 
-    MAX_LINES = 500  # Prevent unbounded memory growth.
+    MAX_LINES = 1000  # Prevent unbounded memory growth while keeping startup preflight visible.
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1383,6 +1494,8 @@ class DebugConsoleWindow(QDialog):
 class LiveControllerMac(QWidget):
     """The main application window and controller — macOS version."""
 
+    debug_message = pyqtSignal(str)
+
     # Milliseconds of main-thread silence before the freeze watchdog logs a warning.
     _FREEZE_WARN_MS = 1500
 
@@ -1392,8 +1505,11 @@ class LiveControllerMac(QWidget):
 
         # Debug console (created early so _debug_log works immediately).
         self._debug_console = DebugConsoleWindow(self)
+        self.debug_message.connect(self._debug_console.append)
+        _set_debug_log_hook(self._debug_log)
 
         self.config = self.load_config()
+        self._run_startup_preflight()
         self.track_name_data = self.load_json_store(TRACK_NAME_STORE_FILE)
         self.bpm_store = self.load_json_store(BPM_STORE_FILE)
         self.zoom_config = self.load_zoom_config()
@@ -2670,7 +2786,7 @@ class LiveControllerMac(QWidget):
         """Uses mplayer to get the duration of a media file."""
         mplayer_bin = MPLAYER_PATH if (os.path.isabs(MPLAYER_PATH) and os.path.exists(MPLAYER_PATH)) else shutil.which('mplayer')
         if not mplayer_bin:
-            print("mplayer not found in PATH")
+            self._debug_log("WARNING: mplayer not found in PATH; track duration defaults to 0.")
             return 0
         try:
             normalized_path = os.path.normpath(file_path)
@@ -2681,10 +2797,10 @@ class LiveControllerMac(QWidget):
             for line in result.stdout.splitlines():
                 if line.startswith("ID_LENGTH="):
                     return float(line.split('=')[1])
-            print(f"Could not find ID_LENGTH for {file_path}")
+            self._debug_log(f"WARNING: Could not parse ID_LENGTH for {file_path}; track duration defaults to 0.")
             return 0
         except (subprocess.CalledProcessError, FileNotFoundError, ValueError, subprocess.TimeoutExpired) as e:
-            print(f"Could not get duration for {file_path}: {e}")
+            self._debug_log(f"WARNING: Could not get duration for {file_path}: {e}")
             return 0
 
     def remove_item(self, row_index):
@@ -3159,6 +3275,12 @@ class LiveControllerMac(QWidget):
         if _is_accessibility_trusted() is False:
             self._show_trust_banner()
 
+        if pynput_keyboard is None:
+            self.hotkey_listener = None
+            self._show_hotkey_unavailable("pynput not installed")
+            self._debug_log("Hotkey listener unavailable: pynput not installed.")
+            return
+
         try:
             self.hotkey_listener = GlobalHotkeyListener()
             self.hotkey_listener.hotkey_pressed.connect(self.on_global_hotkey)
@@ -3553,7 +3675,112 @@ class LiveControllerMac(QWidget):
 
     def _debug_log(self, message: str):
         """Append a message to the debug console (thread-safe from main thread)."""
-        self._debug_console.append(message)
+        self.debug_message.emit(message)
+
+    def _run_startup_preflight(self):
+        def log(message):
+            self._debug_log(message)
+
+        def first_non_empty_line(text):
+            for line in (text or "").splitlines():
+                line = line.strip()
+                if line:
+                    return line
+            return ""
+
+        def check_binary(name, version_args, missing_level):
+            try:
+                resolved = _find_executable(name)
+                exists = os.path.exists(resolved)
+                executable = os.access(resolved, os.X_OK) if exists else False
+                log(f"{name}: path={resolved} exists={exists} executable={executable}")
+                if not exists or not executable:
+                    log(f"{missing_level}: {name} is missing or not executable.")
+                    return
+                try:
+                    result = subprocess.run(
+                        [resolved] + version_args,
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                        check=False,
+                    )
+                    version_line = first_non_empty_line(result.stdout) or first_non_empty_line(result.stderr) or "<no version output>"
+                    log(f"{name}: version={version_line}")
+                except Exception as exc:
+                    log(f"{missing_level}: {name} version check failed: {exc}")
+            except Exception as exc:
+                log(f"{missing_level}: {name} preflight failed: {exc}")
+
+        log("===== PREFLIGHT =====")
+        try:
+            check_binary("mpv", ["--version"], "ERROR")
+        except Exception as exc:
+            log(f"ERROR: mpv preflight failed: {exc}")
+        try:
+            check_binary("mplayer", ["-v"], "WARNING")
+        except Exception as exc:
+            log(f"WARNING: mplayer preflight failed: {exc}")
+        try:
+            log(f"module rtmidi: {'available' if rtmidi is not None else 'missing'}")
+            log(f"module psutil: {'available' if psutil is not None else 'missing'}")
+            log(f"module serial: {'available' if serial is not None else 'missing'}")
+            log(f"module pynput: {'available' if pynput_keyboard is not None else 'missing'}")
+        except Exception as exc:
+            log(f"ERROR: module preflight failed: {exc}")
+        try:
+            if rtmidi is None:
+                log("MIDI: unavailable (python-rtmidi not installed)")
+            else:
+                midi_out = rtmidi.MidiOut()
+                try:
+                    port_count = midi_out.get_port_count()
+                    log(f"MIDI output ports: {port_count}")
+                    for port_num in range(port_count):
+                        try:
+                            log(f"MIDI port {port_num}: {midi_out.get_port_name(port_num)}")
+                        except Exception as exc:
+                            log(f"WARNING: MIDI port {port_num} name unavailable: {exc}")
+                finally:
+                    del midi_out
+        except Exception as exc:
+            log(f"ERROR: MIDI preflight failed: {exc}")
+        try:
+            screens = QGuiApplication.screens()
+            log(f"Displays: {len(screens)}")
+            for idx, screen in enumerate(screens, start=1):
+                geom = screen.geometry()
+                log(
+                    f"Display {idx}: x={geom.x()} y={geom.y()} "
+                    f"w={geom.width()} h={geom.height()}"
+                )
+            configured_display = int(self.config.get("display", DEFAULT_VIDEO_SCREEN_NUMBER))
+            if configured_display > len(screens):
+                log(
+                    f"WARNING: Configured display {configured_display} exceeds available screen count {len(screens)}."
+                )
+        except Exception as exc:
+            log(f"ERROR: display preflight failed: {exc}")
+        try:
+            sample_socket = _make_unique_mpv_pipe_name("mpv_socket")
+            socket_bytes = len(sample_socket.encode("utf-8"))
+            log(f"IPC socket sample: {sample_socket} ({socket_bytes} bytes)")
+            if socket_bytes > 100:
+                log("ERROR: IPC socket sample exceeds 100 bytes and may fail on macOS.")
+        except Exception as exc:
+            log(f"ERROR: IPC socket preflight failed: {exc}")
+        try:
+            log(f"Accessibility trusted: {_is_accessibility_trusted()}")
+        except Exception as exc:
+            log(f"ERROR: accessibility preflight failed: {exc}")
+        try:
+            log(f"Environment: sys.executable={sys.executable}")
+            log(f"Environment: sys.version={sys.version}")
+            log(f"Environment: platform.mac_ver={platform.mac_ver()}")
+            log(f"Environment: tempfile.gettempdir()={tempfile.gettempdir()}")
+        except Exception as exc:
+            log(f"ERROR: environment preflight failed: {exc}")
+        log("===== END PREFLIGHT =====")
 
     def _show_debug_console(self):
         """Show (or bring to front) the debug console window."""
