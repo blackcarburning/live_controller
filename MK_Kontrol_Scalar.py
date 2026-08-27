@@ -1286,30 +1286,58 @@ class MidiSyncWorker(QThread):
             if self.mpv_process is None:
                 self._launch_mpv_and_wait_for_socket(mpv_cmd, socket_path)
 
+            # Positive offset = video/audio starts AFTER MIDI (compensates a MIDI rig
+            # that runs early). Negative offset = video/audio starts BEFORE MIDI, which
+            # is what compensates for sound-card output latency.
             offset_sec = self.midi_offset_ms / 1000.0
-            midi_start_time = time.perf_counter()
+            now = time.perf_counter()
+            lead = max(0.0, -offset_sec)          # never schedule an event in the past
+            midi_start_time = now + lead
             video_unpause_time = midi_start_time + offset_sec
-            for port_num, midiout in self.midi_outputs.items():
-                send_start = {
-                    1: self.send_start_port1,
-                    2: self.send_start_port2,
-                    3: self.send_start_port3,
-                }.get(port_num, False)
-                if send_start:
-                    midiout.send_message([SPP_BYTE, 0, 0])
-                    midiout.send_message([START_BYTE])
-                    started_ports.append(port_num)
 
-            while self._is_running and time.perf_counter() < video_unpause_time:
-                if is_high_precision:
-                    pass
-                else:
-                    time.sleep(0.001)
-            if not _send_ipc_command(socket_path, '{ "command": ["set_property", "pause", false] }'):
-                raise RuntimeError(f"Failed to unpause mpv via IPC socket {socket_path}")
+            midi_started = False
+            video_unpaused = False
+            # NOTE: next_tick carries over from the pre-roll loop — do NOT reset it,
+            # otherwise the clock phase jumps and the offset is cancelled out.
+            while self._is_running and not (midi_started and video_unpaused):
+                now = time.perf_counter()
+
+                if not video_unpaused and now >= video_unpause_time:
+                    if not _send_ipc_command(
+                            socket_path, '{ "command": ["set_property", "pause", false] }'):
+                        raise RuntimeError(f"Failed to unpause mpv via IPC socket {socket_path}")
+                    video_unpaused = True
+
+                if not midi_started and now >= midi_start_time:
+                    for port_num, midiout in self.midi_outputs.items():
+                        send_start = {
+                            1: self.send_start_port1,
+                            2: self.send_start_port2,
+                            3: self.send_start_port3,
+                        }.get(port_num, False)
+                        if send_start:
+                            midiout.send_message([SPP_BYTE, 0, 0])
+                            midiout.send_message([START_BYTE])
+                            started_ports.append(port_num)
+                    midi_started = True
+
+                if now >= next_tick:
+                    for midiout in self.midi_outputs.values():
+                        midiout.send_message([CLOCK_BYTE])
+                    next_tick += tick_interval
+
+                if not is_high_precision:
+                    time.sleep(0.0005)
+
+            if not self._is_running:
+                raise InterruptedError("Playback stopped by user during offset window")
+
+            self._debug_log(
+                f"MIDI offset applied: {self.midi_offset_ms} ms "
+                f"(midi_start in +{lead:.4f}s, "
+                f"video_unpause in +{lead + offset_sec:.4f}s)")
             self.status_update.emit(f"PLAYING: {os.path.basename(self.video_file)}")
 
-            next_tick = time.perf_counter()
             while self._is_running and self.mpv_process.poll() is None:
                 now = time.perf_counter()
                 if now >= next_tick:
@@ -3887,10 +3915,10 @@ class LiveControllerMac(QWidget):
         self.require_midi_checkbox.setChecked(True)
         settings_layout.addWidget(self.require_midi_checkbox, 5, 0, 1, 2)
         self.midi_offset_slider = QSlider(Qt.Orientation.Horizontal)
-        self.midi_offset_slider.setRange(-500, 500)
+        self.midi_offset_slider.setRange(-1000, 1000)
         self.midi_offset_slider.setValue(DEFAULT_MIDI_OFFSET_MS)
         self.midi_offset_spinbox = QSpinBox()
-        self.midi_offset_spinbox.setRange(-500, 500)
+        self.midi_offset_spinbox.setRange(-1000, 1000)
         self.midi_offset_spinbox.setValue(DEFAULT_MIDI_OFFSET_MS)
         self.midi_offset_spinbox.setSuffix(" ms")
         self.midi_offset_spinbox.setFixedWidth(76)
