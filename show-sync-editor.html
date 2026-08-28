@@ -244,7 +244,7 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
 #time-display {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-  min-width: 134px;
+  min-width: 220px;
 }
 #scrub-bar { flex: 1; }
 
@@ -421,6 +421,10 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   outline-offset: 1px;
   z-index: 5;
 }
+.clip.multi-sel {
+  outline: 2px solid #ffaa00;
+  outline-offset: 1px;
+}
 
 .clip-handle {
   width: 7px;
@@ -529,7 +533,23 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   <div class="tb-sep"></div>
   <label>BPM</label>
   <input type="number" id="bpm-input" min="20" max="300" step="1" value="120" style="width:58px"
-         oninput="show.bpm = Math.max(20, Math.min(300, parseInt(this.value) || 120))">
+         oninput="show.bpm = Math.max(20, Math.min(300, parseInt(this.value) || 120)); markDirty();">
+  <label>FPS</label>
+  <input type="number" id="fps-input" min="1" max="120" step="1" value="30" style="width:50px"
+         oninput="show.fps = Math.max(1, Math.min(120, parseInt(this.value)||30)); markDirty()">
+  <div class="tb-sep"></div>
+  <label>Rate</label>
+  <select id="rate-sel" onchange="setRate(parseFloat(this.value))">
+    <option value="0.25">0.25×</option>
+    <option value="0.5">0.5×</option>
+    <option value="1" selected>1×</option>
+    <option value="1.5">1.5×</option>
+    <option value="2">2×</option>
+  </select>
+  <button id="mute-btn" onclick="toggleMute()" title="Mute/unmute video">🔊</button>
+  <input type="range" id="vol-slider" min="0" max="1" step="0.05" value="1" style="width:60px" oninput="setVolume(parseFloat(this.value))" title="Volume">
+  <div class="tb-sep"></div>
+  <span id="unsaved-dot" style="color:#ffaa00;display:none" title="Unsaved changes">●</span>
   <div class="tb-spacer"></div>
   <span id="filename-display">unsaved</span>
 </div>
@@ -560,8 +580,21 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   <div id="video-wrap">
     <div class="panel-label" id="video-label" aria-live="polite">Reference Video — drag &amp; drop a .mov or click Load .mov</div>
     <video id="video-player" preload="metadata" crossorigin="anonymous"></video>
+    <canvas id="waveform-canvas" height="32" style="width:100%;display:block;background:#111;margin-top:2px;border:1px solid var(--border);border-radius:3px;"></canvas>
+    <div id="media-path-row" style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+      <input type="text" id="media-path-input" placeholder="Absolute .mov path…" style="flex:1;font-size:11px;" title="Enter absolute path to .mov and press Enter">
+      <button onclick="loadMovPath(document.getElementById('media-path-input').value)" style="font-size:11px;padding:2px 7px">Load Path</button>
+    </div>
+    <div id="media-missing-banner" style="display:none;background:#5a2020;border:1px solid #9a3030;border-radius:4px;padding:6px 10px;margin-top:4px;font-size:11px;color:#ffcccc;">
+      <span id="media-missing-msg">Reference video not found</span>
+      <button id="media-relocate-btn" onclick="relocateMedia()" style="margin-left:8px;font-size:11px;padding:2px 7px">Relocate…</button>
+    </div>
     <div id="transport">
       <button id="play-btn" onclick="togglePlay()">▶ Play</button>
+      <button id="set-in-btn"  onclick="setInPoint()"  title="Set In point [">[ In</button>
+      <button id="set-out-btn" onclick="setOutPoint()" title="Set Out point ]">] Out</button>
+      <button id="loop-btn"    onclick="toggleLoop()"  title="Loop between in/out points" style="min-width:44px">↺ Loop</button>
+      <button id="clr-io-btn"  onclick="clearInOut()"  title="Clear in/out points">✕ IO</button>
       <span id="time-display">0:00.00 / 0:00.00</span>
       <input type="range" id="scrub-bar" min="0" max="100" step="any" value="0">
     </div>
@@ -598,6 +631,7 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
     <button onclick="zoom(+1)">+</button>
   </div>
 </div>
+<div id="validation-bar" style="display:none;background:#4a3000;border-bottom:1px solid #8a5500;padding:3px 10px;font-size:11px;color:#ffcc66;"></div>
 
 <!-- ── Timeline ─────────────────────────────────────────────────────────────── -->
 <div id="tl-outer">
@@ -640,6 +674,14 @@ let phDrag    = false;    // true while scrubbing the playhead via ruler drag
 let clipboard = null;     // deep-copied clip for Ctrl+C / Ctrl+V paste
 let _rafId    = null;     // rAF handle for per-frame video/timeline sync
 let _recents  = [];       // cached recent projects from server
+let shuttleRate = 0;       // J/K/L shuttle playback rate multiplier
+let _loopEnabled = false;  // loop between in/out points
+let _undoStack = [];       // undo history
+let _redoStack = [];       // redo history
+let _dirty = false;        // unsaved changes flag
+let _multiSel = new Set(); // multi-selected clip ids
+let _waveformPeaks = null; // decoded waveform peaks array
+let _waveformAudioCtx = null;
 
 // ── Device presets ────────────────────────────────────────────────────────────
 // Each entry: { id, name, w (portrait width px), h (portrait height px) }
@@ -693,12 +735,15 @@ function fontCss(fontId) {
 
 function blankShow() {
   return {
-    version: 2,
+    version: 3,
     bpm: 120,
-    media:  { type: 'video', src: '', duration: 0 },
+    fps: 30,
+    in_point: null,
+    out_point: null,
+    media:  { type: 'video', src: '', path: '', duration: 0, size: null, mtime: null },
     tracks: [
-      { id: 't1', name: 'Solids', layer: 1,  clips: [] },
-      { id: 't2', name: 'Text',   layer: 10, clips: [] },
+      { id: 't1', name: 'Solids', layer: 1,  muted: false, solo: false, locked: false, clips: [] },
+      { id: 't2', name: 'Text',   layer: 10, muted: false, solo: false, locked: false, clips: [] },
     ],
     markers: [],   // { id, time } — created by pressing 'm' during playback
   };
@@ -726,16 +771,32 @@ function setBeatDur(beats) {
   if (!selId) return;
   const found = getClip(selId);
   if (!found) return;
+  pushUndo();
   found.cl.duration = beatsToSeconds(beats);
+  markDirty();
   render();
   renderPropsBar();
 }
 
-function fmtTime(s) {
-  if (!isFinite(s) || s < 0) s = 0;
-  const m  = Math.floor(s / 60);
-  const ss = (s % 60).toFixed(2).padStart(5, '0');
-  return m + ':' + ss;
+function fmtTime(t) {
+  if (!isFinite(t) || t < 0) t = 0;
+  const m = Math.floor(t / 60);
+  const s = Math.floor(t % 60);
+  const ms = Math.round((t % 1) * 1000);
+  return `${m}:${String(s).padStart(2,'0')}.${String(ms).padStart(3,'0')}`;
+}
+function fmtTimecode(t, fps) {
+  fps = fps || 30;
+  if (!isFinite(t) || t < 0) t = 0;
+  const h  = Math.floor(t / 3600);
+  const m  = Math.floor((t % 3600) / 60);
+  const s  = Math.floor(t % 60);
+  const f  = Math.floor((t % 1) * fps);
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}:${String(f).padStart(2,'0')}`;
+}
+
+function transportText(t, dur) {
+  return `${fmtTime(t)} / ${fmtTime(dur)} · ${fmtTimecode(t, show.fps || 30)}`;
 }
 
 function getClip(id) {
@@ -745,6 +806,40 @@ function getClip(id) {
     }
   }
   return null;
+}
+
+function markDirty() {
+  _dirty = true;
+  document.getElementById('unsaved-dot').style.display = '';
+  document.getElementById('filename-display').style.color = '#ffaa00';
+}
+function clearDirty() {
+  _dirty = false;
+  document.getElementById('unsaved-dot').style.display = 'none';
+  document.getElementById('filename-display').style.color = '';
+}
+function _showSnapshot() { return JSON.stringify({tracks: show.tracks, markers: show.markers, in_point: show.in_point, out_point: show.out_point}); }
+function pushUndo() {
+  _undoStack.push(_showSnapshot());
+  if (_undoStack.length > 100) _undoStack.shift();
+  _redoStack = [];
+  markDirty();
+}
+function undoAction() {
+  if (!_undoStack.length) return;
+  _redoStack.push(_showSnapshot());
+  const prev = JSON.parse(_undoStack.pop());
+  show.tracks = prev.tracks; show.markers = prev.markers;
+  show.in_point = prev.in_point; show.out_point = prev.out_point;
+  selId = null; _multiSel.clear(); render(); renderPropsBar();
+}
+function redoAction() {
+  if (!_redoStack.length) return;
+  _undoStack.push(_showSnapshot());
+  const next = JSON.parse(_redoStack.pop());
+  show.tracks = next.tracks; show.markers = next.markers;
+  show.in_point = next.in_point; show.out_point = next.out_point;
+  selId = null; _multiSel.clear(); render(); renderPropsBar();
 }
 
 function clipBg(clip) {
@@ -935,6 +1030,7 @@ function render() {
   renderPreview();
   setPlayheadPos();
   updateTransport();
+  validateShow();
 }
 
 // ── Ruler ─────────────────────────────────────────────────────────────────────
@@ -948,6 +1044,12 @@ function renderRuler() {
 
   ctx.fillStyle = '#1a1a1a';
   ctx.fillRect(0, 0, W, H);
+  if (show.in_point != null && show.out_point != null) {
+    ctx.fillStyle = 'rgba(74, 158, 255, 0.15)';
+    const x1 = t2x(show.in_point);
+    const x2 = t2x(show.out_point);
+    ctx.fillRect(Math.min(x1, x2), 0, Math.max(0, Math.abs(x2 - x1)), H);
+  }
 
   const dur = showDur();
 
@@ -1071,6 +1173,7 @@ function renderTracks() {
         const tlX = rulerX(e.clientX);
         const t   = x2t(tlX);
         selId = null;
+        _multiSel.clear();
         refreshSelection();
         renderPropsBar();
         // Seek to clicked time so a simple click in the lane moves the playhead
@@ -1087,7 +1190,9 @@ function renderTracks() {
 
 function makeClipEl(clip, trackId) {
   const el = document.createElement('div');
-  el.className = 'clip' + (clip.id === selId ? ' selected' : '');
+  el.className = 'clip'
+    + (clip.id === selId ? ' selected' : '')
+    + (_multiSel.has(clip.id) ? ' multi-sel' : '');
   el.dataset.clipId = clip.id;
   el.style.left       = t2x(clip.start) + 'px';
   el.style.width      = Math.max(8, t2x(clip.duration)) + 'px';
@@ -1135,6 +1240,8 @@ function makeClipEl(clip, trackId) {
 
   el.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (e.shiftKey) return;
+    _multiSel.clear();
     selId = clip.id;
     refreshSelection();
     renderPropsBar();
@@ -1146,6 +1253,7 @@ function makeClipEl(clip, trackId) {
 function refreshSelection() {
   document.querySelectorAll('.clip').forEach(el => {
     el.classList.toggle('selected', el.dataset.clipId === selId);
+    el.classList.toggle('multi-sel', _multiSel.has(el.dataset.clipId));
   });
 }
 
@@ -1486,7 +1594,7 @@ function _rafFrame() {
   const dur = isFinite(vid.duration)    ? vid.duration    : (show.media?.duration || 0);
   setPlayheadPosAt(t);
   compositeAt(t);
-  document.getElementById('time-display').textContent = fmtTime(t) + ' / ' + fmtTime(dur);
+  document.getElementById('time-display').textContent = transportText(t, dur);
   const bar = document.getElementById('scrub-bar');
   if (dur > 0) { bar.max = dur; bar.value = t; }
   // Keep the playhead visible in the timeline viewport
@@ -1495,6 +1603,9 @@ function _rafFrame() {
   const vw  = tl.clientWidth - 90;  // 90 = --label-w
   const sl  = tl.scrollLeft;
   if (phX < sl || phX > sl + vw - 40) tl.scrollLeft = phX - vw / 2;
+  if (_loopEnabled && show.out_point != null && show.in_point != null) {
+    if (t >= show.out_point) { vid.currentTime = show.in_point; }
+  }
   _rafId = requestAnimationFrame(_rafFrame);
 }
 
@@ -1518,7 +1629,7 @@ function updateTransport() {
   const t   = isFinite(vid.currentTime) ? vid.currentTime : 0;
   const dur = isFinite(vid.duration)    ? vid.duration    : (show.media?.duration || 0);
 
-  document.getElementById('time-display').textContent = fmtTime(t) + ' / ' + fmtTime(dur);
+  document.getElementById('time-display').textContent = transportText(t, dur);
 
   const bar = document.getElementById('scrub-bar');
   if (dur > 0) { bar.max = dur; bar.value = t; }
@@ -1533,6 +1644,99 @@ function togglePlay() {
   } else {
     vid.pause();
     btn.textContent = '▶ Play';
+  }
+}
+
+function setRate(r) {
+  const vid = document.getElementById('video-player');
+  vid.playbackRate = r;
+  shuttleRate = SHUTTLE_STEPS.includes(r) ? r : 0;
+  document.getElementById('rate-sel').value = String(r);
+}
+function toggleMute() {
+  const vid = document.getElementById('video-player');
+  vid.muted = !vid.muted;
+  document.getElementById('mute-btn').textContent = vid.muted ? '🔇' : '🔊';
+}
+function setVolume(v) {
+  const vid = document.getElementById('video-player');
+  vid.volume = v;
+  if (v === 0) { vid.muted = true; document.getElementById('mute-btn').textContent = '🔇'; }
+  else { vid.muted = false; document.getElementById('mute-btn').textContent = '🔊'; }
+}
+function _applyShuttle(r) {
+  shuttleRate = r;
+  const vid = document.getElementById('video-player');
+  if (r === 0) { vid.pause(); }
+  else { vid.playbackRate = Math.abs(r); if (vid.paused) vid.play().catch(()=>{}); }
+  document.getElementById('play-btn').textContent = (r === 0 || vid.paused) ? '▶ Play' : '⏸ Pause';
+}
+const SHUTTLE_STEPS = [0, 0.25, 0.5, 1, 2, 4];
+function shuttleForward() {
+  const cur = shuttleRate;
+  if (cur < 0) { _applyShuttle(0); return; }
+  const idx = SHUTTLE_STEPS.findIndex(step => step >= Math.max(0, cur));
+  const next = idx >= 0 && idx < SHUTTLE_STEPS.length-1 ? SHUTTLE_STEPS[idx+1] : SHUTTLE_STEPS[SHUTTLE_STEPS.length-1];
+  _applyShuttle(next);
+}
+function shuttleReverse() {
+  const cur = shuttleRate;
+  if (cur > 0) { _applyShuttle(0); return; }
+  const idx = SHUTTLE_STEPS.findIndex(step => step >= Math.max(0, -cur));
+  const next = idx >= 0 && idx < SHUTTLE_STEPS.length-1 ? SHUTTLE_STEPS[idx+1] : SHUTTLE_STEPS[SHUTTLE_STEPS.length-1];
+  _applyShuttle(-next);
+}
+function setInPoint() {
+  const vid = document.getElementById('video-player');
+  pushUndo();
+  show.in_point = isFinite(vid.currentTime) ? parseFloat(vid.currentTime.toFixed(3)) : 0;
+  markDirty(); render();
+}
+function setOutPoint() {
+  const vid = document.getElementById('video-player');
+  pushUndo();
+  show.out_point = isFinite(vid.currentTime) ? parseFloat(vid.currentTime.toFixed(3)) : null;
+  markDirty(); render();
+}
+function clearInOut() {
+  pushUndo();
+  show.in_point = null; show.out_point = null;
+  markDirty(); render();
+}
+function toggleLoop() {
+  _loopEnabled = !_loopEnabled;
+  document.getElementById('loop-btn').style.color = _loopEnabled ? 'var(--accent)' : '';
+}
+function validateShow() {
+  const warnings = [];
+  const vid = document.getElementById('video-player');
+  const dur = isFinite(vid.duration) ? vid.duration : (show.media?.duration || 0);
+  for (const tr of show.tracks) {
+    const sorted = [...tr.clips].sort((a,b) => a.start - b.start);
+    for (let i=1; i<sorted.length; i++) {
+      if (sorted[i].start < sorted[i-1].start + sorted[i-1].duration - 0.01) {
+        warnings.push(`Track \"${tr.name}\": clip \"${sorted[i].id}\" overlaps with previous`);
+      }
+    }
+    if (dur > 0) {
+      for (const cl of tr.clips) {
+        if (cl.start + cl.duration > dur + 0.5) {
+          warnings.push(`Track \"${tr.name}\": clip at ${fmtTime(cl.start)} extends past video end`);
+        }
+      }
+    }
+    for (const cl of tr.clips) {
+      if (cl.type === 'image' && (!(cl.params?.src || cl.params?.url) || (cl.params.src || cl.params.url).trim() === '')) {
+        warnings.push(`Track \"${tr.name}\": image clip at ${fmtTime(cl.start)} has no URL`);
+      }
+    }
+  }
+  const bar = document.getElementById('validation-bar');
+  if (warnings.length) {
+    bar.textContent = '⚠ ' + warnings.slice(0,3).join(' | ') + (warnings.length>3 ? ` (+${warnings.length-3} more)`:'');
+    bar.style.display = '';
+  } else {
+    bar.style.display = 'none';
   }
 }
 
@@ -1579,14 +1783,14 @@ function seekTo(t) {
     // Immediately sync visuals — do not wait for the async timeupdate callback
     setPlayheadPosAt(target);
     compositeAt(target);
-    document.getElementById('time-display').textContent = fmtTime(target) + ' / ' + fmtTime(dur);
+    document.getElementById('time-display').textContent = transportText(target, dur);
     const bar = document.getElementById('scrub-bar');
     if (dur > 0) { bar.max = dur; bar.value = target; }
   } else {
     // No video loaded — move playhead manually
     setPlayheadPosAt(target);
     compositeAt(target);
-    document.getElementById('time-display').textContent = fmtTime(target) + ' / ' + fmtTime(dur);
+    document.getElementById('time-display').textContent = transportText(target, dur);
   }
 }
 
@@ -1622,6 +1826,17 @@ function startDrag(e, type, clipId) {
   if (!found) return;
   const { cl } = found;
 
+  if (e.shiftKey) {
+    if (_multiSel.has(clipId)) _multiSel.delete(clipId);
+    else _multiSel.add(clipId);
+    selId = clipId;
+    refreshSelection();
+    renderPropsBar();
+    return;
+  }
+
+  if (!_multiSel.has(clipId)) _multiSel.clear();
+  _multiSel.add(clipId);
   selId = clipId;
   refreshSelection();
   renderPropsBar();
@@ -1641,6 +1856,12 @@ function startDrag(e, type, clipId) {
     origDur:   cl.duration,
     origFadeIn: cl.fade_in || 0,
     origFadeOut: cl.fade_out || 0,
+    groupStarts: Array.from(_multiSel).reduce((acc, id) => {
+      const item = getClip(id);
+      if (item) acc[id] = item.cl.start;
+      return acc;
+    }, {}),
+    undoPushed: false,
   };
 }
 
@@ -1662,36 +1883,57 @@ document.addEventListener('mousemove', (e) => {
 
   if (drag.type === 'move') {
     const raw = clamp(drag.origStart + dt, 0, maxT - cl.duration);
-    cl.start = snapTo(raw);
+    const primary = snapTo(raw);
+    const delta = primary - drag.origStart;
+    if (_multiSel.size > 1) {
+      if (!drag.undoPushed) { pushUndo(); drag.undoPushed = true; }
+      for (const id of _multiSel) {
+        const item = getClip(id);
+        if (!item) continue;
+        const orig = drag.groupStarts[id];
+        item.cl.start = clamp(orig + delta, 0, maxT - item.cl.duration);
+      }
+    } else {
+      if (!drag.undoPushed) { pushUndo(); drag.undoPushed = true; }
+      cl.start = primary;
+    }
   } else if (drag.type === 'left') {
+    if (!drag.undoPushed) { pushUndo(); drag.undoPushed = true; }
     const rawStart  = clamp(drag.origStart + dt, 0, drag.origStart + drag.origDur - 0.05);
     const newStart  = snapTo(rawStart);
     const newDur    = drag.origDur - (newStart - drag.origStart);
     cl.start    = newStart;
     cl.duration = Math.max(0.05, newDur);
   } else if (drag.type === 'right') {
+    if (!drag.undoPushed) { pushUndo(); drag.undoPushed = true; }
     const rawEnd    = cl.start + clamp(drag.origDur + dt, 0.05, maxT - cl.start);
     const snappedEnd = snapTo(rawEnd);
     cl.duration = Math.max(0.05, snappedEnd - cl.start);
   } else if (drag.type === 'fade-left') {
+    if (!drag.undoPushed) { pushUndo(); drag.undoPushed = true; }
     // Adjust fade_in in seconds based on pointer movement (dragging right increases fade)
     const raw = clamp(drag.origFadeIn + dt, 0, Math.max(0, cl.duration - (cl.fade_out || 0) - 0.01));
     cl.fade_in = Math.max(0, raw);
   } else if (drag.type === 'fade-right') {
+    if (!drag.undoPushed) { pushUndo(); drag.undoPushed = true; }
     // Adjust fade_out: dragging right should increase fade_out (dt positive)
     const raw = clamp(drag.origFadeOut + dt, 0, Math.max(0, cl.duration - (cl.fade_in || 0) - 0.01));
     cl.fade_out = Math.max(0, raw);
   }
 
   // Fast visual update — update DOM element and fade overlays
-  const el = document.querySelector(`[data-clip-id="${drag.clipId}"]`);
-  if (el) {
-    el.style.left  = t2x(cl.start) + 'px';
-    el.style.width = Math.max(8, t2x(cl.duration)) + 'px';
+  const idsToUpdate = _multiSel.size > 1 && drag.type === 'move' ? Array.from(_multiSel) : [drag.clipId];
+  for (const clipId of idsToUpdate) {
+    const item = getClip(clipId);
+    if (!item) continue;
+    const el = document.querySelector(`[data-clip-id="${clipId}"]`);
+    if (!el) continue;
+    el.style.left  = t2x(item.cl.start) + 'px';
+    el.style.width = Math.max(8, t2x(item.cl.duration)) + 'px';
     const ol = el.querySelector('.clip-fade-overlay-left');
     const or = el.querySelector('.clip-fade-overlay-right');
-    if (ol) ol.style.width = ((cl.fade_in || 0) / Math.max(cl.duration || 1, 1) * 100) + '%';
-    if (or) or.style.width = ((cl.fade_out || 0) / Math.max(cl.duration || 1, 1) * 100) + '%';
+    if (ol) ol.style.width = ((item.cl.fade_in || 0) / Math.max(item.cl.duration || 1, 1) * 100) + '%';
+    if (or) or.style.width = ((item.cl.fade_out || 0) / Math.max(item.cl.duration || 1, 1) * 100) + '%';
   }
 
   renderPreview();
@@ -1703,6 +1945,7 @@ document.addEventListener('mouseup', () => {
   // Restore text selection
   try { document.body.style.userSelect = ''; } catch (err) {}
   if (drag) {
+    if (drag.undoPushed) markDirty();
     drag = null;
     render();
   }
@@ -1749,7 +1992,7 @@ function renderPropsBar() {
     inp.type  = 'number';
     inp.step  = '0.01';
     inp.value = val;
-    inp.addEventListener('change', () => { onch(parseFloat(inp.value) || 0); render(); });
+    inp.addEventListener('change', () => { onch(parseFloat(inp.value) || 0); markDirty(); render(); });
     return inp;
   }
 
@@ -1767,6 +2010,7 @@ function renderPropsBar() {
   sel.addEventListener('change', () => {
     cl.type = sel.value;
     if (!cl.params) cl.params = {};
+    markDirty();
     render();
     renderPropsBar();
   });
@@ -1802,9 +2046,10 @@ function renderPropsBar() {
     cl.params.color = col.value;
     const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
     if (el) el.style.background = clipBg(cl);
+    markDirty();
     renderPreview();
   });
-  col.addEventListener('change', () => render());
+  col.addEventListener('change', () => { markDirty(); render(); });
   panel.appendChild(g('Colour', col));
 
   // Text fields (only for text clips)
@@ -1886,6 +2131,7 @@ function renderPropsBar() {
       cl.params.rich_spans = hasFormatting ? newSpans : null;
       const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
       if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      markDirty();
       renderPreview();
     }
 
@@ -1913,7 +2159,7 @@ function renderPropsBar() {
       if ((cl.params.align||'center')===v) opt.selected=true;
       alignSel.appendChild(opt);
     });
-    alignSel.addEventListener('change', ()=>{ cl.params.align = alignSel.value; renderPreview(); });
+    alignSel.addEventListener('change', ()=>{ cl.params.align = alignSel.value; markDirty(); renderPreview(); });
     panel.appendChild(g('Align', alignSel));
 
     const sz = document.createElement('input');
@@ -1922,7 +2168,7 @@ function renderPropsBar() {
     sz.value = cl.params.size || 5;
     sz.title = 'Font size in vmin units';
     sz.style.width = '64px';
-    sz.addEventListener('change', () => { cl.params.size = parseFloat(sz.value) || 5; renderPreview(); });
+    sz.addEventListener('change', () => { cl.params.size = parseFloat(sz.value) || 5; markDirty(); renderPreview(); });
     panel.appendChild(g('Size (vmin)', sz));
 
     // Font family (web-safe system font stack)
@@ -1937,6 +2183,7 @@ function renderPropsBar() {
     });
     fontSel.addEventListener('change', () => {
       cl.params.font_family = fontSel.value;
+      markDirty();
       renderPreview();
     });
     panel.appendChild(g('Font', fontSel));
@@ -1956,6 +2203,7 @@ function renderPropsBar() {
         delete cl.params.link_url;
       }
       urlInp.value = valid;
+      markDirty();
       renderPreview();
     });
     panel.appendChild(g('Link URL', urlInp));
@@ -1977,6 +2225,7 @@ function renderPropsBar() {
       urlInp.value  = safe;
       const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
       if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      markDirty();
       renderPreview();
       renderPropsBar();   // refresh to show load status
     });
@@ -1993,6 +2242,7 @@ function renderPropsBar() {
     });
     fitSel.addEventListener('change', () => {
       cl.params.fit = fitSel.value;
+      markDirty();
       renderPreview();
     });
     panel.appendChild(g('Fit', fitSel));
@@ -2026,6 +2276,7 @@ function renderPropsBar() {
       cl.params.rate = parseFloat(rateInp.value) || 10;
       const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
       if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      markDirty();
       renderPreview();
     });
     panel.appendChild(g('Rate (Hz)', rateInp));
@@ -2041,6 +2292,7 @@ function renderPropsBar() {
       cl.params.rate = parseFloat(rateInp.value) || 1;
       const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
       if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      markDirty();
       renderPreview();
     });
     panel.appendChild(g('Rate (Hz)', rateInp));
@@ -2056,6 +2308,7 @@ function renderPropsBar() {
       cl.params.intensity = parseFloat(intInp.value) || 8;
       const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
       if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      markDirty();
       renderPreview();
     });
     panel.appendChild(g('Intensity (px)', intInp));
@@ -2071,6 +2324,7 @@ function renderPropsBar() {
       cl.params.max_blur = parseFloat(blurInp.value) || 20;
       const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
       if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      markDirty();
       renderPreview();
     });
     panel.appendChild(g('Max Blur (px)', blurInp));
@@ -2088,6 +2342,7 @@ function renderPropsBar() {
       cl.params.direction = dirSel.value;
       const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
       if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      markDirty();
       renderPreview();
     });
     panel.appendChild(g('Direction', dirSel));
@@ -2105,6 +2360,7 @@ function renderPropsBar() {
       cl.params.rate = parseFloat(rateInp.value) || 1;
       const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
       if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      markDirty();
       renderPreview();
     });
     panel.appendChild(g('Rate (Hz)', rateInp));
@@ -2118,6 +2374,7 @@ function renderPropsBar() {
     ampInp.title = 'Peak displacement in pixels';
     ampInp.addEventListener('change', () => {
       cl.params.amplitude = parseFloat(ampInp.value) || 20;
+      markDirty();
       renderPreview();
     });
     panel.appendChild(g('Amplitude (px)', ampInp));
@@ -2131,6 +2388,7 @@ function renderPropsBar() {
     amtInp.title = 'Scale range (0.2 = ±20% size change per cycle)';
     amtInp.addEventListener('change', () => {
       cl.params.amount = parseFloat(amtInp.value) || 0.2;
+      markDirty();
       renderPreview();
     });
     panel.appendChild(g('Amount', amtInp));
@@ -2144,6 +2402,7 @@ function renderPropsBar() {
       cl.params.rate = parseFloat(zpRateInp.value) || 1;
       const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
       if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      markDirty();
       renderPreview();
     });
     panel.appendChild(g('Rate (Hz)', zpRateInp));
@@ -2159,6 +2418,7 @@ function renderPropsBar() {
       cl.params.size = parseFloat(sizeInp.value) || 20;
       const el = document.querySelector(`[data-clip-id="${cl.id}"]`);
       if (el) el.querySelector('.clip-body').textContent = clipLabel(cl);
+      markDirty();
       renderPreview();
     });
     const rateInp2 = document.createElement('input');
@@ -2168,6 +2428,7 @@ function renderPropsBar() {
     rateInp2.title = 'Glow pulse cycles per second (Hz)';
     rateInp2.addEventListener('change', () => {
       cl.params.rate = parseFloat(rateInp2.value) || 2;
+      markDirty();
       renderPreview();
     });
     panel.appendChild(g('Glow Size (px)', sizeInp));
@@ -2240,18 +2501,26 @@ function addClip(type) {
     fade_out: 0,
   };
 
+  pushUndo();
   target.clips.push(clip);
+  _multiSel.clear();
+  _multiSel.add(clip.id);
   selId = clip.id;
+  markDirty();
   render();
   renderPropsBar();
 }
 
 function deleteSelected() {
-  if (!selId) return;
+  if (!selId && !_multiSel.size) return;
+  pushUndo();
+  const ids = _multiSel.size > 1 ? new Set(_multiSel) : new Set(selId ? [selId] : []);
   for (const tr of show.tracks) {
-    tr.clips = tr.clips.filter(c => c.id !== selId);
+    tr.clips = tr.clips.filter(c => !ids.has(c.id));
   }
+  _multiSel.clear();
   selId = null;
+  markDirty();
   render();
   renderPropsBar();
 }
@@ -2286,8 +2555,12 @@ function pasteClip() {
     ? (sorted.find(t => t.layer >= 10) || sorted[sorted.length - 1])
     : (sorted.find(t => t.layer <  10) || sorted[0]);
 
+  pushUndo();
   target.clips.push(newClip);
+  _multiSel.clear();
+  _multiSel.add(newClip.id);
   selId = newClip.id;
+  markDirty();
   render();
   renderPropsBar();
 }
@@ -2301,8 +2574,10 @@ function addMarker() {
   const vid = document.getElementById('video-player');
   const t   = isFinite(vid.currentTime) ? vid.currentTime : 0;
   if (!show.markers) show.markers = [];
+  pushUndo();
   show.markers.push({ id: uid(), time: parseFloat(t.toFixed(3)) });
   show.markers.sort((a, b) => a.time - b.time);
+  markDirty();
   render();
 }
 
@@ -2326,9 +2601,45 @@ function renderMarkerHandles() {
 
 function deleteMarker(id) {
   if (!show.markers) return;
+  pushUndo();
   show.markers = show.markers.filter(m => m.id !== id);
   if (selMarkerId === id) selMarkerId = null;
+  markDirty();
   render();
+}
+
+function duplicateSelected() {
+  if (!selId) return;
+  const found = getClip(selId);
+  if (!found) return;
+  pushUndo();
+  const { cl, tr: track } = found;
+  const newCl = JSON.parse(JSON.stringify(cl));
+  newCl.id = uid();
+  newCl.start = cl.start + cl.duration;
+  track.clips.push(newCl);
+  _multiSel.clear();
+  _multiSel.add(newCl.id);
+  selId = newCl.id;
+  markDirty(); render(); renderPropsBar();
+}
+function splitAtPlayhead() {
+  if (!selId) return;
+  const found = getClip(selId);
+  if (!found) return;
+  const { cl, tr: track } = found;
+  const vid = document.getElementById('video-player');
+  const t = isFinite(vid.currentTime) ? vid.currentTime : 0;
+  if (t <= cl.start || t >= cl.start + cl.duration) return;
+  pushUndo();
+  const rightDur = cl.start + cl.duration - t;
+  const right = JSON.parse(JSON.stringify(cl));
+  right.id = uid();
+  right.start = t;
+  right.duration = rightDur;
+  cl.duration = t - cl.start;
+  track.clips.push(right);
+  markDirty(); render();
 }
 
 // ── Snap helpers ───────────────────────────────────────────────────────────
@@ -2387,19 +2698,93 @@ function movInput() {
 }
 function showInput() { document.getElementById('show-input').click(); }
 
-function loadMovPath(path) {
+function showMissingBanner(path, reason) {
+  const banner = document.getElementById('media-missing-banner');
+  document.getElementById('media-missing-msg').textContent =
+    'Reference video not found: ' + path + (reason ? ' — ' + reason : '');
+  banner.style.display = '';
+}
+function hideMissingBanner() {
+  document.getElementById('media-missing-banner').style.display = 'none';
+}
+function checkMediaPath(path) {
+  if (!path) { hideMissingBanner(); return; }
+  fetch('/api/media/check?path=' + encodeURIComponent(path))
+    .then(r => r.json())
+    .then(res => {
+      if (!res.ok || !res.exists) {
+        showMissingBanner(path, res.error || 'File not found');
+      } else {
+        hideMissingBanner();
+        const sizeChanged = show.media.size != null && res.size !== show.media.size;
+        const mtimeChanged = show.media.mtime != null && res.mtime != null && Math.abs(res.mtime - show.media.mtime) > 1;
+        if (sizeChanged || mtimeChanged) {
+          document.getElementById('video-label').textContent =
+            '⚠ Reference Video changed on disk: ' + path;
+        }
+        show.media.size = res.size;
+        show.media.mtime = res.mtime;
+      }
+    })
+    .catch(() => {});
+}
+function relocateMedia() {
+  const newPath = prompt('Enter new absolute path to the .mov file:', show.media.path || '');
+  if (!newPath) return;
+  loadMovPath(newPath.trim());
+}
+function _tryRenderWaveform(src) {
+  const canvas = document.getElementById('waveform-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  canvas.width = canvas.offsetWidth || 400;
+  if (!_waveformAudioCtx) _waveformAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  fetch(src, {headers: {'Range': 'bytes=0-10485759'}})
+    .then(r => r.arrayBuffer())
+    .then(buf => _waveformAudioCtx.decodeAudioData(buf))
+    .then(ab => {
+      const data = ab.getChannelData(0);
+      const W = canvas.width, H = canvas.height;
+      const step = Math.ceil(data.length / W);
+      const peaks = [];
+      ctx.clearRect(0,0,W,H);
+      ctx.fillStyle = '#222';
+      ctx.fillRect(0,0,W,H);
+      ctx.strokeStyle = '#4a9eff';
+      ctx.beginPath();
+      for (let i=0; i<W; i++) {
+        let max=0;
+        for (let j=0; j<step; j++) { const v=Math.abs(data[i*step+j]||0); if(v>max)max=v; }
+        peaks.push(max);
+        const y = H/2 - max*(H/2-2);
+        if (i===0) ctx.moveTo(i, y); else ctx.lineTo(i, y);
+      }
+      ctx.stroke();
+      _waveformPeaks = peaks;
+    })
+    .catch(() => { /* skip silently */ });
+}
+
+function loadMovPath(path, markAsDirty = true) {
   const vid = document.getElementById('video-player');
   if (typeof path !== 'string') return;
   const normalizedPath = path.trim();
   if (!normalizedPath) return;
   const encoded = encodeURIComponent(normalizedPath);
+  document.getElementById('media-path-input').value = normalizedPath;
   vid.src = '/video?path=' + encoded;
   vid.load();
   vid.addEventListener('loadedmetadata', () => {
-    show.media.src      = normalizedPath;
+    show.media.src      = normalizedPath.split(/[\\/]/).pop();
+    show.media.path     = normalizedPath;
+    show.media.size     = null;
+    show.media.mtime    = null;
     show.last_video     = normalizedPath;
     show.media.duration = vid.duration;
     document.getElementById('video-label').textContent = 'Reference Video: ' + normalizedPath;
+    if (markAsDirty) markDirty();
+    checkMediaPath(normalizedPath);
+    _tryRenderWaveform('/video?path=' + encoded);
     render();
     // Tell server this is the last used video so recents can remember it
     try {
@@ -2408,6 +2793,9 @@ function loadMovPath(path) {
   }, { once: true });
   vid.addEventListener('error', () => {
     document.getElementById('video-label').textContent = 'Reference Video unavailable: ' + normalizedPath;
+    show.media.path = normalizedPath;
+    show.last_video = normalizedPath;
+    showMissingBanner(normalizedPath, 'Unable to load media');
     console.warn('[show-sync-editor] automatic video restore failed:', normalizedPath);
   }, { once: true });
 }
@@ -2418,8 +2806,14 @@ document.getElementById('mov-input').addEventListener('change', (e) => {
   loadMovFile(file);
   e.target.value = '';
 });
+document.getElementById('media-path-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    loadMovPath(e.target.value);
+  }
+});
 
-function loadMovFile(file) {
+function loadMovFile(file, markAsDirty = true) {
   if (vidUrl) URL.revokeObjectURL(vidUrl);
   const objUrl = URL.createObjectURL(file);
   // Confirm createObjectURL returned a blob: URL before touching the DOM.
@@ -2432,16 +2826,23 @@ function loadMovFile(file) {
   vid.load();
   vid.addEventListener('loadedmetadata', () => {
     show.media.src      = file.name;
+    show.media.path     = '';
+    show.media.size     = null;
+    show.media.mtime    = null;
     // Blob/file-picker sources are not stable filesystem paths; do not persist as restorable last_video.
     show.last_video     = '';
     show.media.duration = vid.duration;
+    document.getElementById('media-path-input').value = '';
     document.getElementById('video-label').textContent = 'Reference Video: ' + file.name;
+    hideMissingBanner();
+    if (markAsDirty) markDirty();
     render();
     // Inform server of last used video (filename only; absolute path not available when using file picker)
     try {
       fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curPath || '', data: show, last_video: file.name }) }).catch(()=>{});
     } catch(e){}
   }, { once: true });
+  _tryRenderWaveform(vidUrl);
 }
 
 function isLikelyFilesystemPath(raw) {
@@ -2453,7 +2854,7 @@ function isLikelyFilesystemPath(raw) {
 }
 
 function resolveSavedVideoPath(preferredVideoPath) {
-  const candidate = (preferredVideoPath || show.last_video || show.media?.src || '').trim();
+  const candidate = (preferredVideoPath || show.media?.path || show.last_video || show.media?.src || '').trim();
   return isLikelyFilesystemPath(candidate) ? candidate : '';
 }
 
@@ -2475,7 +2876,7 @@ document.getElementById('show-input').addEventListener('change', (e) => {
 function loadShowData(data, filename, path, preferredVideoPath) {
   if (data.tracks) {
     show = data;
-    show.version = 2;
+    show.version = 3;
   } else if (data.effects) {
     show = migrateV1(data);
   } else {
@@ -2483,8 +2884,26 @@ function loadShowData(data, filename, path, preferredVideoPath) {
     return;
   }
 
+  show.fps = Math.max(1, Math.min(120, parseInt(show.fps) || 30));
+  if (!('in_point' in show)) show.in_point = null;
+  if (!('out_point' in show)) show.out_point = null;
+  if (!show.media) show.media = { type: 'video', src: '', path: '', duration: 0, size: null, mtime: null };
+  show.media.type = show.media.type || 'video';
+  show.media.src = show.media.src || '';
+  show.media.path = show.media.path || '';
+  if (!('size' in show.media)) show.media.size = null;
+  if (!('mtime' in show.media)) show.media.mtime = null;
+  if (!show.media.path) {
+    const fallback = resolveSavedVideoPath(preferredVideoPath);
+    if (fallback) show.media.path = fallback;
+  }
+  show.last_video = show.media.path || preferredVideoPath || show.last_video || '';
+
   // Ensure all clips have ids
   for (const tr of show.tracks) {
+    if (!('muted' in tr)) tr.muted = false;
+    if (!('solo' in tr)) tr.solo = false;
+    if (!('locked' in tr)) tr.locked = false;
     for (const cl of tr.clips) {
       if (!cl.id) cl.id = uid();
     }
@@ -2499,16 +2918,26 @@ function loadShowData(data, filename, path, preferredVideoPath) {
   // Sync BPM input with loaded show value (default 120 if absent)
   const bpmInp = document.getElementById('bpm-input');
   if (bpmInp) bpmInp.value = show.bpm || 120;
+  const fpsInp = document.getElementById('fps-input');
+  if (fpsInp) fpsInp.value = show.fps || 30;
+  document.getElementById('media-path-input').value = show.media.path || show.last_video || '';
 
+  _undoStack = [];
+  _redoStack = [];
+  _multiSel.clear();
+  _loopEnabled = false;
+  document.getElementById('loop-btn').style.color = '';
   selId = null;
   render();
   renderPropsBar();
   preloadShowImages();
+  clearDirty();
 
   const savedVideo = resolveSavedVideoPath(preferredVideoPath);
   if (savedVideo) {
-    loadMovPath(savedVideo);
+    loadMovPath(savedVideo, false);
   }
+  checkMediaPath(show.media.path || show.last_video || '');
 }
 
 function migrateV1(data) {
@@ -2527,26 +2956,41 @@ function migrateV1(data) {
     else                     solids.push(clip);
   }
   return {
-    version: 2,
-    media:   { type: 'video', src: data.video || data.song || '', duration: data.duration || 0 },
+    version: 3,
+    fps: 30,
+    in_point: null,
+    out_point: null,
+    media:   { type: 'video', src: data.video || data.song || '', path: '', duration: data.duration || 0, size: null, mtime: null },
     tracks:  [
-      { id: 't1', name: 'Solids', layer: 1,  clips: solids },
-      { id: 't2', name: 'Text',   layer: 10, clips: texts  },
+      { id: 't1', name: 'Solids', layer: 1,  muted: false, solo: false, locked: false, clips: solids },
+      { id: 't2', name: 'Text',   layer: 10, muted: false, solo: false, locked: false, clips: texts  },
     ],
     markers: [],
   };
 }
 
 function newShow() {
-  if (show.tracks.some(t => t.clips.length) &&
+  if (_dirty && show.tracks.some(t => t.clips.length) &&
       !confirm('Start a new show? Unsaved changes will be lost.')) return;
   show    = blankShow();
   curFile = null;
   curPath = null;
   selId   = null;
+  _multiSel.clear();
+  _undoStack = [];
+  _redoStack = [];
+  _loopEnabled = false;
+  shuttleRate = 0;
   document.getElementById('filename-display').textContent = 'unsaved';
   const bpmInp = document.getElementById('bpm-input');
   if (bpmInp) bpmInp.value = 120;
+  const fpsInp = document.getElementById('fps-input');
+  if (fpsInp) fpsInp.value = 30;
+  document.getElementById('media-path-input').value = '';
+  document.getElementById('video-label').textContent = 'Reference Video — drag & drop a .mov or click Load .mov';
+  document.getElementById('loop-btn').style.color = '';
+  hideMissingBanner();
+  clearDirty();
   render();
   renderPropsBar();
 }
@@ -2565,11 +3009,7 @@ function saveShow() {
   const chosen = prompt('Save show as filename:', suggested);
   if (chosen === null) return;
   const name = normaliseShowFilename(chosen);
-  if (show.media && isLikelyFilesystemPath(show.media?.src || '')) {
-    show.last_video = show.media?.src;
-  } else {
-    show.last_video = '';
-  }
+  show.last_video = show.media.path || show.media.src || '';
   const json = JSON.stringify(show, null, 2);
 
   // Try server-side save first (when launched via show-sync-editor.py).
@@ -2577,7 +3017,7 @@ function saveShow() {
   fetch('/api/save', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ filename: name, path: curPath || '', data: show }),
+    body: JSON.stringify({ filename: name, path: curPath || '', data: show, last_video: show.media.path || show.media.src || '' }),
   })
   .then(r => r.json())
   .then(r => {
@@ -2586,6 +3026,7 @@ function saveShow() {
       curPath = r.path || null;
       document.getElementById('filename-display').textContent = curFile + ' ✓';
       setTimeout(() => document.getElementById('filename-display').textContent = curFile, 1500);
+      clearDirty();
       saveRecent();
     } else {
       alert('Server save failed; downloading instead.\n' + (r.error || 'Unknown error'));
@@ -2606,6 +3047,7 @@ function browserDownload(json, name) {
   curFile = name;
   curPath = null;
   document.getElementById('filename-display').textContent = name;
+  clearDirty();
 }
 
 // ── Video events ──────────────────────────────────────────────────────────────
@@ -2637,10 +3079,12 @@ vid.addEventListener('play', () => {
   _rafId = requestAnimationFrame(_rafFrame);
 });
 vid.addEventListener('pause', () => {
+  if (shuttleRate !== 0 && !vid.ended) shuttleRate = 0;
   document.getElementById('play-btn').textContent = '▶ Play';
   if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
 });
 vid.addEventListener('ended', () => {
+  shuttleRate = 0;
   document.getElementById('play-btn').textContent = '▶ Play';
   if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
 });
@@ -2659,13 +3103,13 @@ vwrap.addEventListener('drop', (e) => {
 
 document.addEventListener('keydown', (e) => {
   const tag = e.target.tagName;
-  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || e.target.isContentEditable) return;
 
   if (e.code === 'Space') {
     e.preventDefault();
     togglePlay();
   }
-  if ((e.code === 'Delete' || e.code === 'Backspace') && selId) {
+  if ((e.code === 'Delete' || e.code === 'Backspace') && (selId || _multiSel.size)) {
     e.preventDefault();
     deleteSelected();
   }
@@ -2692,6 +3136,48 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     addMarker();
   }
+  if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
+    e.preventDefault();
+    const vid = document.getElementById('video-player');
+    const fps = show.fps || 30;
+    const delta = e.shiftKey ? 1.0 : (1 / fps);
+    const sign = e.code === 'ArrowLeft' ? -1 : 1;
+    const dur = isFinite(vid.duration) ? vid.duration : (show.media?.duration || 0);
+    vid.currentTime = Math.max(0, Math.min(dur, (isFinite(vid.currentTime) ? vid.currentTime : 0) + sign * delta));
+    setPlayheadPosAt(vid.currentTime);
+    compositeAt(vid.currentTime);
+    updateTransport();
+  }
+  if (e.code === 'Home') {
+    e.preventDefault();
+    const vid = document.getElementById('video-player');
+    vid.currentTime = show.in_point || 0;
+    setPlayheadPosAt(vid.currentTime); compositeAt(vid.currentTime); updateTransport();
+  }
+  if (e.code === 'End') {
+    e.preventDefault();
+    const vid = document.getElementById('video-player');
+    const dur = isFinite(vid.duration) ? vid.duration : (show.media?.duration || 0);
+    vid.currentTime = show.out_point || dur;
+    setPlayheadPosAt(vid.currentTime); compositeAt(vid.currentTime); updateTransport();
+  }
+  if (e.key === '[' || e.key === 'i') { e.preventDefault(); setInPoint(); }
+  if (e.key === ']' || e.key === 'o') { e.preventDefault(); setOutPoint(); }
+  if (e.key === 'j' || e.key === 'J') { e.preventDefault(); shuttleReverse(); }
+  if (e.key === 'k' || e.key === 'K') { e.preventDefault(); _applyShuttle(0); }
+  if (e.key === 'l' || e.key === 'L') { e.preventDefault(); shuttleForward(); }
+  if ((e.key === 'd' || e.key === 'D') && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault(); duplicateSelected();
+  }
+  if (e.key === 's' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault(); splitAtPlayhead();
+  }
+  if ((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+    e.preventDefault(); undoAction();
+  }
+  if ((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey) && e.shiftKey) {
+    e.preventDefault(); redoAction();
+  }
 });
 
 // ── Load initial show from server (when opened via show-sync-editor.py) ───────
@@ -2703,6 +3189,8 @@ fetch('/api/initial')
     if (data.recents) _recents = data.recents;
     if (data && data.show) {
       loadShowData(data.show, data.filename || 'show.json', data.path || null, data.last_video || '');
+      if (data.last_video && !show.media.path) loadMovPath(data.last_video, false);
+      checkMediaPath(show.media.path || data.last_video || '');
     }
   })
   .catch(() => {}); // standalone file:// usage — ignore
@@ -2725,20 +3213,45 @@ function showRecentPicker(list) {
   const h = document.createElement('h3'); h.textContent = 'Recent projects'; h.style.margin = '0 0 8px 0'; box.appendChild(h);
   list.forEach((it, idx) => {
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;justify-content:space-between;padding:8px 4px;border-bottom:1px solid rgba(255,255,255,0.03);cursor:pointer;';
+    const missing = !!it.missing;
+    row.style.cssText = 'display:flex;justify-content:space-between;padding:8px 4px;border-bottom:1px solid rgba(255,255,255,0.03);cursor:pointer;' + (missing ? 'opacity:0.55;' : '');
     const left = document.createElement('div');
     const fn = it.filename || ('recent-' + idx + '.json');
-    const ts = it.timestamp ? new Date(it.timestamp * 1000).toLocaleString() : '';
-    left.innerHTML = `<div style="font-weight:600">${fn}</div><div style="font-size:11px;color:var(--muted)">${ts}</div>`;
+    const tsBase = it.updated_at || it.timestamp;
+    const ts = tsBase ? new Date(tsBase * 1000).toLocaleString() : '';
+    const pathLine = it.path && isLikelyFilesystemPath(it.path) ? it.path : '';
+    const title = document.createElement('div');
+    title.style.fontWeight = '600';
+    title.textContent = fn;
+    if (missing) {
+      const badge = document.createElement('span');
+      badge.style.cssText = 'font-size:10px;background:#555;color:#ddd;border-radius:3px;padding:1px 4px;margin-left:6px;';
+      badge.textContent = 'Missing';
+      title.appendChild(badge);
+    }
+    const meta = document.createElement('div');
+    meta.style.cssText = 'font-size:11px;color:var(--muted)';
+    meta.textContent = ts + (pathLine ? ' · ' + pathLine : '');
+    left.appendChild(title);
+    left.appendChild(meta);
     const right = document.createElement('div');
     const loadBtn = document.createElement('button'); loadBtn.textContent = 'Load';
     loadBtn.style.marginRight = '8px';
-    loadBtn.onclick = () => { loadShowData(it.data, it.filename || fn, it.path || null, it.last_video || ''); document.body.removeChild(overlay); };
+    loadBtn.disabled = missing;
+    loadBtn.onclick = () => {
+      if (missing) return;
+      loadShowData(it.data, it.filename || fn, it.path || null, it.last_video || '');
+      document.body.removeChild(overlay);
+    };
     const delBtn = document.createElement('button'); delBtn.textContent = 'Remove'; delBtn.onclick = (e) => { e.stopPropagation(); removeRecent(idx); overlay.remove(); showLoadRecent(); };
     right.appendChild(loadBtn); right.appendChild(delBtn);
 
     row.appendChild(left); row.appendChild(right);
-    row.onclick = () => { loadShowData(it.data, it.filename || fn, it.path || null, it.last_video || ''); document.body.removeChild(overlay); };
+    row.onclick = () => {
+      if (missing) return;
+      loadShowData(it.data, it.filename || fn, it.path || null, it.last_video || '');
+      document.body.removeChild(overlay);
+    };
     box.appendChild(row);
   });
   const close = document.createElement('div');
@@ -2752,12 +3265,12 @@ function showRecentPicker(list) {
 function removeRecent(idx) {
   _recents.splice(idx, 1);
   // Persist current show as an update to recents (server-side trimming keeps size)
-  try { fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curPath || '', data: show }) }).catch(()=>{}); } catch(e){}
+  try { fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curPath || '', data: show, last_video: show.media?.path || show.media?.src || '' }) }).catch(()=>{}); } catch(e){}
 }
 
 function saveRecent() {
   try {
-    const payload = { filename: curFile || '', path: curPath || '', data: show, last_video: show.media?.src || '' };
+    const payload = { filename: curFile || '', path: curPath || '', data: show, last_video: show.media?.path || show.media?.src || '' };
     fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       .then(r => r.json()).then(res => { if (res && res.ok) { /* noop */ } });
   } catch (e) {}
@@ -2765,7 +3278,10 @@ function saveRecent() {
 
 // Auto-save every 10s and on close
 setInterval(saveRecent, 10000);
-window.addEventListener('beforeunload', (e) => { saveRecent(); });
+window.addEventListener('beforeunload', (e) => {
+  saveRecent();
+  if (_dirty) { e.preventDefault(); e.returnValue = ''; }
+});
 
 // ── Initial render ────────────────────────────────────────────────────────────
 
