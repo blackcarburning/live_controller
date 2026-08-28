@@ -80,6 +80,8 @@ _DEFAULT_SAVE_DIR = os.path.join(_HERE, "show-sync", "app", "static", "shows")
 
 _RECENT_FILE = os.path.join(os.path.expanduser("~"), ".show-sync-editor-recents.json")
 _RECENT_MAX = 10
+_SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".show-sync-editor-settings.json")
+_RECENT_DIR_MAX = 10
 _SERVER_PORT = PORT_MIN
 
 _HOME = os.path.realpath(os.path.expanduser("~"))
@@ -153,6 +155,41 @@ def _media_path_from_data(data) -> str:
         if path:
             return path
     return str(data.get("last_video") or "").strip()
+
+
+def _is_within(path: str, base: str) -> bool:
+    path = os.path.realpath(path)
+    base = os.path.realpath(base)
+    return path == base or path.startswith(base + os.sep)
+
+
+def _normalise_last_video_path(raw: str) -> str:
+    if not isinstance(raw, str):
+        return ""
+    candidate = raw.strip()
+    if not candidate or not _is_absoluteish(candidate):
+        return ""
+    return os.path.realpath(candidate)
+
+
+def _apply_media_persistence(data, raw_last_video: str = "") -> tuple[dict | None, str]:
+    if not isinstance(data, dict):
+        return data, ""
+
+    media = data.get("media")
+    if not isinstance(media, dict):
+        media = {}
+        data["media"] = media
+
+    media_path = _normalise_last_video_path(raw_last_video) or _normalise_last_video_path(_media_path_from_data(data))
+    if media_path:
+        media["path"] = media_path
+        if not media.get("src"):
+            media["src"] = os.path.basename(media_path)
+    elif isinstance(media.get("path"), str) and media.get("path").strip() and not _is_absoluteish(media.get("path")):
+        media["path"] = ""
+
+    return data, media_path
 
 
 def _migrate_v1_to_v3(data: dict) -> dict:
@@ -272,6 +309,66 @@ def _write_recents(lst):
         pass
 
 
+def _default_save_dir() -> str:
+    fallback = os.path.realpath(_DEFAULT_SAVE_DIR)
+    if _is_within(fallback, _HOME):
+        return fallback
+    return _HOME
+
+
+def _load_settings() -> dict:
+    base = {"save_dir": _default_save_dir(), "recent_dirs": []}
+    try:
+        with open(_SETTINGS_FILE, encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            return base
+        save_dir = raw.get("save_dir")
+        if isinstance(save_dir, str) and save_dir.strip():
+            try:
+                base["save_dir"] = _validate_directory_path(save_dir)
+            except Exception:
+                pass
+        recent_dirs = raw.get("recent_dirs")
+        if isinstance(recent_dirs, list):
+            cleaned = []
+            for item in recent_dirs:
+                if not isinstance(item, str) or not item.strip():
+                    continue
+                try:
+                    real = _validate_directory_path(item)
+                except Exception:
+                    continue
+                if real not in cleaned:
+                    cleaned.append(real)
+            base["recent_dirs"] = cleaned[:_RECENT_DIR_MAX]
+    except Exception:
+        pass
+    if base["save_dir"] not in base["recent_dirs"]:
+        base["recent_dirs"] = [base["save_dir"], *base["recent_dirs"]][:_RECENT_DIR_MAX]
+    return base
+
+
+def _write_settings(settings: dict):
+    with open(_SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+
+
+def _remember_recent_dir(path: str):
+    try:
+        real = _validate_directory_path(path)
+    except Exception:
+        return
+    settings = _load_settings()
+    recent_dirs = [real, *[d for d in settings.get("recent_dirs", []) if d != real]]
+    settings["save_dir"] = settings.get("save_dir") or real
+    settings["recent_dirs"] = recent_dirs[:_RECENT_DIR_MAX]
+    try:
+        _write_settings(settings)
+    except Exception:
+        pass
+
+
 def _save_recent_entry(entry):
     try:
         entry = dict(entry or {})
@@ -342,6 +439,25 @@ def _validate_media_path(raw: str, require_exists: bool = True) -> str:
     return real
 
 
+def _validate_directory_path(raw: str, create: bool = False) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("Missing directory path")
+    if "\x00" in raw or len(raw) > 4096:
+        raise ValueError("Invalid directory path")
+    if not _is_absoluteish(raw.strip()):
+        raise ValueError("Directory path must be absolute")
+    real = os.path.realpath(raw)
+    rel = os.path.relpath(real, _HOME)
+    if rel == ".." or rel.startswith(".." + os.sep):
+        raise ValueError("Directory not allowed")
+    safe_real = _HOME if rel == "." else os.path.join(_HOME, rel)
+    if create:
+        os.makedirs(safe_real, exist_ok=True)
+    if not os.path.isdir(safe_real):
+        raise ValueError("Directory not found")
+    return safe_real
+
+
 def _safe_video(raw: str, require_exists: bool = True) -> str | None:
     try:
         return _validate_media_path(raw, require_exists=require_exists)
@@ -393,6 +509,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._file(_HTML, "text/html; charset=utf-8")
         elif parsed.path == "/api/initial":
             self._initial()
+        elif parsed.path == "/api/settings":
+            self._settings_get()
         elif parsed.path == "/api/media/check":
             self._media_check(qs.get("path", [""])[0])
         elif parsed.path == "/video":
@@ -406,6 +524,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if parsed.path == "/api/save":
             n = int(self.headers.get("Content-Length", 0))
             self._save(self.rfile.read(n))
+        elif parsed.path == "/api/settings":
+            n = int(self.headers.get("Content-Length", 0))
+            self._settings_post(self.rfile.read(n))
         elif parsed.path == "/api/recent":
             n = int(self.headers.get("Content-Length", 0))
             self._save_recent(self.rfile.read(n))
@@ -447,6 +568,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def _initial(self):
         recents = _annotate_recents(_load_recents())
+        settings = _load_settings()
+        print(f"[show-sync-editor] /api/initial recents={len(recents)} save_dir={settings.get('save_dir')}")
         if _INITIAL:
             try:
                 with open(_INITIAL, encoding="utf-8") as f:
@@ -458,10 +581,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     "path": os.path.realpath(_INITIAL),
                     "last_video": show.get("media", {}).get("path") or raw.get("last_video", ""),
                     "recents": recents,
+                    "save_dir": settings.get("save_dir"),
+                    "recent_dirs": settings.get("recent_dirs", []),
                 })
                 return
             except Exception as exc:
-                self._json({"error": str(exc), "recents": recents})
+                print(f"[show-sync-editor] /api/initial initial-load failed: {exc}")
+                self._json({"error": str(exc), "recents": recents, "save_dir": settings.get("save_dir"), "recent_dirs": settings.get("recent_dirs", [])})
                 return
 
         if recents:
@@ -479,10 +605,35 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 "path": top.get("path"),
                 "last_video": top.get("last_video", "") or _media_path_from_data(show_data),
                 "recents": recents,
+                "save_dir": settings.get("save_dir"),
+                "recent_dirs": settings.get("recent_dirs", []),
             })
             return
 
-        self._json({"recents": recents})
+        self._json({"recents": recents, "save_dir": settings.get("save_dir"), "recent_dirs": settings.get("recent_dirs", [])})
+
+    def _settings_get(self):
+        self._json(_load_settings())
+
+    def _settings_post(self, body):
+        if not self._guard_post_origin():
+            return
+        try:
+            payload = json.loads(body)
+            save_dir = payload.get("save_dir", "")
+            if not isinstance(save_dir, str) or not save_dir.strip():
+                raise ValueError("Missing save_dir")
+            real = _validate_directory_path(save_dir, create=True)
+            settings = _load_settings()
+            recent_dirs = [real, *[d for d in settings.get("recent_dirs", []) if d != real]]
+            settings["save_dir"] = real
+            settings["recent_dirs"] = recent_dirs[:_RECENT_DIR_MAX]
+            _write_settings(settings)
+            print(f"[show-sync-editor] /api/settings save_dir set to {real}")
+            self._json({"ok": True, "save_dir": settings["save_dir"], "recent_dirs": settings["recent_dirs"]})
+        except Exception as exc:
+            print(f"[show-sync-editor] /api/settings failed: {exc}")
+            self._json({"ok": False, "error": str(exc)})
 
     def _media_check(self, raw):
         try:
@@ -514,11 +665,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             path = payload.get("path", "")
             if data is None:
                 raise ValueError("Missing data")
-            last_video = payload.get("last_video") or (_media_path_from_data(data) if isinstance(data, dict) else "")
+            data, media_path = _apply_media_persistence(data, payload.get("last_video", ""))
+            last_video = media_path
             entry = {"filename": filename, "path": path, "data": data, "last_video": last_video}
             ok = _save_recent_entry(entry)
+            print(f"[show-sync-editor] /api/recent ok={ok} filename={filename} path={path} last_video={last_video}")
             self._json({"ok": ok})
         except Exception as exc:
+            print(f"[show-sync-editor] /api/recent failed: {exc}")
             self._json({"ok": False, "error": str(exc)})
 
     def _stream_file(self, path: str, start: int = 0, end: int | None = None):
@@ -607,35 +761,44 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     filename += ".json"
                 if filename in (".", "..") or os.sep in filename or (os.altsep and os.altsep in filename):
                     raise ValueError("Invalid filename")
-                os.makedirs(_DEFAULT_SAVE_DIR, exist_ok=True)
-                real = os.path.realpath(os.path.join(_DEFAULT_SAVE_DIR, filename))
-                default_dir = os.path.realpath(_DEFAULT_SAVE_DIR)
-                if not (real.startswith(default_dir + os.sep) or real == default_dir):
-                    raise ValueError("Cannot save outside shows directory")
+                settings = _load_settings()
+                base_dir = _validate_directory_path(settings.get("save_dir", _default_save_dir()), create=True)
+                real = os.path.realpath(os.path.join(base_dir, filename))
+                if not _is_within(real, base_dir):
+                    raise ValueError("Directory not allowed")
             else:
                 if not path:
-                    raise ValueError("Missing path or filename")
+                    raise ValueError("Missing filename")
                 if "\x00" in path or len(path) > 4096:
                     raise ValueError("Invalid path")
                 if not path.endswith(".json"):
                     raise ValueError("Path must end with .json")
                 real = os.path.realpath(path)
-                if not (real.startswith(_HOME + os.sep) or real == _HOME):
-                    raise ValueError("Cannot save outside of home directory")
+                if not _is_within(real, _HOME):
+                    raise ValueError("Directory not allowed")
+                parent = os.path.dirname(real)
+                _validate_directory_path(parent, create=True)
 
+            data, media_path = _apply_media_persistence(data, payload.get("last_video", ""))
             with open(real, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
 
-            last_video = payload.get("last_video") or (_media_path_from_data(data) if isinstance(data, dict) else "")
+            last_video = media_path
             _save_recent_entry({
                 "filename": os.path.basename(real),
                 "path": real,
                 "data": data,
                 "last_video": last_video,
             })
+            _remember_recent_dir(os.path.dirname(real))
+            print(f"[show-sync-editor] /api/save wrote {real} last_video={last_video}")
             self._json({"ok": True, "path": real, "filename": os.path.basename(real)})
+        except OSError as exc:
+            print(f"[show-sync-editor] /api/save write failure: {exc}")
+            self._json({"ok": False, "error": f"Unable to write file: {exc}", "can_download_fallback": True})
         except Exception as exc:
-            self._json({"ok": False, "error": str(exc)})
+            print(f"[show-sync-editor] /api/save validation failure: {exc}")
+            self._json({"ok": False, "error": str(exc), "can_download_fallback": False})
 
     def _json(self, obj, status=200):
         body = json.dumps(obj).encode("utf-8")

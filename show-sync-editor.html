@@ -530,6 +530,12 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   <button onclick="showInput()">Load Show</button>
   <button onclick="showLoadRecent()">Load Recent</button>
   <button class="primary" onclick="saveShow()">Save Show</button>
+  <button onclick="saveShowAs()">Save As…</button>
+  <label style="margin-left:6px">Save Dir</label>
+  <input id="save-dir-input" list="save-dir-list" placeholder="/absolute/path" style="width:260px;font-size:11px;"
+         title="Absolute directory for filename-based saves">
+  <datalist id="save-dir-list"></datalist>
+  <button onclick="applySaveDir()" style="font-size:11px;padding:3px 7px">Set</button>
   <div class="tb-sep"></div>
   <label>BPM</label>
   <input type="number" id="bpm-input" min="20" max="300" step="1" value="120" style="width:58px"
@@ -553,6 +559,7 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
   <div class="tb-spacer"></div>
   <span id="filename-display">unsaved</span>
 </div>
+<div id="save-status-bar" style="display:none;padding:4px 10px;font-size:11px;background:#203020;border-bottom:1px solid #2f5a2f;color:#cfeacc;"></div>
 
 <!-- ── Media area ───────────────────────────────────────────────────────────── -->
 <div id="media-area">
@@ -584,6 +591,9 @@ label { color: var(--muted); font-size: 11px; white-space: nowrap; }
     <div id="media-path-row" style="display:flex;align-items:center;gap:6px;margin-top:4px;">
       <input type="text" id="media-path-input" placeholder="Absolute .mov path…" style="flex:1;font-size:11px;" title="Enter absolute path to .mov and press Enter">
       <button onclick="loadMovPath(document.getElementById('media-path-input').value)" style="font-size:11px;padding:2px 7px">Load Path</button>
+    </div>
+    <div id="media-path-hint" style="display:none;font-size:11px;color:#ffcc66;margin-top:2px;">
+      Loaded from file picker. Enter the absolute .mov path above and click Load Path so it can be restored on restart.
     </div>
     <div id="media-missing-banner" style="display:none;background:#5a2020;border:1px solid #9a3030;border-radius:4px;padding:6px 10px;margin-top:4px;font-size:11px;color:#ffcccc;">
       <span id="media-missing-msg">Reference video not found</span>
@@ -674,6 +684,7 @@ let phDrag    = false;    // true while scrubbing the playhead via ruler drag
 let clipboard = null;     // deep-copied clip for Ctrl+C / Ctrl+V paste
 let _rafId    = null;     // rAF handle for per-frame video/timeline sync
 let _recents  = [];       // cached recent projects from server
+let _settings = { save_dir: '', recent_dirs: [] };
 let shuttleRate = 0;       // J/K/L shuttle playback rate multiplier
 let _loopEnabled = false;  // loop between in/out points
 let _undoStack = [];       // undo history
@@ -682,6 +693,8 @@ let _dirty = false;        // unsaved changes flag
 let _multiSel = new Set(); // multi-selected clip ids
 let _waveformPeaks = null; // decoded waveform peaks array
 let _waveformAudioCtx = null;
+let _isUserScrubbing = false;
+let _resumePlaybackAfterScrub = false;
 
 // ── Device presets ────────────────────────────────────────────────────────────
 // Each entry: { id, name, w (portrait width px), h (portrait height px) }
@@ -797,6 +810,37 @@ function fmtTimecode(t, fps) {
 
 function transportText(t, dur) {
   return `${fmtTime(t)} / ${fmtTime(dur)} · ${fmtTimecode(t, show.fps || 30)}`;
+}
+
+function showStatus(message, tone = 'info', timeoutMs = 4500) {
+  const bar = document.getElementById('save-status-bar');
+  if (!bar) return;
+  bar.textContent = message;
+  if (tone === 'error') {
+    bar.style.background = '#5a2020';
+    bar.style.borderBottom = '1px solid #9a3030';
+    bar.style.color = '#ffd2d2';
+  } else if (tone === 'warn') {
+    bar.style.background = '#4a3000';
+    bar.style.borderBottom = '1px solid #8a5500';
+    bar.style.color = '#ffdf9a';
+  } else {
+    bar.style.background = '#203020';
+    bar.style.borderBottom = '1px solid #2f5a2f';
+    bar.style.color = '#cfeacc';
+  }
+  bar.style.display = '';
+  if (timeoutMs > 0) {
+    setTimeout(() => {
+      if (bar.textContent === message) bar.style.display = 'none';
+    }, timeoutMs);
+  }
+}
+
+function syncFilenameDisplay(name, fullPath = '') {
+  const el = document.getElementById('filename-display');
+  el.textContent = name || 'unsaved';
+  el.title = fullPath || '';
 }
 
 function getClip(id) {
@@ -1635,16 +1679,40 @@ function updateTransport() {
   if (dur > 0) { bar.max = dur; bar.value = t; }
 }
 
+function ensureRafRunning() {
+  if (!vid.paused && !_rafId) _rafId = requestAnimationFrame(_rafFrame);
+}
+
+function syncPlayButton() {
+  document.getElementById('play-btn').textContent = (vid.paused || vid.ended) ? '▶ Play' : '⏸ Pause';
+}
+
+function beginScrub(source) {
+  if (_isUserScrubbing) return;
+  _isUserScrubbing = true;
+  _resumePlaybackAfterScrub = !vid.paused && !vid.ended;
+  if (_resumePlaybackAfterScrub) vid.pause();
+  console.info('[show-sync-editor] scrub begin', { source, resumeAfter: _resumePlaybackAfterScrub, t: vid.currentTime });
+}
+
+function endScrub(source) {
+  if (!_isUserScrubbing) return;
+  _isUserScrubbing = false;
+  const shouldResume = _resumePlaybackAfterScrub;
+  _resumePlaybackAfterScrub = false;
+  if (shouldResume) vid.play().catch(() => {});
+  ensureRafRunning();
+  syncPlayButton();
+  console.info('[show-sync-editor] scrub end', { source, resumed: shouldResume, t: vid.currentTime });
+}
+
 function togglePlay() {
-  const vid = document.getElementById('video-player');
-  const btn = document.getElementById('play-btn');
   if (vid.paused) {
     vid.play().catch(() => {});
-    btn.textContent = '⏸ Pause';
   } else {
     vid.pause();
-    btn.textContent = '▶ Play';
   }
+  syncPlayButton();
 }
 
 function setRate(r) {
@@ -1666,10 +1734,10 @@ function setVolume(v) {
 }
 function _applyShuttle(r) {
   shuttleRate = r;
-  const vid = document.getElementById('video-player');
   if (r === 0) { vid.pause(); }
   else { vid.playbackRate = Math.abs(r); if (vid.paused) vid.play().catch(()=>{}); }
-  document.getElementById('play-btn').textContent = (r === 0 || vid.paused) ? '▶ Play' : '⏸ Pause';
+  syncPlayButton();
+  ensureRafRunning();
 }
 const SHUTTLE_STEPS = [0, 0.25, 0.5, 1, 2, 4];
 function shuttleForward() {
@@ -1770,6 +1838,7 @@ document.getElementById('ruler-content').addEventListener('mousedown', (e) => {
 
   // No marker nearby → deselect marker and start playhead scrub
   selMarkerId = null;
+  beginScrub('ruler');
   phDrag = true;
   seekTo(t);
 });
@@ -1803,7 +1872,7 @@ function setPlayheadPosAt(t) {
 }
 
 document.getElementById('scrub-bar').addEventListener('input', (e) => {
-  const vid = document.getElementById('video-player');
+  beginScrub('scrub-bar-input');
   const t = parseFloat(e.target.value);
   if (isFinite(vid.duration)) {
     vid.currentTime = t;
@@ -1815,6 +1884,9 @@ document.getElementById('scrub-bar').addEventListener('input', (e) => {
     compositeAt(t);
   }
 });
+document.getElementById('scrub-bar').addEventListener('change', () => endScrub('scrub-bar-change'));
+document.getElementById('scrub-bar').addEventListener('pointerdown', () => beginScrub('scrub-bar-pointerdown'));
+document.getElementById('scrub-bar').addEventListener('pointerup', () => endScrub('scrub-bar-pointerup'));
 
 // ── Drag handling ─────────────────────────────────────────────────────────────
 
@@ -1941,7 +2013,10 @@ document.addEventListener('mousemove', (e) => {
 });
 
 document.addEventListener('mouseup', () => {
-  phDrag = false;
+  if (phDrag) {
+    phDrag = false;
+    endScrub('ruler-mouseup');
+  }
   // Restore text selection
   try { document.body.style.userSelect = ''; } catch (err) {}
   if (drag) {
@@ -2709,6 +2784,7 @@ function hideMissingBanner() {
 }
 function checkMediaPath(path) {
   if (!path) { hideMissingBanner(); return; }
+  console.debug('[show-sync-editor] checking media path', path);
   fetch('/api/media/check?path=' + encodeURIComponent(path))
     .then(r => r.json())
     .then(res => {
@@ -2726,7 +2802,7 @@ function checkMediaPath(path) {
         show.media.mtime = res.mtime;
       }
     })
-    .catch(() => {});
+    .catch((err) => { console.warn('[show-sync-editor] media check failed', err); });
 }
 function relocateMedia() {
   const newPath = prompt('Enter new absolute path to the .mov file:', show.media.path || '');
@@ -2766,7 +2842,7 @@ function _tryRenderWaveform(src) {
 }
 
 function loadMovPath(path, markAsDirty = true) {
-  const vid = document.getElementById('video-player');
+  console.info('[show-sync-editor] loadMovPath requested', path);
   if (typeof path !== 'string') return;
   const normalizedPath = path.trim();
   if (!normalizedPath) return;
@@ -2781,6 +2857,7 @@ function loadMovPath(path, markAsDirty = true) {
     show.media.mtime    = null;
     show.last_video     = normalizedPath;
     show.media.duration = vid.duration;
+    document.getElementById('media-path-hint').style.display = 'none';
     document.getElementById('video-label').textContent = 'Reference Video: ' + normalizedPath;
     if (markAsDirty) markDirty();
     checkMediaPath(normalizedPath);
@@ -2788,7 +2865,9 @@ function loadMovPath(path, markAsDirty = true) {
     render();
     // Tell server this is the last used video so recents can remember it
     try {
-      fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curPath || '', data: show, last_video: normalizedPath }) }).catch(()=>{});
+      const recentPayload = { filename: curFile || '', path: curPath || '', data: show, last_video: normalizedPath };
+      console.debug('[show-sync-editor] /api/recent from loadMovPath', recentPayload);
+      fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(recentPayload) }).catch(()=>{});
     } catch(e){}
   }, { once: true });
   vid.addEventListener('error', () => {
@@ -2812,6 +2891,12 @@ document.getElementById('media-path-input').addEventListener('keydown', (e) => {
     loadMovPath(e.target.value);
   }
 });
+document.getElementById('save-dir-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    applySaveDir();
+  }
+});
 
 function loadMovFile(file, markAsDirty = true) {
   if (vidUrl) URL.revokeObjectURL(vidUrl);
@@ -2832,14 +2917,18 @@ function loadMovFile(file, markAsDirty = true) {
     // Blob/file-picker sources are not stable filesystem paths; do not persist as restorable last_video.
     show.last_video     = '';
     show.media.duration = vid.duration;
-    document.getElementById('media-path-input').value = '';
+    document.getElementById('media-path-input').value = file.name || '';
+    document.getElementById('media-path-hint').style.display = '';
     document.getElementById('video-label').textContent = 'Reference Video: ' + file.name;
     hideMissingBanner();
+    showStatus('Loaded via file picker. Enter absolute .mov path to make this reference restorable.', 'warn', 8000);
     if (markAsDirty) markDirty();
     render();
-    // Inform server of last used video (filename only; absolute path not available when using file picker)
+    // Inform server of recents update without claiming a non-persistable last_video.
     try {
-      fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curPath || '', data: show, last_video: file.name }) }).catch(()=>{});
+      const recentPayload = { filename: curFile || '', path: curPath || '', data: show, last_video: '' };
+      console.debug('[show-sync-editor] /api/recent from loadMovFile', recentPayload);
+      fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(recentPayload) }).catch(()=>{});
     } catch(e){}
   }, { once: true });
   _tryRenderWaveform(vidUrl);
@@ -2854,8 +2943,12 @@ function isLikelyFilesystemPath(raw) {
 }
 
 function resolveSavedVideoPath(preferredVideoPath) {
-  const candidate = (preferredVideoPath || show.media?.path || show.last_video || show.media?.src || '').trim();
-  return isLikelyFilesystemPath(candidate) ? candidate : '';
+  const candidates = [preferredVideoPath, show.media?.path, show.last_video, show.media?.src];
+  for (const c of candidates) {
+    const candidate = (c || '').trim();
+    if (isLikelyFilesystemPath(candidate)) return candidate;
+  }
+  return '';
 }
 
 document.getElementById('show-input').addEventListener('change', (e) => {
@@ -2874,6 +2967,7 @@ document.getElementById('show-input').addEventListener('change', (e) => {
 });
 
 function loadShowData(data, filename, path, preferredVideoPath) {
+  console.info('[show-sync-editor] loadShowData start', { filename, path, preferredVideoPath });
   if (data.tracks) {
     show = data;
     show.version = 3;
@@ -2913,7 +3007,8 @@ function loadShowData(data, filename, path, preferredVideoPath) {
 
   curFile = filename || 'show.json';
   curPath = path || null;
-  document.getElementById('filename-display').textContent = curFile;
+  syncFilenameDisplay(curFile, curPath || '');
+  updateEffectiveSavePathHint();
 
   // Sync BPM input with loaded show value (default 120 if absent)
   const bpmInp = document.getElementById('bpm-input');
@@ -2921,6 +3016,7 @@ function loadShowData(data, filename, path, preferredVideoPath) {
   const fpsInp = document.getElementById('fps-input');
   if (fpsInp) fpsInp.value = show.fps || 30;
   document.getElementById('media-path-input').value = show.media.path || show.last_video || '';
+  syncMediaPersistenceState();
 
   _undoStack = [];
   _redoStack = [];
@@ -2934,8 +3030,11 @@ function loadShowData(data, filename, path, preferredVideoPath) {
   clearDirty();
 
   const savedVideo = resolveSavedVideoPath(preferredVideoPath);
+  console.info('[show-sync-editor] resolved video restore path', { savedVideo, mediaPath: show.media.path, lastVideo: show.last_video });
   if (savedVideo) {
     loadMovPath(savedVideo, false);
+  } else if (show.media?.src) {
+    document.getElementById('media-path-hint').style.display = '';
   }
   checkMediaPath(show.media.path || show.last_video || '');
 }
@@ -2981,12 +3080,14 @@ function newShow() {
   _redoStack = [];
   _loopEnabled = false;
   shuttleRate = 0;
-  document.getElementById('filename-display').textContent = 'unsaved';
+  syncFilenameDisplay('unsaved', '');
+  updateEffectiveSavePathHint();
   const bpmInp = document.getElementById('bpm-input');
   if (bpmInp) bpmInp.value = 120;
   const fpsInp = document.getElementById('fps-input');
   if (fpsInp) fpsInp.value = 30;
   document.getElementById('media-path-input').value = '';
+  document.getElementById('media-path-hint').style.display = 'none';
   document.getElementById('video-label').textContent = 'Reference Video — drag & drop a .mov or click Load .mov';
   document.getElementById('loop-btn').style.color = '';
   hideMissingBanner();
@@ -2996,44 +3097,114 @@ function newShow() {
 }
 
 function normaliseShowFilename(name) {
-  name = (name || 'show.json').trim();
-  // Keep this as a filename, not a path.  The server saves it into the shows folder.
+  name = (name || 'untitled-show.json').trim();
+  // Keep this as a filename, not a path. The server resolves this within save_dir.
   name = name.split(/[\\/]/).pop();
-  if (!name) name = 'show.json';
+  if (!name) name = 'untitled-show.json';
   if (!/\.json$/i.test(name)) name += '.json';
   return name;
 }
 
-function saveShow() {
-  const suggested = normaliseShowFilename(curFile || 'show.json');
-  const chosen = prompt('Save show as filename:', suggested);
-  if (chosen === null) return;
-  const name = normaliseShowFilename(chosen);
-  show.last_video = show.media.path || show.media.src || '';
-  const json = JSON.stringify(show, null, 2);
+function inferFilenameFromMedia() {
+  if (curFile) return normaliseShowFilename(curFile);
+  const path = (show.media && show.media.path ? show.media.path : '').trim();
+  if (path && isLikelyFilesystemPath(path)) {
+    const base = path.split(/[\\/]/).pop() || '';
+    if (base) return normaliseShowFilename(base.replace(/\.[^.]+$/, '') + '.json');
+  }
+  return 'untitled-show.json';
+}
 
-  // Try server-side save first (when launched via show-sync-editor.py).
-  // The server writes filename-only saves into show-sync/app/static/shows.
+function getPersistableMediaPath() {
+  const inputPath = (document.getElementById('media-path-input').value || '').trim();
+  if (isLikelyFilesystemPath(inputPath)) return inputPath;
+  const mediaPath = (show.media?.path || '').trim();
+  if (isLikelyFilesystemPath(mediaPath)) return mediaPath;
+  return '';
+}
+
+function syncMediaPersistenceState() {
+  const path = getPersistableMediaPath();
+  if (!show.media) show.media = { type: 'video', src: '', path: '', duration: 0, size: null, mtime: null };
+  show.media.path = path;
+  show.last_video = path;
+  const hint = document.getElementById('media-path-hint');
+  hint.style.display = path ? 'none' : (show.media?.src ? '' : 'none');
+  if (!path && show.media?.src) {
+    console.info('[show-sync-editor] media path is not persistable yet; waiting for absolute path input');
+  }
+}
+
+function buildSavePayload(mode, chosenFilename) {
+  syncMediaPersistenceState();
+  if (!show.last_video && show.media?.src) {
+    showStatus('Reference video was loaded from picker only. Enter absolute .mov path to persist video restore.', 'warn', 8000);
+  }
+  console.info('[show-sync-editor] preparing save payload', { mode, curPath, chosenFilename, mediaPath: show.media?.path, lastVideo: show.last_video });
+  const payload = { data: show, last_video: show.last_video || '' };
+  if (mode === 'path') payload.path = curPath || '';
+  else payload.filename = normaliseShowFilename(chosenFilename || inferFilenameFromMedia());
+  return payload;
+}
+
+function saveShow(opts = {}) {
+  const forcePrompt = !!opts.forcePrompt;
+  let mode = (curPath && !forcePrompt) ? 'path' : 'filename';
+  let filename = '';
+  if (mode === 'filename') {
+    const suggested = inferFilenameFromMedia();
+    const chosen = prompt('Save show as filename:', suggested);
+    if (chosen === null) return;
+    filename = chosen;
+  }
+
+  const json = JSON.stringify(show, null, 2);
+  const payload = buildSavePayload(mode, filename);
+  if (mode === 'path' && !payload.path) {
+    showStatus('Save failed: missing path for overwrite.', 'error');
+    return;
+  }
+  if (mode === 'filename' && !payload.filename) {
+    showStatus('Save failed: missing filename.', 'error');
+    return;
+  }
+
   fetch('/api/save', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ filename: name, path: curPath || '', data: show, last_video: show.media.path || show.media.src || '' }),
+    body: JSON.stringify(payload),
   })
   .then(r => r.json())
   .then(r => {
     if (r.ok) {
-      curFile = r.filename || name;
+      curFile = r.filename || payload.filename || curFile || inferFilenameFromMedia();
       curPath = r.path || null;
-      document.getElementById('filename-display').textContent = curFile + ' ✓';
-      setTimeout(() => document.getElementById('filename-display').textContent = curFile, 1500);
+      syncFilenameDisplay(curFile + ' ✓', curPath || '');
+      setTimeout(() => syncFilenameDisplay(curFile, curPath || ''), 1500);
       clearDirty();
+      showStatus('Saved to disk: ' + (curPath || curFile), 'info');
       saveRecent();
+      updateEffectiveSavePathHint();
+      refreshSettings();
     } else {
-      alert('Server save failed; downloading instead.\n' + (r.error || 'Unknown error'));
-      browserDownload(json, name);
+      const why = r.error || 'Unknown error';
+      if (r.can_download_fallback) {
+        showStatus('Server save failed (' + why + '). Downloading in browser instead.', 'warn', 6500);
+        browserDownload(json, payload.filename || inferFilenameFromMedia());
+      } else {
+        showStatus('Save failed: ' + why, 'error', 7000);
+      }
     }
   })
-  .catch(() => browserDownload(json, name));
+  .catch((err) => {
+    console.warn('[show-sync-editor] /api/save unreachable:', err);
+    showStatus('Server unavailable. Downloading in browser instead.', 'warn', 6500);
+    browserDownload(json, payload.filename || inferFilenameFromMedia());
+  });
+}
+
+function saveShowAs() {
+  saveShow({ forcePrompt: true });
 }
 
 function browserDownload(json, name) {
@@ -3046,8 +3217,78 @@ function browserDownload(json, name) {
   URL.revokeObjectURL(url);
   curFile = name;
   curPath = null;
-  document.getElementById('filename-display').textContent = name;
+  syncFilenameDisplay(name, '');
   clearDirty();
+}
+
+function renderSaveDirOptions() {
+  const list = document.getElementById('save-dir-list');
+  while (list.firstChild) list.removeChild(list.firstChild);
+  const dirs = Array.isArray(_settings.recent_dirs) ? _settings.recent_dirs : [];
+  dirs.forEach((d) => {
+    const opt = document.createElement('option');
+    opt.value = d;
+    list.appendChild(opt);
+  });
+}
+
+function updateEffectiveSavePathHint() {
+  if (curPath) {
+    syncFilenameDisplay(curFile || 'show.json', curPath);
+    return;
+  }
+  const dir = (_settings.save_dir || '').trim();
+  const fn = inferFilenameFromMedia();
+  const full = dir ? (dir.replace(/[\\/]$/, '') + '/' + fn) : '';
+  syncFilenameDisplay(curFile || 'unsaved', full);
+}
+
+function refreshSettings() {
+  return fetch('/api/settings')
+    .then(r => r.json())
+    .then(data => {
+      if (!data || !data.save_dir) return;
+      _settings.save_dir = data.save_dir;
+      _settings.recent_dirs = Array.isArray(data.recent_dirs) ? data.recent_dirs : [];
+      document.getElementById('save-dir-input').value = _settings.save_dir;
+      renderSaveDirOptions();
+      updateEffectiveSavePathHint();
+      console.info('[show-sync-editor] settings loaded', _settings);
+    })
+    .catch((err) => {
+      console.warn('[show-sync-editor] unable to load /api/settings', err);
+    });
+}
+
+function applySaveDir() {
+  const raw = (document.getElementById('save-dir-input').value || '').trim();
+  if (!raw) {
+    showStatus('Save directory is required.', 'error');
+    return;
+  }
+  fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ save_dir: raw }),
+  })
+    .then(r => r.json())
+    .then(res => {
+      if (!res.ok) {
+        showStatus('Save directory update failed: ' + (res.error || 'Unknown error'), 'error', 7000);
+        return;
+      }
+      _settings.save_dir = res.save_dir;
+      _settings.recent_dirs = Array.isArray(res.recent_dirs) ? res.recent_dirs : [];
+      document.getElementById('save-dir-input').value = _settings.save_dir;
+      renderSaveDirOptions();
+      updateEffectiveSavePathHint();
+      showStatus('Save directory set to: ' + _settings.save_dir, 'info');
+      console.info('[show-sync-editor] save directory updated', _settings.save_dir);
+    })
+    .catch((err) => {
+      console.warn('[show-sync-editor] /api/settings POST failed', err);
+      showStatus('Could not update save directory.', 'error');
+    });
 }
 
 // ── Video events ──────────────────────────────────────────────────────────────
@@ -3072,7 +3313,7 @@ vid.addEventListener('timeupdate', () => {
 });
 
 vid.addEventListener('play', () => {
-  document.getElementById('play-btn').textContent = '⏸ Pause';
+  syncPlayButton();
   // Start the per-frame sync loop so the playhead and preview stay locked to
   // vid.currentTime at display frame-rate instead of timeupdate's ~4-10 Hz.
   if (_rafId) cancelAnimationFrame(_rafId);
@@ -3080,15 +3321,28 @@ vid.addEventListener('play', () => {
 });
 vid.addEventListener('pause', () => {
   if (shuttleRate !== 0 && !vid.ended) shuttleRate = 0;
-  document.getElementById('play-btn').textContent = '▶ Play';
+  syncPlayButton();
   if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
 });
 vid.addEventListener('ended', () => {
   shuttleRate = 0;
-  document.getElementById('play-btn').textContent = '▶ Play';
+  syncPlayButton();
   if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
 });
-vid.addEventListener('loadedmetadata', () => { render(); });
+vid.addEventListener('seeking', () => {
+  console.debug('[show-sync-editor] seeking', vid.currentTime);
+  setPlayheadPosAt(isFinite(vid.currentTime) ? vid.currentTime : 0);
+  updateTransport();
+});
+vid.addEventListener('seeked', () => {
+  console.debug('[show-sync-editor] seeked', vid.currentTime);
+  const t = isFinite(vid.currentTime) ? vid.currentTime : 0;
+  setPlayheadPosAt(t);
+  compositeAt(t);
+  updateTransport();
+  ensureRafRunning();
+});
+vid.addEventListener('loadedmetadata', () => { render(); syncPlayButton(); });
 
 // Video drag-and-drop onto the video panel
 const vwrap = document.getElementById('video-wrap');
@@ -3138,28 +3392,26 @@ document.addEventListener('keydown', (e) => {
   }
   if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
     e.preventDefault();
-    const vid = document.getElementById('video-player');
     const fps = show.fps || 30;
     const delta = e.shiftKey ? 1.0 : (1 / fps);
     const sign = e.code === 'ArrowLeft' ? -1 : 1;
-    const dur = isFinite(vid.duration) ? vid.duration : (show.media?.duration || 0);
-    vid.currentTime = Math.max(0, Math.min(dur, (isFinite(vid.currentTime) ? vid.currentTime : 0) + sign * delta));
-    setPlayheadPosAt(vid.currentTime);
-    compositeAt(vid.currentTime);
-    updateTransport();
+    const cur = isFinite(vid.currentTime) ? vid.currentTime : 0;
+    seekTo(cur + sign * delta);
+    ensureRafRunning();
+    syncPlayButton();
   }
   if (e.code === 'Home') {
     e.preventDefault();
-    const vid = document.getElementById('video-player');
-    vid.currentTime = show.in_point || 0;
-    setPlayheadPosAt(vid.currentTime); compositeAt(vid.currentTime); updateTransport();
+    seekTo(show.in_point || 0);
+    ensureRafRunning();
+    syncPlayButton();
   }
   if (e.code === 'End') {
     e.preventDefault();
-    const vid = document.getElementById('video-player');
     const dur = isFinite(vid.duration) ? vid.duration : (show.media?.duration || 0);
-    vid.currentTime = show.out_point || dur;
-    setPlayheadPosAt(vid.currentTime); compositeAt(vid.currentTime); updateTransport();
+    seekTo(show.out_point || dur);
+    ensureRafRunning();
+    syncPlayButton();
   }
   if (e.key === '[' || e.key === 'i') { e.preventDefault(); setInPoint(); }
   if (e.key === ']' || e.key === 'o') { e.preventDefault(); setOutPoint(); }
@@ -3186,23 +3438,31 @@ fetch('/api/initial')
   .then(r => r.json())
   .then(data => {
     if (!data) return;
+    console.info('[show-sync-editor] /api/initial response', data);
     if (data.recents) _recents = data.recents;
+    if (data.save_dir) {
+      _settings.save_dir = data.save_dir;
+      _settings.recent_dirs = Array.isArray(data.recent_dirs) ? data.recent_dirs : [];
+      document.getElementById('save-dir-input').value = _settings.save_dir;
+      renderSaveDirOptions();
+      updateEffectiveSavePathHint();
+    }
     if (data && data.show) {
       loadShowData(data.show, data.filename || 'show.json', data.path || null, data.last_video || '');
-      if (data.last_video && !show.media.path) loadMovPath(data.last_video, false);
       checkMediaPath(show.media.path || data.last_video || '');
+      if (data.last_video) console.info('[show-sync-editor] startup video candidate', data.last_video);
     }
   })
-  .catch(() => {}); // standalone file:// usage — ignore
+  .catch((err) => { console.warn('[show-sync-editor] /api/initial unavailable', err); }); // standalone file:// usage — ignore
 
 // ── Recent projects UI + autosave ───────────────────────────────────────────
 function showLoadRecent() {
   // Ensure we have the latest recents from server
   fetch('/api/initial').then(r => r.json()).then(data => {
     if (data && data.recents) _recents = data.recents;
-    if (!_recents || !_recents.length) return alert('No recent projects');
+    if (!_recents || !_recents.length) return showStatus('No recent projects.', 'warn');
     showRecentPicker(_recents);
-  }).catch(() => { if (!_recents.length) alert('No recent projects'); else showRecentPicker(_recents); });
+  }).catch(() => { if (!_recents.length) showStatus('No recent projects.', 'warn'); else showRecentPicker(_recents); });
 }
 
 function showRecentPicker(list) {
@@ -3265,12 +3525,15 @@ function showRecentPicker(list) {
 function removeRecent(idx) {
   _recents.splice(idx, 1);
   // Persist current show as an update to recents (server-side trimming keeps size)
-  try { fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curPath || '', data: show, last_video: show.media?.path || show.media?.src || '' }) }).catch(()=>{}); } catch(e){}
+  syncMediaPersistenceState();
+  try { fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: curFile || '', path: curPath || '', data: show, last_video: show.media?.path || '' }) }).catch(()=>{}); } catch(e){}
 }
 
 function saveRecent() {
   try {
-    const payload = { filename: curFile || '', path: curPath || '', data: show, last_video: show.media?.path || show.media?.src || '' };
+    syncMediaPersistenceState();
+    const payload = { filename: curFile || '', path: curPath || '', data: show, last_video: show.media?.path || '' };
+    console.debug('[show-sync-editor] autosave recent payload', { filename: payload.filename, path: payload.path, last_video: payload.last_video, media_path: show.media?.path });
     fetch('/api/recent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       .then(r => r.json()).then(res => { if (res && res.ok) { /* noop */ } });
   } catch (e) {}
@@ -3289,6 +3552,8 @@ initDeviceSelect();
 render();
 renderPropsBar();
 updatePreviewSize();
+syncPlayButton();
+refreshSettings();
 
 // Keep preview correctly scaled when the browser window is resized
 window.addEventListener('resize', updatePreviewSize);
