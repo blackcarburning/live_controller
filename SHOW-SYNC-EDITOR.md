@@ -42,12 +42,15 @@ The editor loads a reference `.mov` (or other video) and keeps track of its abso
 
 ### How it works
 
-1. **Drag & drop** a `.mov` onto the video panel, or click **Load .mov** (file picker), or type/paste an absolute path in the path field and press **Load Path**.
-2. The path is stored in `show.media.path` and in the recents entry (`last_video`).
-3. On startup, the server returns `last_video` for the most recent show; the editor auto-loads the video.
-4. If the file is missing, a red banner appears: **"Reference video not found: /path/to/x.mov — Relocate…"**  
+1. **Preferred flow:** type/paste the absolute path in **Absolute .mov path…** and click **Load Path**.
+2. **Load .mov** (file picker) and drag/drop are supported for previewing, but these are browser object URLs. The editor now prompts you to enter the absolute path so restart restore can be persisted.
+3. The absolute path is stored in `show.media.path` and in the recents entry (`last_video`) on save and autosave paths.
+4. On startup, `/api/initial` returns `last_video` (and migrated `show.media.path`), and the editor auto-loads `video-player.src = /video?path=...`.
+5. If the file is missing, a red banner appears: **"Reference video not found: /path/to/x.mov — Relocate…"**  
    Click **Relocate** to enter the new path.
-5. If the file's size or modification time changed since last save, the video label shows a ⚠ warning (timings may be off).
+6. If the file's size or modification time changed since last save, the video label shows a ⚠ warning (timings may be off).
+
+The editor logs media-restore diagnostics in the browser console (`/api/initial` payload, chosen restore path, media check result, save/autosave payloads), and the server logs save/recent/settings operations in terminal output.
 
 ### Security
 
@@ -101,3 +104,24 @@ Recents are stored in `~/.show-sync-editor-recents.json`. The Load Recent dialog
 - `filename`, `path` — show file location
 - `last_video` — absolute path of the reference video
 - `updated_at` — Unix timestamp of last save
+
+## Save Directory Settings
+
+Filename-based saves are no longer fixed to `show-sync/app/static/shows`.
+
+- Toolbar includes **Save Dir** (absolute path input + dropdown of recent directories) and **Set**.
+- Settings persist at `~/.show-sync-editor-settings.json`:
+  - `save_dir` (active default directory)
+  - `recent_dirs` (capped list of recently used directories)
+- **Save Show** overwrites the current absolute path when available; for unsaved shows it prompts for filename (default from loaded `.mov` basename, else `untitled-show.json`) and saves under `save_dir`.
+- **Save As…** always prompts for filename and saves under `save_dir`.
+- Explicit absolute-path saves still work and their parent directory is added to `recent_dirs`.
+
+### Settings/Save APIs
+
+- `GET /api/settings` → `{ save_dir, recent_dirs }`
+- `POST /api/settings` → validates absolute path, enforces HOME containment, creates directory if needed, persists settings, updates capped recents
+- `POST /api/save`:
+  - `filename` saves resolve against configured `save_dir` with final realpath containment enforcement
+  - absolute `path` saves must stay inside HOME
+  - specific validation errors include `Missing filename`, `Missing data`, `Directory not allowed`
