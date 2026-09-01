@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 XR12_AUDIENCE_PORT_INDEX = 3
 XR12_AUDIENCE_CHANNELS = (0, 1)
+XR12_NUM_CHANNELS = 4
 XR12_FADER_STATUS = 0xB0   # CC on MIDI channel 1 (faders: CC 0-15)
 XR12_MUTE_STATUS = 0xB1    # CC on MIDI channel 2 (mutes: CC 0-15)
 
@@ -32,6 +33,8 @@ DEFAULT_XR12_UNMUTED_VALUE = DEFAULT_XR12_AUDIENCE_UNMUTED_VALUE
 LEGACY_DEFAULT_XR12_AUDIENCE_MUTED_VALUE = 127
 LEGACY_DEFAULT_XR12_AUDIENCE_UNMUTED_VALUE = 0
 DEFAULT_XR12_AUDIENCE_UNITY_VALUE = DEFAULT_XR12_AUDIENCE_OPEN_VALUE
+DEFAULT_XR12_CH_ENABLED = [True, True, False, False]
+DEFAULT_XR12_CH_OPEN_VALUES = [DEFAULT_XR12_AUDIENCE_OPEN_VALUE] * XR12_NUM_CHANNELS
 
 
 def clamp_midi_value(value):
@@ -40,17 +43,21 @@ def clamp_midi_value(value):
 
 
 def build_audience_fader_messages(value, muted_value=DEFAULT_XR12_MUTED_VALUE,
-                                   unmuted_value=DEFAULT_XR12_UNMUTED_VALUE):
-    """Build XR12 fader CC messages for linked audience inputs 1-2."""
+                                   unmuted_value=DEFAULT_XR12_UNMUTED_VALUE,
+                                   channels=None):
+    """Build XR12 fader CC messages for the selected audience inputs."""
     midi_value = clamp_midi_value(value)
-    return [[XR12_FADER_STATUS, ch, midi_value] for ch in XR12_AUDIENCE_CHANNELS]
+    chs = channels if channels is not None else XR12_AUDIENCE_CHANNELS
+    return [[XR12_FADER_STATUS, ch, midi_value] for ch in chs]
 
 
 def build_audience_mute_messages(muted, muted_value=DEFAULT_XR12_MUTED_VALUE,
-                                  unmuted_value=DEFAULT_XR12_UNMUTED_VALUE):
-    """Build XR12 mute CC messages for linked audience inputs 1-2."""
+                                  unmuted_value=DEFAULT_XR12_UNMUTED_VALUE,
+                                  channels=None):
+    """Build XR12 mute CC messages for the selected audience inputs."""
     mute_val = muted_value if muted else unmuted_value
-    return [[XR12_MUTE_STATUS, ch, mute_val] for ch in XR12_AUDIENCE_CHANNELS]
+    chs = channels if channels is not None else XR12_AUDIENCE_CHANNELS
+    return [[XR12_MUTE_STATUS, ch, mute_val] for ch in chs]
 
 
 def interpolate_midi_value(start_value, target_value, progress):
@@ -88,13 +95,15 @@ class Xr12AudienceState:
     def __init__(self, open_value=DEFAULT_XR12_AUDIENCE_OPEN_VALUE,
                  closed_value=DEFAULT_XR12_AUDIENCE_CLOSED_VALUE,
                  muted_value=DEFAULT_XR12_MUTED_VALUE,
-                 unmuted_value=DEFAULT_XR12_UNMUTED_VALUE):
+                 unmuted_value=DEFAULT_XR12_UNMUTED_VALUE,
+                 channel=None):
         self.open_value = clamp_midi_value(open_value)
         self.closed_value = clamp_midi_value(closed_value)
         self.muted_value = clamp_midi_value(muted_value)
         self.unmuted_value = clamp_midi_value(unmuted_value)
         self.current_value = self.closed_value
         self.muted = True
+        self._channels = (channel,) if channel is not None else XR12_AUDIENCE_CHANNELS
         self.unity_value = self.open_value
 
     def set_open_value(self, value):
@@ -123,10 +132,12 @@ class Xr12AudienceState:
         if self.current_value == self.closed_value or was_muted:
             initial = (
                 build_audience_fader_messages(
-                    self.closed_value, self.muted_value, self.unmuted_value
+                    self.closed_value, self.muted_value, self.unmuted_value,
+                    channels=self._channels,
                 )
                 + build_audience_mute_messages(
-                    False, self.muted_value, self.unmuted_value
+                    False, self.muted_value, self.unmuted_value,
+                    channels=self._channels,
                 )
             )
             self.current_value = self.closed_value
@@ -139,13 +150,16 @@ class Xr12AudienceState:
     def apply_fader_value(self, value):
         self.current_value = clamp_midi_value(value)
         return build_audience_fader_messages(
-            self.current_value, self.muted_value, self.unmuted_value
+            self.current_value, self.muted_value, self.unmuted_value,
+            channels=self._channels,
         )
 
     def finish_close(self):
         self.current_value = self.closed_value
         self.muted = True
-        return build_audience_mute_messages(True, self.muted_value, self.unmuted_value)
+        return build_audience_mute_messages(
+            True, self.muted_value, self.unmuted_value, channels=self._channels
+        )
 
 
 def migrate_xr12_config(loaded_config=None):
@@ -171,8 +185,31 @@ def migrate_xr12_config(loaded_config=None):
             defaults[key] = clamp_midi_value(defaults[key])
         except (TypeError, ValueError, KeyError):
             defaults[key] = fallback
+    legacy_open = defaults.get("xr12_audience_open_value", DEFAULT_XR12_AUDIENCE_OPEN_VALUE)
+    for i in range(XR12_NUM_CHANNELS):
+        ch_num = i + 1
+        enabled_key = f"xr12_audience_ch{ch_num}_enabled"
+        open_key = f"xr12_audience_ch{ch_num}_open_value"
+        defaults.setdefault(enabled_key, DEFAULT_XR12_CH_ENABLED[i])
+        try:
+            if open_key in config:
+                defaults[open_key] = clamp_midi_value(config[open_key])
+            else:
+                defaults[open_key] = clamp_midi_value(legacy_open)
+        except (TypeError, ValueError):
+            defaults[open_key] = DEFAULT_XR12_CH_OPEN_VALUES[i]
     migrate_xr12_mute_polarity(config, defaults)
     return defaults
+
+
+class MirroredXr12AudienceController:
+    def __init__(self, ch_enabled=None, ch_open_values=None, closed_value=DEFAULT_XR12_AUDIENCE_CLOSED_VALUE):
+        self._ch_enabled = list(ch_enabled if ch_enabled is not None else DEFAULT_XR12_CH_ENABLED)
+        open_values = list(ch_open_values if ch_open_values is not None else DEFAULT_XR12_CH_OPEN_VALUES)
+        self._ch_states = [
+            Xr12AudienceState(open_value=open_values[i], closed_value=closed_value, channel=i)
+            for i in range(XR12_NUM_CHANNELS)
+        ]
 
 
 class Xr12AudienceHelperTests(unittest.TestCase):
@@ -198,6 +235,15 @@ class Xr12AudienceHelperTests(unittest.TestCase):
             [
                 [XR12_MUTE_STATUS, 0, 127],
                 [XR12_MUTE_STATUS, 1, 127],
+            ],
+        )
+
+    def test_build_audience_fader_messages_with_explicit_channels_targets_exactly_those_channels(self):
+        self.assertEqual(
+            build_audience_fader_messages(90, channels=(1, 3)),
+            [
+                [XR12_FADER_STATUS, 1, 90],
+                [XR12_FADER_STATUS, 3, 90],
             ],
         )
 
@@ -313,6 +359,10 @@ class Xr12AudienceHelperTests(unittest.TestCase):
         self.assertEqual(DEFAULT_XR12_MUTED_VALUE, 0)
         self.assertEqual(DEFAULT_XR12_UNMUTED_VALUE, 127)
 
+    def test_default_channel_enablement_has_first_two_channels_only(self):
+        controller = MirroredXr12AudienceController()
+        self.assertEqual(controller._ch_enabled, [True, True, False, False])
+
     def test_config_migration_defaults_and_clamping(self):
         migrated = migrate_xr12_config(
             {
@@ -328,6 +378,8 @@ class Xr12AudienceHelperTests(unittest.TestCase):
         self.assertEqual(migrated["xr12_audience_closed_value"], 0)
         self.assertEqual(migrated["xr12_audience_muted_value"], 127)
         self.assertEqual(migrated["xr12_audience_unmuted_value"], 127)
+        self.assertEqual(migrated["xr12_audience_ch1_enabled"], True)
+        self.assertEqual(migrated["xr12_audience_ch4_enabled"], False)
 
     def test_config_migration_rewrites_old_untouched_mute_defaults(self):
         migrated = migrate_xr12_config(
@@ -339,6 +391,13 @@ class Xr12AudienceHelperTests(unittest.TestCase):
         self.assertEqual(migrated["xr12_audience_muted_value"], 0)
         self.assertEqual(migrated["xr12_audience_unmuted_value"], 127)
 
+    def test_config_migration_copies_legacy_open_value_to_per_channel_defaults(self):
+        migrated = migrate_xr12_config({"xr12_audience_open_value": 90})
+        self.assertEqual(migrated["xr12_audience_ch1_open_value"], 90)
+        self.assertEqual(migrated["xr12_audience_ch2_open_value"], 90)
+        self.assertEqual(migrated["xr12_audience_ch3_open_value"], 90)
+        self.assertEqual(migrated["xr12_audience_ch4_open_value"], 90)
+
     def test_config_migration_preserves_deliberate_custom_mute_pair(self):
         migrated = migrate_xr12_config(
             {
@@ -348,6 +407,21 @@ class Xr12AudienceHelperTests(unittest.TestCase):
         )
         self.assertEqual(migrated["xr12_audience_muted_value"], 0)
         self.assertEqual(migrated["xr12_audience_unmuted_value"], 96)
+
+    def test_per_channel_open_values_are_independent(self):
+        controller = MirroredXr12AudienceController(ch_open_values=[96, 90, 80, 70])
+        command_1 = controller._ch_states[0].request_open()
+        command_2 = controller._ch_states[1].request_open()
+        self.assertEqual(command_1.target_value, 96)
+        self.assertEqual(command_2.target_value, 90)
+        self.assertEqual(
+            controller._ch_states[0].apply_fader_value(command_1.target_value),
+            [[XR12_FADER_STATUS, 0, 96]],
+        )
+        self.assertEqual(
+            controller._ch_states[1].apply_fader_value(command_2.target_value),
+            [[XR12_FADER_STATUS, 1, 90]],
+        )
 
 
 if __name__ == "__main__":
