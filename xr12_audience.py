@@ -56,11 +56,25 @@ class Xr12AudienceState:
         self.unity_value = clamp_midi_value(unity_value)
 
     def request_open(self):
-        self.current_value = XR12_FADER_MIN
+        # If already open at unity there is nothing to do; return a no-op command.
+        if not self.muted and self.current_value == self.unity_value:
+            return FadeCommand(
+                initial_messages=[],
+                start_value=self.unity_value,
+                target_value=self.unity_value,
+                mute_after_fade=False,
+            )
+        # Fade from the current fader position (handles interrupted close→open).
+        start = self.current_value if not self.muted else XR12_FADER_MIN
         self.muted = False
+        initial = []
+        if start == XR12_FADER_MIN:
+            # Snap fader to minimum and unmute so the fade starts cleanly.
+            initial = build_audience_fader_messages(XR12_FADER_MIN) + build_audience_mute_messages(False)
+            self.current_value = XR12_FADER_MIN
         return FadeCommand(
-            initial_messages=build_audience_fader_messages(XR12_FADER_MIN) + build_audience_mute_messages(False),
-            start_value=XR12_FADER_MIN,
+            initial_messages=initial,
+            start_value=start,
             target_value=self.unity_value,
             mute_after_fade=False,
         )
