@@ -29,6 +29,7 @@ import zipfile
 import urllib.request
 import urllib.parse
 from collections import deque
+from dataclasses import dataclass, field
 
 # --- Third-Party Library Imports ---
 # This solution requires the 'keyboard' and 'psutil' libraries.
@@ -53,15 +54,6 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QTabWidget, QStackedWidget, QMessageBox)
 from PyQt6.QtCore import QThread, QObject, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer, QRect
 from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen, QPixmap
-from xr12_audience import (
-    DEFAULT_XR12_AUDIENCE_ENABLED,
-    DEFAULT_XR12_AUDIENCE_FADE_SECONDS,
-    DEFAULT_XR12_AUDIENCE_UNITY_VALUE,
-    XR12_AUDIENCE_PORT_INDEX,
-    Xr12AudienceState,
-    interpolate_midi_value,
-)
-
 # --- Core Application Configuration ---
 # File paths for external media players
 MPV_PATH = r"c:\mpv\mpv.exe"
@@ -393,12 +385,151 @@ class MidiTestWorker(QThread):
             self.finished.emit(self.port_num)
 
 
+# --- XR12 Audience MIDI Constants ---
+XR12_AUDIENCE_PORT_INDEX = 3
+XR12_AUDIENCE_CHANNELS = (0, 1)
+XR12_FADER_STATUS = 0xB0   # CC on MIDI channel 1 (faders: CC 0-15)
+XR12_MUTE_STATUS = 0xB1    # CC on MIDI channel 2 (mutes: CC 0-15)
+
+DEFAULT_XR12_AUDIENCE_ENABLED = True
+DEFAULT_XR12_AUDIENCE_FADE_SECONDS = 3.0
+DEFAULT_XR12_AUDIENCE_OPEN_VALUE = 96   # "open" fader MIDI value
+DEFAULT_XR12_AUDIENCE_CLOSED_VALUE = 0  # "closed" fader MIDI value
+DEFAULT_XR12_MUTED_VALUE = 127          # mute CC value (muted state)
+DEFAULT_XR12_UNMUTED_VALUE = 0          # mute CC value (unmuted state)
+
+# Keep legacy name so existing config migration code still compiles
+DEFAULT_XR12_AUDIENCE_UNITY_VALUE = DEFAULT_XR12_AUDIENCE_OPEN_VALUE
+
+
+def clamp_midi_value(value):
+    """Clamp an arbitrary value into the valid 7-bit MIDI data range."""
+    return max(0, min(127, int(round(value))))
+
+
+def build_audience_fader_messages(value, muted_value=DEFAULT_XR12_MUTED_VALUE,
+                                   unmuted_value=DEFAULT_XR12_UNMUTED_VALUE):
+    """Build XR12 fader CC messages for linked audience inputs 1-2."""
+    midi_value = clamp_midi_value(value)
+    return [[XR12_FADER_STATUS, ch, midi_value] for ch in XR12_AUDIENCE_CHANNELS]
+
+
+def build_audience_mute_messages(muted, muted_value=DEFAULT_XR12_MUTED_VALUE,
+                                  unmuted_value=DEFAULT_XR12_UNMUTED_VALUE):
+    """Build XR12 mute CC messages for linked audience inputs 1-2."""
+    mute_val = muted_value if muted else unmuted_value
+    return [[XR12_MUTE_STATUS, ch, mute_val] for ch in XR12_AUDIENCE_CHANNELS]
+
+
+def interpolate_midi_value(start_value, target_value, progress):
+    """Linearly interpolate a MIDI value for the supplied 0-1 progress fraction."""
+    bounded = max(0.0, min(1.0, float(progress)))
+    return clamp_midi_value(start_value + (target_value - start_value) * bounded)
+
+
+@dataclass
+class FadeCommand:
+    initial_messages: list
+    start_value: int
+    target_value: int
+    mute_after_fade: bool
+
+
+class Xr12AudienceState:
+    """Pure XR12 audience state machine."""
+
+    def __init__(self, open_value=DEFAULT_XR12_AUDIENCE_OPEN_VALUE,
+                 closed_value=DEFAULT_XR12_AUDIENCE_CLOSED_VALUE,
+                 muted_value=DEFAULT_XR12_MUTED_VALUE,
+                 unmuted_value=DEFAULT_XR12_UNMUTED_VALUE):
+        self.open_value = clamp_midi_value(open_value)
+        self.closed_value = clamp_midi_value(closed_value)
+        self.muted_value = clamp_midi_value(muted_value)
+        self.unmuted_value = clamp_midi_value(unmuted_value)
+        self.current_value = self.closed_value
+        self.muted = True
+        # Keep legacy alias
+        self.unity_value = self.open_value
+
+    def set_open_value(self, value):
+        self.open_value = clamp_midi_value(value)
+        self.unity_value = self.open_value
+
+    def set_closed_value(self, value):
+        self.closed_value = clamp_midi_value(value)
+
+    def set_muted_value(self, value):
+        self.muted_value = clamp_midi_value(value)
+
+    def set_unmuted_value(self, value):
+        self.unmuted_value = clamp_midi_value(value)
+
+    # Legacy compatibility
+    def set_unity_value(self, value):
+        self.set_open_value(value)
+
+    def request_open(self):
+        if not self.muted and self.current_value == self.open_value:
+            return FadeCommand(
+                initial_messages=[],
+                start_value=self.open_value,
+                target_value=self.open_value,
+                mute_after_fade=False,
+            )
+        was_muted = self.muted
+        start = self.current_value if not was_muted else self.closed_value
+        self.muted = False
+        initial = []
+        if self.current_value == self.closed_value or was_muted:
+            initial = (
+                build_audience_fader_messages(
+                    self.closed_value, self.muted_value, self.unmuted_value
+                )
+                + build_audience_mute_messages(
+                    False, self.muted_value, self.unmuted_value
+                )
+            )
+            self.current_value = self.closed_value
+            start = self.closed_value
+        return FadeCommand(
+            initial_messages=initial,
+            start_value=start,
+            target_value=self.open_value,
+            mute_after_fade=False,
+        )
+
+    def request_close(self):
+        return FadeCommand(
+            initial_messages=[],
+            start_value=clamp_midi_value(self.current_value),
+            target_value=self.closed_value,
+            mute_after_fade=True,
+        )
+
+    def apply_fader_value(self, value):
+        self.current_value = clamp_midi_value(value)
+        return build_audience_fader_messages(
+            self.current_value, self.muted_value, self.unmuted_value
+        )
+
+    def finish_close(self):
+        self.current_value = self.closed_value
+        self.muted = True
+        return build_audience_mute_messages(
+            True, self.muted_value, self.unmuted_value
+        )
+
+
 class Xr12AudienceController(QObject):
     """Owns MIDI port 3 and controls XR12 audience-mic fade/mute state."""
 
     def __init__(self, status_callback, rtmidi_module, enabled=True,
                  fade_duration_sec=DEFAULT_XR12_AUDIENCE_FADE_SECONDS,
-                 unity_value=DEFAULT_XR12_AUDIENCE_UNITY_VALUE, parent=None):
+                 open_value=DEFAULT_XR12_AUDIENCE_OPEN_VALUE,
+                 closed_value=DEFAULT_XR12_AUDIENCE_CLOSED_VALUE,
+                 muted_value=DEFAULT_XR12_MUTED_VALUE,
+                 unmuted_value=DEFAULT_XR12_UNMUTED_VALUE,
+                 parent=None):
         super().__init__(parent)
         self.status_callback = status_callback
         self.rtmidi = rtmidi_module
@@ -408,7 +539,12 @@ class Xr12AudienceController(QObject):
         self.midiout = None
         self.available = False
         self.last_error = ""
-        self.state = Xr12AudienceState(unity_value=unity_value)
+        self.state = Xr12AudienceState(
+            open_value=open_value,
+            closed_value=closed_value,
+            muted_value=muted_value,
+            unmuted_value=unmuted_value,
+        )
         self.fade_timer = QTimer(self)
         self.fade_timer.setInterval(50)
         self.fade_timer.timeout.connect(self._on_fade_step)
@@ -417,12 +553,14 @@ class Xr12AudienceController(QObject):
         self._fade_started_at = 0.0
         self._fade_total_seconds = 0.0
         self._mute_after_fade = False
+        self._fade_generation = 0
         self._last_status_text = ""
         self._emit_status("XR12 Audience: disabled" if not self.enabled else "XR12 Audience: waiting for MIDI port 3")
 
     def set_enabled(self, enabled):
         self.enabled = bool(enabled)
         self.fade_timer.stop()
+        self._fade_generation += 1
         if not self.enabled:
             self._close_port()
             self._emit_status("XR12 Audience: disabled")
@@ -432,11 +570,21 @@ class Xr12AudienceController(QObject):
     def set_fade_duration(self, seconds):
         self.fade_duration_sec = max(0.0, float(seconds))
 
+    def set_open_value(self, value):
+        self.state.set_open_value(value)
+
+    # Legacy alias used by old config code
     def set_unity_value(self, value):
-        self.state.set_unity_value(value)
-        if (not self.state.muted) and (not self.fade_timer.isActive()) and self.available:
-            self._send_messages(self.state.apply_fader_value(self.state.unity_value))
-            self._emit_status(f"XR12 Audience: connected on MIDI port 3 — open @ {self.state.current_value}")
+        self.set_open_value(value)
+
+    def set_closed_value(self, value):
+        self.state.set_closed_value(value)
+
+    def set_muted_value(self, value):
+        self.state.set_muted_value(value)
+
+    def set_unmuted_value(self, value):
+        self.state.set_unmuted_value(value)
 
     def request_open(self):
         self.fade_timer.stop()
@@ -462,9 +610,33 @@ class Xr12AudienceController(QObject):
 
     def shutdown(self):
         self.fade_timer.stop()
+        self._fade_generation += 1
         self._close_port()
 
+    def send_raw_fader(self, value):
+        """Send an exact fader value to both channels. Cancels any active fade."""
+        self.fade_timer.stop()
+        self._fade_generation += 1
+        midi_value = clamp_midi_value(value)
+        if not self._ensure_port():
+            return
+        msgs = [[XR12_FADER_STATUS, ch, midi_value] for ch in XR12_AUDIENCE_CHANNELS]
+        self._send_messages(msgs)
+        self._emit_status(f"XR12 Audience: sent fader CC ch1/ch2 value {midi_value}")
+
+    def send_raw_mute(self, value):
+        """Send an exact mute CC value to both channels. Cancels any active fade."""
+        self.fade_timer.stop()
+        self._fade_generation += 1
+        midi_value = clamp_midi_value(value)
+        if not self._ensure_port():
+            return
+        msgs = [[XR12_MUTE_STATUS, ch, midi_value] for ch in XR12_AUDIENCE_CHANNELS]
+        self._send_messages(msgs)
+        self._emit_status(f"XR12 Audience: sent mute CC value {midi_value}")
+
     def _begin_fade(self, start_value, target_value, mute_after_fade, in_progress_text):
+        self._fade_generation += 1
         self._fade_start_value = int(start_value)
         self._fade_target_value = int(target_value)
         self._fade_started_at = time.monotonic()
@@ -481,12 +653,15 @@ class Xr12AudienceController(QObject):
         return True
 
     def _on_fade_step(self):
+        generation = self._fade_generation
         elapsed = time.monotonic() - self._fade_started_at
         progress = 1.0 if self._fade_total_seconds <= 0 else min(1.0, elapsed / self._fade_total_seconds)
         value = interpolate_midi_value(self._fade_start_value, self._fade_target_value, progress)
         self._send_messages(self.state.apply_fader_value(value))
         if progress >= 1.0:
-            self._finish_fade()
+            self._send_messages(self.state.apply_fader_value(self._fade_target_value))
+            if generation == self._fade_generation:
+                self._finish_fade()
 
     def _finish_fade(self):
         self.fade_timer.stop()
@@ -3683,7 +3858,10 @@ class LiveController(QWidget):
             rtmidi_module=rtmidi,
             enabled=self.config.get("xr12_audience_enabled", DEFAULT_XR12_AUDIENCE_ENABLED),
             fade_duration_sec=self.config.get("xr12_audience_fade_duration_sec", DEFAULT_XR12_AUDIENCE_FADE_SECONDS),
-            unity_value=self.config.get("xr12_audience_unity_value", DEFAULT_XR12_AUDIENCE_UNITY_VALUE),
+            open_value=self.config.get("xr12_audience_open_value", DEFAULT_XR12_AUDIENCE_OPEN_VALUE),
+            closed_value=self.config.get("xr12_audience_closed_value", DEFAULT_XR12_AUDIENCE_CLOSED_VALUE),
+            muted_value=self.config.get("xr12_audience_muted_value", DEFAULT_XR12_MUTED_VALUE),
+            unmuted_value=self.config.get("xr12_audience_unmuted_value", DEFAULT_XR12_UNMUTED_VALUE),
             parent=self,
         )
         self.apply_config_to_ui()
@@ -4023,11 +4201,11 @@ class LiveController(QWidget):
         xr12_layout.setSpacing(6)
         self.xr12_enabled_checkbox = QCheckBox("Enable XR12 Audience")
         self.xr12_enabled_checkbox.toggled.connect(self._on_xr12_enabled_toggled)
-        xr12_layout.addWidget(self.xr12_enabled_checkbox, 0, 0, 1, 2)
+        xr12_layout.addWidget(self.xr12_enabled_checkbox, 0, 0, 1, 3)
         self.xr12_status_label = QLabel("XR12 Audience: waiting for MIDI port 3")
         self.xr12_status_label.setWordWrap(True)
         self.xr12_status_label.setStyleSheet("font-size: 10px; color: #888; font-style: italic;")
-        xr12_layout.addWidget(self.xr12_status_label, 1, 0, 1, 2)
+        xr12_layout.addWidget(self.xr12_status_label, 1, 0, 1, 3)
         xr12_layout.addWidget(QLabel("Fade:"), 2, 0)
         self.xr12_fade_duration_spinbox = QDoubleSpinBox()
         self.xr12_fade_duration_spinbox.setRange(0.0, 10.0)
@@ -4035,18 +4213,55 @@ class LiveController(QWidget):
         self.xr12_fade_duration_spinbox.setSingleStep(0.5)
         self.xr12_fade_duration_spinbox.setSuffix(" s")
         self.xr12_fade_duration_spinbox.valueChanged.connect(self._on_xr12_fade_duration_changed)
-        xr12_layout.addWidget(self.xr12_fade_duration_spinbox, 2, 1)
-        xr12_layout.addWidget(QLabel("Unity:"), 3, 0)
+        xr12_layout.addWidget(self.xr12_fade_duration_spinbox, 2, 1, 1, 2)
+        xr12_layout.addWidget(QLabel("Open value:"), 3, 0)
         self.xr12_unity_spinbox = QSpinBox()
         self.xr12_unity_spinbox.setRange(0, 127)
-        self.xr12_unity_spinbox.valueChanged.connect(self._on_xr12_unity_value_changed)
-        xr12_layout.addWidget(self.xr12_unity_spinbox, 3, 1)
+        self.xr12_unity_spinbox.valueChanged.connect(self._on_xr12_open_value_changed)
+        xr12_layout.addWidget(self.xr12_unity_spinbox, 3, 1, 1, 2)
         self.xr12_open_button = QPushButton("Fade Up / Open")
         self.xr12_open_button.clicked.connect(self.open_xr12_audience)
         xr12_layout.addWidget(self.xr12_open_button, 4, 0)
         self.xr12_close_button = QPushButton("Fade Down / Mute")
         self.xr12_close_button.clicked.connect(self.mute_xr12_audience)
-        xr12_layout.addWidget(self.xr12_close_button, 4, 1)
+        xr12_layout.addWidget(self.xr12_close_button, 4, 1, 1, 2)
+        xr12_layout.addWidget(QLabel("Closed value:"), 5, 0)
+        self.xr12_closed_value_spinbox = QSpinBox()
+        self.xr12_closed_value_spinbox.setRange(0, 127)
+        self.xr12_closed_value_spinbox.setValue(DEFAULT_XR12_AUDIENCE_CLOSED_VALUE)
+        self.xr12_closed_value_spinbox.valueChanged.connect(self._on_xr12_closed_value_changed)
+        xr12_layout.addWidget(self.xr12_closed_value_spinbox, 5, 1, 1, 2)
+        xr12_layout.addWidget(QLabel("Muted CC value:"), 6, 0)
+        self.xr12_muted_value_spinbox = QSpinBox()
+        self.xr12_muted_value_spinbox.setRange(0, 127)
+        self.xr12_muted_value_spinbox.setValue(DEFAULT_XR12_MUTED_VALUE)
+        self.xr12_muted_value_spinbox.valueChanged.connect(self._on_xr12_muted_value_changed)
+        xr12_layout.addWidget(self.xr12_muted_value_spinbox, 6, 1, 1, 2)
+        xr12_layout.addWidget(QLabel("Unmuted CC value:"), 7, 0)
+        self.xr12_unmuted_value_spinbox = QSpinBox()
+        self.xr12_unmuted_value_spinbox.setRange(0, 127)
+        self.xr12_unmuted_value_spinbox.setValue(DEFAULT_XR12_UNMUTED_VALUE)
+        self.xr12_unmuted_value_spinbox.valueChanged.connect(self._on_xr12_unmuted_value_changed)
+        xr12_layout.addWidget(self.xr12_unmuted_value_spinbox, 7, 1, 1, 2)
+        xr12_layout.addWidget(QLabel("Raw fader:"), 8, 0)
+        self.xr12_raw_fader_spinbox = QSpinBox()
+        self.xr12_raw_fader_spinbox.setRange(0, 127)
+        xr12_layout.addWidget(self.xr12_raw_fader_spinbox, 8, 1)
+        self.xr12_send_raw_fader_button = QPushButton("Send Raw Fader")
+        self.xr12_send_raw_fader_button.clicked.connect(self._on_xr12_send_raw_fader)
+        xr12_layout.addWidget(self.xr12_send_raw_fader_button, 8, 2)
+        preset_layout = QHBoxLayout()
+        for preset_value in (0, 32, 64, 96, 127):
+            preset_button = QPushButton(str(preset_value))
+            preset_button.clicked.connect(lambda checked, value=preset_value: self._on_xr12_preset_fader(value))
+            preset_layout.addWidget(preset_button)
+        xr12_layout.addLayout(preset_layout, 9, 0, 1, 3)
+        self.xr12_send_mute_zero_button = QPushButton("Send Mute CC=0")
+        self.xr12_send_mute_zero_button.clicked.connect(lambda checked: self._on_xr12_send_mute_raw(0))
+        xr12_layout.addWidget(self.xr12_send_mute_zero_button, 10, 0)
+        self.xr12_send_mute_full_button = QPushButton("Send Mute CC=127")
+        self.xr12_send_mute_full_button.clicked.connect(lambda checked: self._on_xr12_send_mute_raw(127))
+        xr12_layout.addWidget(self.xr12_send_mute_full_button, 10, 1, 1, 2)
         xr12_group.setLayout(xr12_layout)
 
         # --- Overlay Colours Group ---
@@ -4526,20 +4741,32 @@ class LiveController(QWidget):
             "sync_show_timing_trim_ms": DEFAULT_SYNC_TIMING_TRIM_MS,
             "xr12_audience_enabled": DEFAULT_XR12_AUDIENCE_ENABLED,
             "xr12_audience_fade_duration_sec": DEFAULT_XR12_AUDIENCE_FADE_SECONDS,
-            "xr12_audience_unity_value": DEFAULT_XR12_AUDIENCE_UNITY_VALUE,
+            "xr12_audience_open_value": DEFAULT_XR12_AUDIENCE_OPEN_VALUE,
+            "xr12_audience_closed_value": DEFAULT_XR12_AUDIENCE_CLOSED_VALUE,
+            "xr12_audience_muted_value": DEFAULT_XR12_MUTED_VALUE,
+            "xr12_audience_unmuted_value": DEFAULT_XR12_UNMUTED_VALUE,
         }
-        if not os.path.exists(CONFIG_FILE): return defaults
+        if not os.path.exists(CONFIG_FILE):
+            return defaults
         try:
             with open(CONFIG_FILE, 'r') as f:
                 config = json.load(f)
                 defaults.update(config)
-                # Validate and clamp the XR12 unity value; corrupt/missing entries
-                # default to 96 so the fader always opens at a sensible position.
-                try:
-                    unity = int(defaults["xr12_audience_unity_value"])
-                    defaults["xr12_audience_unity_value"] = max(0, min(127, unity))
-                except (TypeError, ValueError, KeyError):
-                    defaults["xr12_audience_unity_value"] = DEFAULT_XR12_AUDIENCE_UNITY_VALUE
+                if (
+                    "xr12_audience_unity_value" in config
+                    and "xr12_audience_open_value" not in config
+                ):
+                    defaults["xr12_audience_open_value"] = config["xr12_audience_unity_value"]
+                for key, fallback in (
+                    ("xr12_audience_open_value", DEFAULT_XR12_AUDIENCE_OPEN_VALUE),
+                    ("xr12_audience_closed_value", DEFAULT_XR12_AUDIENCE_CLOSED_VALUE),
+                    ("xr12_audience_muted_value", DEFAULT_XR12_MUTED_VALUE),
+                    ("xr12_audience_unmuted_value", DEFAULT_XR12_UNMUTED_VALUE),
+                ):
+                    try:
+                        defaults[key] = clamp_midi_value(defaults[key])
+                    except (TypeError, ValueError, KeyError):
+                        defaults[key] = fallback
         except (json.JSONDecodeError, FileNotFoundError):
             pass
         return defaults
@@ -4556,7 +4783,10 @@ class LiveController(QWidget):
         self.config['sync_show_timing_trim_ms'] = self.sync_show_trim_spinbox.value()
         self.config['xr12_audience_enabled'] = self.xr12_enabled_checkbox.isChecked()
         self.config['xr12_audience_fade_duration_sec'] = self.xr12_fade_duration_spinbox.value()
-        self.config['xr12_audience_unity_value'] = self.xr12_unity_spinbox.value()
+        self.config['xr12_audience_open_value'] = self.xr12_unity_spinbox.value()
+        self.config['xr12_audience_closed_value'] = self.xr12_closed_value_spinbox.value()
+        self.config['xr12_audience_muted_value'] = self.xr12_muted_value_spinbox.value()
+        self.config['xr12_audience_unmuted_value'] = self.xr12_unmuted_value_spinbox.value()
         with open(CONFIG_FILE, 'w') as f:
             json.dump(self.config, f, indent=4)
     
@@ -4573,7 +4803,10 @@ class LiveController(QWidget):
             self.sync_show_trim_spinbox.setValue(trim_ms)
             xr12_enabled = bool(self.config.get("xr12_audience_enabled", DEFAULT_XR12_AUDIENCE_ENABLED))
             xr12_fade = float(self.config.get("xr12_audience_fade_duration_sec", DEFAULT_XR12_AUDIENCE_FADE_SECONDS))
-            xr12_unity = int(self.config.get("xr12_audience_unity_value", DEFAULT_XR12_AUDIENCE_UNITY_VALUE))
+            xr12_open = clamp_midi_value(self.config.get("xr12_audience_open_value", DEFAULT_XR12_AUDIENCE_OPEN_VALUE))
+            xr12_closed = clamp_midi_value(self.config.get("xr12_audience_closed_value", DEFAULT_XR12_AUDIENCE_CLOSED_VALUE))
+            xr12_muted = clamp_midi_value(self.config.get("xr12_audience_muted_value", DEFAULT_XR12_MUTED_VALUE))
+            xr12_unmuted = clamp_midi_value(self.config.get("xr12_audience_unmuted_value", DEFAULT_XR12_UNMUTED_VALUE))
             self.xr12_enabled_checkbox.blockSignals(True)
             self.xr12_enabled_checkbox.setChecked(xr12_enabled)
             self.xr12_enabled_checkbox.blockSignals(False)
@@ -4581,10 +4814,25 @@ class LiveController(QWidget):
             self.xr12_fade_duration_spinbox.setValue(xr12_fade)
             self.xr12_fade_duration_spinbox.blockSignals(False)
             self.xr12_unity_spinbox.blockSignals(True)
-            self.xr12_unity_spinbox.setValue(xr12_unity)
+            self.xr12_unity_spinbox.setValue(xr12_open)
             self.xr12_unity_spinbox.blockSignals(False)
+            self.xr12_closed_value_spinbox.blockSignals(True)
+            self.xr12_closed_value_spinbox.setValue(xr12_closed)
+            self.xr12_closed_value_spinbox.blockSignals(False)
+            self.xr12_muted_value_spinbox.blockSignals(True)
+            self.xr12_muted_value_spinbox.setValue(xr12_muted)
+            self.xr12_muted_value_spinbox.blockSignals(False)
+            self.xr12_unmuted_value_spinbox.blockSignals(True)
+            self.xr12_unmuted_value_spinbox.setValue(xr12_unmuted)
+            self.xr12_unmuted_value_spinbox.blockSignals(False)
+            self.xr12_raw_fader_spinbox.blockSignals(True)
+            self.xr12_raw_fader_spinbox.setValue(xr12_open)
+            self.xr12_raw_fader_spinbox.blockSignals(False)
             if self.xr12_controller is not None:
-                self.xr12_controller.set_unity_value(xr12_unity)
+                self.xr12_controller.set_open_value(xr12_open)
+                self.xr12_controller.set_closed_value(xr12_closed)
+                self.xr12_controller.set_muted_value(xr12_muted)
+                self.xr12_controller.set_unmuted_value(xr12_unmuted)
                 self.xr12_controller.set_fade_duration(xr12_fade)
                 self.xr12_controller.set_enabled(xr12_enabled)
             self._update_zoom_status_label()
@@ -4629,25 +4877,57 @@ class LiveController(QWidget):
             return
         self.xr12_controller.set_enabled(checked)
         self.save_config()
-        if checked:
-            if self._has_active_playback():
-                self.xr12_controller.request_close()
-            else:
-                self._open_audience_if_idle()
+        if checked and not self._has_active_playback() and not self._app_is_closing:
+            self.xr12_controller.request_open()
+        elif not checked:
+            pass
 
     def _on_xr12_fade_duration_changed(self, value):
         if self.xr12_controller is not None:
             self.xr12_controller.set_fade_duration(value)
         self.save_config()
 
-    def _on_xr12_unity_value_changed(self, value):
+    def _on_xr12_open_value_changed(self, value: int):
         if self.xr12_controller is not None:
-            self.xr12_controller.set_unity_value(value)
+            self.xr12_controller.set_open_value(value)
         self.save_config()
 
+    def _on_xr12_closed_value_changed(self, value: int):
+        if self.xr12_controller is not None:
+            self.xr12_controller.set_closed_value(value)
+        self.save_config()
+
+    def _on_xr12_muted_value_changed(self, value: int):
+        if self.xr12_controller is not None:
+            self.xr12_controller.set_muted_value(value)
+        self.save_config()
+
+    def _on_xr12_unmuted_value_changed(self, value: int):
+        if self.xr12_controller is not None:
+            self.xr12_controller.set_unmuted_value(value)
+        self.save_config()
+
+    def _on_xr12_send_raw_fader(self):
+        if self.xr12_controller is None:
+            return
+        value = self.xr12_raw_fader_spinbox.value()
+        self.xr12_controller.send_raw_fader(value)
+
+    def _on_xr12_preset_fader(self, value):
+        if self.xr12_controller is None:
+            return
+        self.xr12_raw_fader_spinbox.setValue(value)
+        self.xr12_controller.send_raw_fader(value)
+
+    def _on_xr12_send_mute_raw(self, value):
+        if self.xr12_controller is None:
+            return
+        self.xr12_controller.send_raw_mute(value)
+
     def open_xr12_audience(self):
-        self._manual_stop_requested = False
-        self._open_audience_if_idle()
+        """Manual test open: bypasses idle-state guard for soundcheck use."""
+        if self.xr12_controller is not None and not self._app_is_closing:
+            self.xr12_controller.request_open()
 
     def mute_xr12_audience(self):
         if self.xr12_controller is not None:
