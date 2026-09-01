@@ -50,7 +50,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QGroupBox, QLabel, QFileDialog, QSizePolicy, QComboBox,
                              QAbstractButton, QSlider, QAbstractItemView, QCheckBox,
                              QGridLayout, QRadioButton, QSpinBox, QDoubleSpinBox,
-                             QColorDialog, QDialog,
+                             QColorDialog, QDialog, QScrollArea,
                              QTabWidget, QStackedWidget, QMessageBox)
 from PyQt6.QtCore import QThread, QObject, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer, QRect
 from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen, QPixmap
@@ -395,8 +395,12 @@ DEFAULT_XR12_AUDIENCE_ENABLED = True
 DEFAULT_XR12_AUDIENCE_FADE_SECONDS = 3.0
 DEFAULT_XR12_AUDIENCE_OPEN_VALUE = 96   # "open" fader MIDI value
 DEFAULT_XR12_AUDIENCE_CLOSED_VALUE = 0  # "closed" fader MIDI value
-DEFAULT_XR12_MUTED_VALUE = 127          # mute CC value (muted state)
-DEFAULT_XR12_UNMUTED_VALUE = 0          # mute CC value (unmuted state)
+DEFAULT_XR12_AUDIENCE_MUTED_VALUE = 0     # verified XR12 mute CC value (muted state)
+DEFAULT_XR12_AUDIENCE_UNMUTED_VALUE = 127 # verified XR12 mute CC value (unmuted state)
+DEFAULT_XR12_MUTED_VALUE = DEFAULT_XR12_AUDIENCE_MUTED_VALUE
+DEFAULT_XR12_UNMUTED_VALUE = DEFAULT_XR12_AUDIENCE_UNMUTED_VALUE
+LEGACY_DEFAULT_XR12_AUDIENCE_MUTED_VALUE = 127
+LEGACY_DEFAULT_XR12_AUDIENCE_UNMUTED_VALUE = 0
 
 # Keep legacy name so existing config migration code still compiles
 DEFAULT_XR12_AUDIENCE_UNITY_VALUE = DEFAULT_XR12_AUDIENCE_OPEN_VALUE
@@ -425,6 +429,21 @@ def interpolate_midi_value(start_value, target_value, progress):
     """Linearly interpolate a MIDI value for the supplied 0-1 progress fraction."""
     bounded = max(0.0, min(1.0, float(progress)))
     return clamp_midi_value(start_value + (target_value - start_value) * bounded)
+
+
+def migrate_xr12_mute_polarity(config, defaults):
+    """Upgrade the old untouched XR12 mute defaults to the verified polarity."""
+    if (
+        "xr12_audience_muted_value" not in config
+        or "xr12_audience_unmuted_value" not in config
+    ):
+        return
+    if (
+        defaults.get("xr12_audience_muted_value") == LEGACY_DEFAULT_XR12_AUDIENCE_MUTED_VALUE
+        and defaults.get("xr12_audience_unmuted_value") == LEGACY_DEFAULT_XR12_AUDIENCE_UNMUTED_VALUE
+    ):
+        defaults["xr12_audience_muted_value"] = DEFAULT_XR12_MUTED_VALUE
+        defaults["xr12_audience_unmuted_value"] = DEFAULT_XR12_UNMUTED_VALUE
 
 
 @dataclass
@@ -4142,28 +4161,35 @@ class LiveController(QWidget):
         
         # --- Test Track Group ---
         test_track_group = QGroupBox("Test Track")
-        test_track_layout = QHBoxLayout()
+        test_track_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        test_track_layout = QGridLayout()
         test_track_layout.setContentsMargins(8, 14, 8, 8)
-        test_track_layout.setSpacing(6)
+        test_track_layout.setHorizontalSpacing(6)
+        test_track_layout.setVerticalSpacing(4)
         self.test_file_button = QPushButton("Select Test File...")
+        self.test_file_button.setStyleSheet("font-size: 11px; padding: 3px 6px;")
         self.test_file_button.clicked.connect(self.select_test_file)
         self.test_file_label = QLabel("No file selected.")
+        self.test_file_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.test_file_label.setMinimumWidth(120)
         self.test_file_label.setStyleSheet("font-style: italic;")
         self.test_track_bpm_input = QLineEdit("120")
         self.test_track_bpm_input.setFixedWidth(50)
         self.play_test_button = QPushButton("Play Test Track (t)")
+        self.play_test_button.setStyleSheet("font-size: 11px; padding: 3px 6px;")
         self.play_test_button.clicked.connect(self.play_test_track)
         self.play_test_button.setEnabled(False)
-        test_track_layout.addWidget(self.test_file_button)
-        test_track_layout.addWidget(self.test_file_label, 1)
-        test_track_layout.addStretch(1)
-        test_track_layout.addWidget(QLabel("BPM:"))
-        test_track_layout.addWidget(self.test_track_bpm_input)
-        test_track_layout.addWidget(self.play_test_button)
+        test_track_layout.addWidget(self.test_file_button, 0, 0)
+        test_track_layout.addWidget(self.test_file_label, 0, 1, 1, 3)
+        test_track_layout.addWidget(QLabel("BPM:"), 1, 0)
+        test_track_layout.addWidget(self.test_track_bpm_input, 1, 1)
+        test_track_layout.addWidget(self.play_test_button, 1, 2, 1, 2)
+        test_track_layout.setColumnStretch(1, 1)
         test_track_group.setLayout(test_track_layout)
 
         # --- Sync Calibration Loop Group ---
         calib_loop_group = QGroupBox("Sync Calibration Loop (Edit Mode)")
+        calib_loop_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         calib_loop_layout = QHBoxLayout()
         calib_loop_layout.setContentsMargins(8, 14, 8, 8)
         calib_loop_layout.setSpacing(6)
@@ -4193,82 +4219,121 @@ class LiveController(QWidget):
         self.calib_loop_button.setEnabled(False)
         self.calib_loop_button.clicked.connect(self.toggle_calib_loop)
         calib_loop_layout.addWidget(self.calib_loop_button)
+        calib_loop_layout.addStretch(1)
         calib_loop_group.setLayout(calib_loop_layout)
 
         xr12_group = QGroupBox("XR12 Audience Mics")
+        xr12_group.setToolTip("Verified XR12 mute polarity: CC 0 mutes the audience mics, CC 127 unmutes them.")
+        xr12_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         xr12_layout = QGridLayout()
         xr12_layout.setContentsMargins(8, 14, 8, 8)
-        xr12_layout.setSpacing(6)
+        xr12_layout.setHorizontalSpacing(6)
+        xr12_layout.setVerticalSpacing(4)
         self.xr12_enabled_checkbox = QCheckBox("Enable XR12 Audience")
         self.xr12_enabled_checkbox.toggled.connect(self._on_xr12_enabled_toggled)
-        xr12_layout.addWidget(self.xr12_enabled_checkbox, 0, 0, 1, 3)
+        xr12_layout.addWidget(self.xr12_enabled_checkbox, 0, 0, 1, 2)
         self.xr12_status_label = QLabel("XR12 Audience: waiting for MIDI port 3")
         self.xr12_status_label.setWordWrap(True)
+        self.xr12_status_label.setMaximumHeight(34)
+        self.xr12_status_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         self.xr12_status_label.setStyleSheet("font-size: 10px; color: #888; font-style: italic;")
-        xr12_layout.addWidget(self.xr12_status_label, 1, 0, 1, 3)
-        xr12_layout.addWidget(QLabel("Fade:"), 2, 0)
+        xr12_layout.addWidget(self.xr12_status_label, 0, 2, 1, 4)
+        xr12_layout.addWidget(QLabel("Fade:"), 1, 0)
         self.xr12_fade_duration_spinbox = QDoubleSpinBox()
         self.xr12_fade_duration_spinbox.setRange(0.0, 10.0)
         self.xr12_fade_duration_spinbox.setDecimals(1)
         self.xr12_fade_duration_spinbox.setSingleStep(0.5)
         self.xr12_fade_duration_spinbox.setSuffix(" s")
         self.xr12_fade_duration_spinbox.valueChanged.connect(self._on_xr12_fade_duration_changed)
-        xr12_layout.addWidget(self.xr12_fade_duration_spinbox, 2, 1, 1, 2)
-        xr12_layout.addWidget(QLabel("Open value:"), 3, 0)
+        xr12_layout.addWidget(self.xr12_fade_duration_spinbox, 1, 1)
+        xr12_layout.addWidget(QLabel("Open value:"), 1, 2)
         self.xr12_unity_spinbox = QSpinBox()
         self.xr12_unity_spinbox.setRange(0, 127)
+        self.xr12_unity_spinbox.setToolTip("Audience fader value used when the mics are open while no track is playing.")
         self.xr12_unity_spinbox.valueChanged.connect(self._on_xr12_open_value_changed)
-        xr12_layout.addWidget(self.xr12_unity_spinbox, 3, 1, 1, 2)
-        self.xr12_open_button = QPushButton("Fade Up / Open")
-        self.xr12_open_button.clicked.connect(self.open_xr12_audience)
-        xr12_layout.addWidget(self.xr12_open_button, 4, 0)
-        self.xr12_close_button = QPushButton("Fade Down / Mute")
-        self.xr12_close_button.clicked.connect(self.mute_xr12_audience)
-        xr12_layout.addWidget(self.xr12_close_button, 4, 1, 1, 2)
-        xr12_layout.addWidget(QLabel("Closed value:"), 5, 0)
+        xr12_layout.addWidget(self.xr12_unity_spinbox, 1, 3)
+        xr12_layout.addWidget(QLabel("Closed value:"), 1, 4)
         self.xr12_closed_value_spinbox = QSpinBox()
         self.xr12_closed_value_spinbox.setRange(0, 127)
         self.xr12_closed_value_spinbox.setValue(DEFAULT_XR12_AUDIENCE_CLOSED_VALUE)
+        self.xr12_closed_value_spinbox.setToolTip("Audience fader value used while fading down before mute is applied.")
         self.xr12_closed_value_spinbox.valueChanged.connect(self._on_xr12_closed_value_changed)
-        xr12_layout.addWidget(self.xr12_closed_value_spinbox, 5, 1, 1, 2)
-        xr12_layout.addWidget(QLabel("Muted CC value:"), 6, 0)
+        xr12_layout.addWidget(self.xr12_closed_value_spinbox, 1, 5)
+        self.xr12_open_button = QPushButton("Fade Up / Open")
+        self.xr12_open_button.setStyleSheet("font-size: 11px; padding: 3px 6px;")
+        self.xr12_open_button.clicked.connect(self.open_xr12_audience)
+        xr12_layout.addWidget(self.xr12_open_button, 2, 0, 1, 3)
+        self.xr12_close_button = QPushButton("Fade Down / Mute")
+        self.xr12_close_button.setStyleSheet("font-size: 11px; padding: 3px 6px;")
+        self.xr12_close_button.clicked.connect(self.mute_xr12_audience)
+        xr12_layout.addWidget(self.xr12_close_button, 2, 3, 1, 3)
+        self.xr12_advanced_toggle_button = QPushButton("Advanced MIDI Test…")
+        self.xr12_advanced_toggle_button.setCheckable(True)
+        self.xr12_advanced_toggle_button.setStyleSheet("font-size: 11px; padding: 3px 6px;")
+        self.xr12_advanced_toggle_button.setToolTip(
+            "Show raw XR12 MIDI diagnostics and manual CC send controls.\n"
+            "Verified polarity: CC 0 = muted, CC 127 = unmuted."
+        )
+        xr12_layout.addWidget(self.xr12_advanced_toggle_button, 3, 0, 1, 6)
+        self.xr12_advanced_widget = QWidget()
+        self.xr12_advanced_widget.setVisible(False)
+        advanced_xr12_layout = QGridLayout(self.xr12_advanced_widget)
+        advanced_xr12_layout.setContentsMargins(0, 2, 0, 0)
+        advanced_xr12_layout.setHorizontalSpacing(6)
+        advanced_xr12_layout.setVerticalSpacing(4)
+        advanced_xr12_layout.addWidget(QLabel("Muted CC value:"), 0, 0)
         self.xr12_muted_value_spinbox = QSpinBox()
         self.xr12_muted_value_spinbox.setRange(0, 127)
         self.xr12_muted_value_spinbox.setValue(DEFAULT_XR12_MUTED_VALUE)
+        self.xr12_muted_value_spinbox.setToolTip("Verified XR12 mute value: 0 closes/mutes the audience mic channels.")
         self.xr12_muted_value_spinbox.valueChanged.connect(self._on_xr12_muted_value_changed)
-        xr12_layout.addWidget(self.xr12_muted_value_spinbox, 6, 1, 1, 2)
-        xr12_layout.addWidget(QLabel("Unmuted CC value:"), 7, 0)
+        advanced_xr12_layout.addWidget(self.xr12_muted_value_spinbox, 0, 1)
+        advanced_xr12_layout.addWidget(QLabel("Unmuted CC value:"), 0, 2)
         self.xr12_unmuted_value_spinbox = QSpinBox()
         self.xr12_unmuted_value_spinbox.setRange(0, 127)
         self.xr12_unmuted_value_spinbox.setValue(DEFAULT_XR12_UNMUTED_VALUE)
+        self.xr12_unmuted_value_spinbox.setToolTip("Verified XR12 unmute value: 127 opens/unmutes the audience mic channels.")
         self.xr12_unmuted_value_spinbox.valueChanged.connect(self._on_xr12_unmuted_value_changed)
-        xr12_layout.addWidget(self.xr12_unmuted_value_spinbox, 7, 1, 1, 2)
-        xr12_layout.addWidget(QLabel("Raw fader:"), 8, 0)
+        advanced_xr12_layout.addWidget(self.xr12_unmuted_value_spinbox, 0, 3)
+        advanced_xr12_layout.addWidget(QLabel("Raw fader:"), 1, 0)
         self.xr12_raw_fader_spinbox = QSpinBox()
         self.xr12_raw_fader_spinbox.setRange(0, 127)
-        xr12_layout.addWidget(self.xr12_raw_fader_spinbox, 8, 1)
+        advanced_xr12_layout.addWidget(self.xr12_raw_fader_spinbox, 1, 1)
         self.xr12_send_raw_fader_button = QPushButton("Send Raw Fader")
+        self.xr12_send_raw_fader_button.setStyleSheet("font-size: 11px; padding: 3px 6px;")
         self.xr12_send_raw_fader_button.clicked.connect(self._on_xr12_send_raw_fader)
-        xr12_layout.addWidget(self.xr12_send_raw_fader_button, 8, 2)
+        advanced_xr12_layout.addWidget(self.xr12_send_raw_fader_button, 1, 2, 1, 2)
         preset_layout = QHBoxLayout()
+        preset_layout.setContentsMargins(0, 0, 0, 0)
+        preset_layout.setSpacing(4)
         for preset_value in (0, 32, 64, 96, 127):
             preset_button = QPushButton(str(preset_value))
+            preset_button.setStyleSheet("font-size: 11px; padding: 2px 6px;")
             preset_button.clicked.connect(lambda checked, value=preset_value: self._on_xr12_preset_fader(value))
             preset_layout.addWidget(preset_button)
-        xr12_layout.addLayout(preset_layout, 9, 0, 1, 3)
-        self.xr12_send_mute_zero_button = QPushButton("Send Mute CC=0")
+        advanced_xr12_layout.addLayout(preset_layout, 2, 0, 1, 4)
+        self.xr12_send_mute_zero_button = QPushButton("Raw Mute (CC 0)")
+        self.xr12_send_mute_zero_button.setStyleSheet("font-size: 11px; padding: 3px 6px;")
+        self.xr12_send_mute_zero_button.setToolTip("Send the verified XR12 mute command directly: CC value 0.")
         self.xr12_send_mute_zero_button.clicked.connect(lambda checked: self._on_xr12_send_mute_raw(0))
-        xr12_layout.addWidget(self.xr12_send_mute_zero_button, 10, 0)
-        self.xr12_send_mute_full_button = QPushButton("Send Mute CC=127")
+        advanced_xr12_layout.addWidget(self.xr12_send_mute_zero_button, 3, 0, 1, 2)
+        self.xr12_send_mute_full_button = QPushButton("Raw Unmute (CC 127)")
+        self.xr12_send_mute_full_button.setStyleSheet("font-size: 11px; padding: 3px 6px;")
+        self.xr12_send_mute_full_button.setToolTip("Send the verified XR12 unmute command directly: CC value 127.")
         self.xr12_send_mute_full_button.clicked.connect(lambda checked: self._on_xr12_send_mute_raw(127))
-        xr12_layout.addWidget(self.xr12_send_mute_full_button, 10, 1, 1, 2)
+        advanced_xr12_layout.addWidget(self.xr12_send_mute_full_button, 3, 2, 1, 2)
+        self.xr12_advanced_toggle_button.toggled.connect(self.xr12_advanced_widget.setVisible)
+        xr12_layout.addWidget(self.xr12_advanced_widget, 4, 0, 1, 6)
+        xr12_layout.setColumnStretch(2, 1)
         xr12_group.setLayout(xr12_layout)
 
         # --- Overlay Colours Group ---
         overlay_colours_group = QGroupBox("Overlay Colours")
+        overlay_colours_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         overlay_colours_layout = QGridLayout()
-        overlay_colours_layout.setContentsMargins(8, 16, 8, 8)
-        overlay_colours_layout.setSpacing(6)
+        overlay_colours_layout.setContentsMargins(8, 14, 8, 8)
+        overlay_colours_layout.setHorizontalSpacing(6)
+        overlay_colours_layout.setVerticalSpacing(4)
 
         self.count_in_color_button = QPushButton()
         self.count_in_color_button.setFixedSize(60, 25)
@@ -4358,11 +4423,12 @@ class LiveController(QWidget):
         zoom_group.setLayout(zoom_layout)
         self._update_zoom_status_label()
 
-        # --- Right-side panel: 2-column layout, no scroll needed at 1920×1080 ---
+        # --- Right-side panel: compact 2-column layout with scroll-area safety fallback ---
         controls_widget = QWidget()
         controls_vbox = QVBoxLayout(controls_widget)
         controls_vbox.setContentsMargins(6, 6, 6, 6)
         controls_vbox.setSpacing(8)
+        controls_vbox.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         # Upper row: left column (playback + zoom) | right column (settings + overlay colours)
         upper_row = QHBoxLayout()
@@ -4384,13 +4450,13 @@ class LiveController(QWidget):
         upper_row.addLayout(right_col, 1)
         controls_vbox.addLayout(upper_row)
 
-        # Lower row: test track | calib loop | XR12 audience controls
-        lower_row = QHBoxLayout()
-        lower_row.setSpacing(8)
-        lower_row.addWidget(test_track_group, 2)
-        lower_row.addWidget(calib_loop_group, 1)
-        lower_row.addWidget(xr12_group, 1)
-        controls_vbox.addLayout(lower_row)
+        # Compact utility row: test track + calibration, with XR12 stacked below.
+        utility_row = QHBoxLayout()
+        utility_row.setSpacing(8)
+        utility_row.addWidget(test_track_group, 2)
+        utility_row.addWidget(calib_loop_group, 1)
+        controls_vbox.addLayout(utility_row)
+        controls_vbox.addWidget(xr12_group)
 
         # --- Scrub & Loop Group ---
         scrub_loop_group = QGroupBox("Scrub/Loop")
@@ -4483,6 +4549,7 @@ class LiveController(QWidget):
         scrub_loop_layout.addLayout(loop_row)
         scrub_loop_layout.addWidget(self.scrub_lock_checkbox)
         scrub_loop_group.setLayout(scrub_loop_layout)
+        scrub_loop_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         controls_vbox.addWidget(scrub_loop_group)
 
         # --- Sync Show Config Group ---
@@ -4521,16 +4588,23 @@ class LiveController(QWidget):
         self.sync_show_trim_spinbox.valueChanged.connect(self.setting_changed)
         sync_show_layout.addWidget(self.sync_show_trim_spinbox, 2, 1)
         sync_show_group.setLayout(sync_show_layout)
+        sync_show_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         controls_vbox.addWidget(sync_show_group)
 
         # MIDI Port Testing spans full width at the bottom
+        midi_test_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         controls_vbox.addWidget(midi_test_group)
+        controls_vbox.addStretch(1)
 
         # --- Assemble Main Layout ---
         # Give the controls side more width (3/5) so they don't feel cramped;
         # the track table takes 2/5.
         main_layout.addWidget(self.table, 2)
-        main_layout.addWidget(controls_widget, 3)
+        controls_scroll_area = QScrollArea()
+        controls_scroll_area.setWidgetResizable(True)
+        controls_scroll_area.setStyleSheet("QScrollArea { border: 0; }")
+        controls_scroll_area.setWidget(controls_widget)
+        main_layout.addWidget(controls_scroll_area, 3)
         
         # --- Status Bar ---
         self.status_label = QLabel("Status: Welcome!")
@@ -4767,6 +4841,7 @@ class LiveController(QWidget):
                         defaults[key] = clamp_midi_value(defaults[key])
                     except (TypeError, ValueError, KeyError):
                         defaults[key] = fallback
+                migrate_xr12_mute_polarity(config, defaults)
         except (json.JSONDecodeError, FileNotFoundError):
             pass
         return defaults
