@@ -105,6 +105,7 @@ python live_fallback.py
 - Connect MIDI card port 3 OUT to **XR12 MIDI IN**.
 - In X AIR Edit / XR12 setup, enable the mixer's physical MIDI receive/control path.
 - Live Controller fades XR12 input channels 1-2 (linked audience mics) down on playback start and back to unity when idle.
+- Verified XR12 mute polarity for these controls: **CC 0 = muted**, **CC 127 = unmuted/open**.
 
 ---
 

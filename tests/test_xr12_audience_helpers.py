@@ -25,8 +25,12 @@ DEFAULT_XR12_AUDIENCE_ENABLED = True
 DEFAULT_XR12_AUDIENCE_FADE_SECONDS = 3.0
 DEFAULT_XR12_AUDIENCE_OPEN_VALUE = 96
 DEFAULT_XR12_AUDIENCE_CLOSED_VALUE = 0
-DEFAULT_XR12_MUTED_VALUE = 127
-DEFAULT_XR12_UNMUTED_VALUE = 0
+DEFAULT_XR12_AUDIENCE_MUTED_VALUE = 0
+DEFAULT_XR12_AUDIENCE_UNMUTED_VALUE = 127
+DEFAULT_XR12_MUTED_VALUE = DEFAULT_XR12_AUDIENCE_MUTED_VALUE
+DEFAULT_XR12_UNMUTED_VALUE = DEFAULT_XR12_AUDIENCE_UNMUTED_VALUE
+LEGACY_DEFAULT_XR12_AUDIENCE_MUTED_VALUE = 127
+LEGACY_DEFAULT_XR12_AUDIENCE_UNMUTED_VALUE = 0
 DEFAULT_XR12_AUDIENCE_UNITY_VALUE = DEFAULT_XR12_AUDIENCE_OPEN_VALUE
 
 
@@ -53,6 +57,21 @@ def interpolate_midi_value(start_value, target_value, progress):
     """Linearly interpolate a MIDI value for the supplied 0-1 progress fraction."""
     bounded = max(0.0, min(1.0, float(progress)))
     return clamp_midi_value(start_value + (target_value - start_value) * bounded)
+
+
+def migrate_xr12_mute_polarity(config, defaults):
+    """Upgrade the old untouched XR12 mute defaults to the verified polarity."""
+    if (
+        "xr12_audience_muted_value" not in config
+        or "xr12_audience_unmuted_value" not in config
+    ):
+        return
+    if (
+        defaults.get("xr12_audience_muted_value") == LEGACY_DEFAULT_XR12_AUDIENCE_MUTED_VALUE
+        and defaults.get("xr12_audience_unmuted_value") == LEGACY_DEFAULT_XR12_AUDIENCE_UNMUTED_VALUE
+    ):
+        defaults["xr12_audience_muted_value"] = DEFAULT_XR12_MUTED_VALUE
+        defaults["xr12_audience_unmuted_value"] = DEFAULT_XR12_UNMUTED_VALUE
 
 
 @dataclass
@@ -152,6 +171,7 @@ def migrate_xr12_config(loaded_config=None):
             defaults[key] = clamp_midi_value(defaults[key])
         except (TypeError, ValueError, KeyError):
             defaults[key] = fallback
+    migrate_xr12_mute_polarity(config, defaults)
     return defaults
 
 
@@ -169,15 +189,15 @@ class Xr12AudienceHelperTests(unittest.TestCase):
         self.assertEqual(
             build_audience_mute_messages(True),
             [
-                [XR12_MUTE_STATUS, 0, 127],
-                [XR12_MUTE_STATUS, 1, 127],
+                [XR12_MUTE_STATUS, 0, 0],
+                [XR12_MUTE_STATUS, 1, 0],
             ],
         )
         self.assertEqual(
             build_audience_mute_messages(False),
             [
-                [XR12_MUTE_STATUS, 0, 0],
-                [XR12_MUTE_STATUS, 1, 0],
+                [XR12_MUTE_STATUS, 0, 127],
+                [XR12_MUTE_STATUS, 1, 127],
             ],
         )
 
@@ -192,8 +212,8 @@ class Xr12AudienceHelperTests(unittest.TestCase):
             [
                 [XR12_FADER_STATUS, 0, 0],
                 [XR12_FADER_STATUS, 1, 0],
-                [XR12_MUTE_STATUS, 0, 0],
-                [XR12_MUTE_STATUS, 1, 0],
+                [XR12_MUTE_STATUS, 0, 127],
+                [XR12_MUTE_STATUS, 1, 127],
             ],
         )
         self.assertFalse(state.muted)
@@ -289,6 +309,10 @@ class Xr12AudienceHelperTests(unittest.TestCase):
         self.assertEqual(state.open_value, DEFAULT_XR12_AUDIENCE_OPEN_VALUE)
         self.assertEqual(DEFAULT_XR12_AUDIENCE_UNITY_VALUE, 96)
 
+    def test_default_mute_polarity_is_verified(self):
+        self.assertEqual(DEFAULT_XR12_MUTED_VALUE, 0)
+        self.assertEqual(DEFAULT_XR12_UNMUTED_VALUE, 127)
+
     def test_config_migration_defaults_and_clamping(self):
         migrated = migrate_xr12_config(
             {
@@ -303,7 +327,27 @@ class Xr12AudienceHelperTests(unittest.TestCase):
         self.assertEqual(migrated["xr12_audience_open_value"], 127)
         self.assertEqual(migrated["xr12_audience_closed_value"], 0)
         self.assertEqual(migrated["xr12_audience_muted_value"], 127)
-        self.assertEqual(migrated["xr12_audience_unmuted_value"], 0)
+        self.assertEqual(migrated["xr12_audience_unmuted_value"], 127)
+
+    def test_config_migration_rewrites_old_untouched_mute_defaults(self):
+        migrated = migrate_xr12_config(
+            {
+                "xr12_audience_muted_value": 127,
+                "xr12_audience_unmuted_value": 0,
+            }
+        )
+        self.assertEqual(migrated["xr12_audience_muted_value"], 0)
+        self.assertEqual(migrated["xr12_audience_unmuted_value"], 127)
+
+    def test_config_migration_preserves_deliberate_custom_mute_pair(self):
+        migrated = migrate_xr12_config(
+            {
+                "xr12_audience_muted_value": 0,
+                "xr12_audience_unmuted_value": 96,
+            }
+        )
+        self.assertEqual(migrated["xr12_audience_muted_value"], 0)
+        self.assertEqual(migrated["xr12_audience_unmuted_value"], 96)
 
 
 if __name__ == "__main__":
