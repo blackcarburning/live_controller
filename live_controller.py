@@ -48,10 +48,20 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QTableWidget, QTableWidgetItem, QLineEdit, QHeaderView, 
                              QGroupBox, QLabel, QFileDialog, QSizePolicy, QComboBox,
                              QAbstractButton, QSlider, QAbstractItemView, QCheckBox,
-                             QGridLayout, QRadioButton, QSpinBox, QColorDialog, QDialog,
+                             QGridLayout, QRadioButton, QSpinBox, QDoubleSpinBox,
+                             QColorDialog, QDialog,
                              QTabWidget, QStackedWidget, QMessageBox)
-from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer, QRect
+from PyQt6.QtCore import QThread, QObject, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer, QRect
 from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen, QPixmap
+from xr12_audience import (
+    DEFAULT_XR12_AUDIENCE_ENABLED,
+    DEFAULT_XR12_AUDIENCE_FADE_SECONDS,
+    DEFAULT_XR12_AUDIENCE_UNITY_VALUE,
+    XR12_AUDIENCE_PORT_INDEX,
+    Xr12AudienceState,
+    build_audience_fader_messages,
+    interpolate_midi_value,
+)
 
 # --- Core Application Configuration ---
 # File paths for external media players
@@ -382,6 +392,160 @@ class MidiTestWorker(QThread):
                     self.midiout.send_message([STOP_BYTE])
                 self.midiout.close_port()
             self.finished.emit(self.port_num)
+
+
+class Xr12AudienceController(QObject):
+    """Owns MIDI port 3 and controls XR12 audience-mic fade/mute state."""
+
+    def __init__(self, status_callback, rtmidi_module, enabled=True,
+                 fade_duration_sec=DEFAULT_XR12_AUDIENCE_FADE_SECONDS,
+                 unity_value=DEFAULT_XR12_AUDIENCE_UNITY_VALUE, parent=None):
+        super().__init__(parent)
+        self.status_callback = status_callback
+        self.rtmidi = rtmidi_module
+        self.enabled = bool(enabled)
+        self.fade_duration_sec = max(0.0, float(fade_duration_sec))
+        self.port_index = XR12_AUDIENCE_PORT_INDEX
+        self.midiout = None
+        self.available = False
+        self.last_error = ""
+        self.state = Xr12AudienceState(unity_value=unity_value)
+        self.fade_timer = QTimer(self)
+        self.fade_timer.setInterval(50)
+        self.fade_timer.timeout.connect(self._on_fade_step)
+        self._fade_start_value = self.state.current_value
+        self._fade_target_value = self.state.current_value
+        self._fade_started_at = 0.0
+        self._fade_total_seconds = 0.0
+        self._mute_after_fade = False
+        self._last_status_text = ""
+        self._emit_status("XR12 Audience: disabled" if not self.enabled else "XR12 Audience: waiting for MIDI port 3")
+
+    def set_enabled(self, enabled):
+        self.enabled = bool(enabled)
+        self.fade_timer.stop()
+        if not self.enabled:
+            self._close_port()
+            self._emit_status("XR12 Audience: disabled")
+            return
+        self._emit_status("XR12 Audience: waiting for MIDI port 3")
+
+    def set_fade_duration(self, seconds):
+        self.fade_duration_sec = max(0.0, float(seconds))
+
+    def set_unity_value(self, value):
+        self.state.set_unity_value(value)
+        if (not self.state.muted) and (not self.fade_timer.isActive()) and self.available:
+            self._send_messages(self.state.apply_fader_value(self.state.unity_value))
+            self._emit_status(f"XR12 Audience: connected on MIDI port 3 — open @ {self.state.current_value}")
+
+    def request_open(self):
+        self.fade_timer.stop()
+        command = self.state.request_open()
+        if not self._ensure_port():
+            return False
+        self._send_messages(command.initial_messages)
+        return self._begin_fade(command.start_value, command.target_value, command.mute_after_fade, "fading up")
+
+    def request_close(self):
+        self.fade_timer.stop()
+        command = self.state.request_close()
+        if not self._ensure_port():
+            return False
+        self._send_messages(command.initial_messages)
+        return self._begin_fade(command.start_value, command.target_value, command.mute_after_fade, "fading down")
+
+    def shutdown(self):
+        self.fade_timer.stop()
+        self._close_port()
+
+    def _begin_fade(self, start_value, target_value, mute_after_fade, in_progress_text):
+        self._fade_start_value = int(start_value)
+        self._fade_target_value = int(target_value)
+        self._fade_started_at = time.monotonic()
+        self._fade_total_seconds = self.fade_duration_sec
+        self._mute_after_fade = bool(mute_after_fade)
+        self._emit_status(f"XR12 Audience: connected on MIDI port 3 — {in_progress_text}")
+
+        if self._fade_total_seconds <= 0 or self._fade_start_value == self._fade_target_value:
+            self._send_messages(self.state.apply_fader_value(self._fade_target_value))
+            self._finish_fade()
+            return True
+
+        self.fade_timer.start()
+        return True
+
+    def _on_fade_step(self):
+        elapsed = time.monotonic() - self._fade_started_at
+        progress = 1.0 if self._fade_total_seconds <= 0 else min(1.0, elapsed / self._fade_total_seconds)
+        value = interpolate_midi_value(self._fade_start_value, self._fade_target_value, progress)
+        self._send_messages(self.state.apply_fader_value(value))
+        if progress >= 1.0:
+            self._finish_fade()
+
+    def _finish_fade(self):
+        self.fade_timer.stop()
+        if self._mute_after_fade:
+            self._send_messages(self.state.finish_close())
+            self._emit_status("XR12 Audience: connected on MIDI port 3 — muted")
+        else:
+            self._emit_status(f"XR12 Audience: connected on MIDI port 3 — open @ {self.state.current_value}")
+
+    def _ensure_port(self):
+        if not self.enabled:
+            self._emit_status("XR12 Audience: disabled")
+            return False
+        if self.midiout is not None:
+            try:
+                if self.midiout.is_port_open():
+                    self.available = True
+                    return True
+            except Exception:
+                self._close_port()
+        try:
+            self.midiout = self.rtmidi.MidiOut()
+            self.midiout.open_port(self.port_index)
+            self.available = True
+            self.last_error = ""
+            self._emit_status("XR12 Audience: connected on MIDI port 3")
+            return True
+        except Exception as exc:
+            self.available = False
+            self.last_error = str(exc)
+            self.midiout = None
+            self._emit_status(f"XR12 Audience: unavailable on MIDI port 3 ({exc})")
+            return False
+
+    def _send_messages(self, messages):
+        if not messages:
+            return
+        try:
+            if not self._ensure_port():
+                return
+            for message in messages:
+                self.midiout.send_message(message)
+        except Exception as exc:
+            self.available = False
+            self.last_error = str(exc)
+            self._close_port()
+            self._emit_status(f"XR12 Audience: send failed on MIDI port 3 ({exc})")
+
+    def _close_port(self):
+        if self.midiout is not None:
+            try:
+                if self.midiout.is_port_open():
+                    self.midiout.close_port()
+            except Exception:
+                pass
+        self.midiout = None
+        self.available = False
+
+    def _emit_status(self, text):
+        if text != self._last_status_text:
+            print(text)
+            self._last_status_text = text
+        if self.status_callback is not None:
+            self.status_callback(text)
 
 # ---------------------------------------------------------------------------
 # Multi-zone zoom/crop configuration helpers
@@ -721,7 +885,7 @@ class MidiSyncWorker(QThread):
     ipc_socket_path = pyqtSignal(str)# Emits the path to the mpv IPC socket.
 
     def __init__(self, video_file, bpm, display_num, preload_time, midi_offset_ms, 
-                 send_start_port1, send_start_port2, send_start_port3, timing_method,
+                 send_start_port1, send_start_port2, timing_method,
                  require_midi=True, max_duration_sec=0, zoom_config=None,
                  absolute_start_time=None):
         super().__init__()
@@ -733,7 +897,6 @@ class MidiSyncWorker(QThread):
         self.midi_offset_ms = midi_offset_ms
         self.send_start_port1 = send_start_port1
         self.send_start_port2 = send_start_port2
-        self.send_start_port3 = send_start_port3
         self.timing_method = timing_method
         self.require_midi = require_midi
         self.max_duration_sec = max_duration_sec  # If > 0, limits playback via mpv --length
@@ -763,7 +926,7 @@ class MidiSyncWorker(QThread):
             return
         
         # --- Open MIDI ports (best-effort) ---
-        all_ports = [1, 2, 3]
+        all_ports = [1, 2]
         for port_num in all_ports:
             try:
                 midiout = rtmidi.MidiOut()
@@ -940,12 +1103,12 @@ class MidiSyncWorker(QThread):
             self.status_update.emit("Sending START...")
             offset_sec = self.midi_offset_ms / 1000.0
             start_time_base = 0
-            is_sending_any_start = self.send_start_port1 or self.send_start_port2 or self.send_start_port3
+            is_sending_any_start = self.send_start_port1 or self.send_start_port2
 
             def send_atomic_start():
                 """Sends MIDI START messages to the selected ports."""
                 nonlocal start_time_base
-                ports_to_start = [p for p, should_send in [(1, self.send_start_port1), (2, self.send_start_port2), (3, self.send_start_port3)] if should_send]
+                ports_to_start = [p for p, should_send in [(1, self.send_start_port1), (2, self.send_start_port2)] if should_send]
                 
                 for port_num in ports_to_start:
                     if port_num in self.midi_outputs:
@@ -1022,7 +1185,7 @@ class MidiSyncWorker(QThread):
     def cleanup(self):
         """Cleans up all resources (MIDI ports, mpv process)."""
         self.status_update.emit("Cleaning up...")
-        ports_to_stop = [p for p, should_send in [(1, self.send_start_port1), (2, self.send_start_port2), (3, self.send_start_port3)] if should_send]
+        ports_to_stop = [p for p, should_send in [(1, self.send_start_port1), (2, self.send_start_port2)] if should_send]
         
         for port_num in ports_to_stop:
             if port_num in self.midi_outputs and self.midi_outputs[port_num].is_port_open():
@@ -3456,6 +3619,10 @@ class LiveController(QWidget):
         self.test_port_start_cbs = {}
         self.test_port_bpm_inputs = {}
         self.test_port_buttons = {}
+        self.xr12_controller = None
+        self._manual_stop_requested = False
+        self._playback_error_seen = False
+        self._app_is_closing = False
 
         # --- Sync Calibration Loop State ---
         self.calib_loop_active = False
@@ -3506,6 +3673,14 @@ class LiveController(QWidget):
 
         # --- Build UI and start background services ---
         self.setup_ui()
+        self.xr12_controller = Xr12AudienceController(
+            status_callback=self._set_xr12_status_text,
+            rtmidi_module=rtmidi,
+            enabled=self.config.get("xr12_audience_enabled", DEFAULT_XR12_AUDIENCE_ENABLED),
+            fade_duration_sec=self.config.get("xr12_audience_fade_duration_sec", DEFAULT_XR12_AUDIENCE_FADE_SECONDS),
+            unity_value=self.config.get("xr12_audience_unity_value", DEFAULT_XR12_AUDIENCE_UNITY_VALUE),
+            parent=self,
+        )
         self.apply_config_to_ui()
         # Enforce a fixed sync-show session ID and disable editing in the UI so
         # the application always uses the hard-coded session provided by ops.
@@ -3531,7 +3706,7 @@ class LiveController(QWidget):
             time.sleep(2.5)             # Wait for chase animation to complete
         self.midi_available = False
         try:
-            for port_index in [1, 2, 3]:
+            for port_index in [1, 2]:
                 test_out = rtmidi.MidiOut()
                 try:
                     test_out.open_port(port_index)
@@ -3546,6 +3721,7 @@ class LiveController(QWidget):
             self.send_led_command("1")  # LED 1: no MIDI device connected
         else:
             self.send_led_command("4")  # "4" turns all LEDs off
+        QTimer.singleShot(0, self._open_audience_if_idle)
 
     def setup_ui(self):
         """Constructs the entire user interface."""
@@ -3650,12 +3826,12 @@ class LiveController(QWidget):
         main_layout = QHBoxLayout()
         self.table = DraggableTableWidget()
         self.table.setColumnCount(10)
-        self.table.setHorizontalHeaderLabels(["Hotkey", "Track Name", "Linked", "BPM", "Click", "Rich1", "Rich2", "Sync", "Show File", "Actions"])
+        self.table.setHorizontalHeaderLabels(["Hotkey", "Track Name", "Linked", "BPM", "Click", "Rich1", "XR12 Audience", "Sync", "Show File", "Actions"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setMinimumSectionSize(10)
         self.table.setColumnWidth(0, 50); self.table.setColumnWidth(2, 55)
         self.table.setColumnWidth(3, 45); self.table.setColumnWidth(4, 45)
-        self.table.setColumnWidth(5, 45); self.table.setColumnWidth(6, 45)
+        self.table.setColumnWidth(5, 45); self.table.setColumnWidth(6, 90)
         self.table.setColumnWidth(7, 40); self.table.setColumnWidth(8, 80); self.table.setColumnWidth(9, 65)
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(False)
@@ -3836,6 +4012,38 @@ class LiveController(QWidget):
         calib_loop_layout.addWidget(self.calib_loop_button)
         calib_loop_group.setLayout(calib_loop_layout)
 
+        xr12_group = QGroupBox("XR12 Audience Mics")
+        xr12_layout = QGridLayout()
+        xr12_layout.setContentsMargins(8, 14, 8, 8)
+        xr12_layout.setSpacing(6)
+        self.xr12_enabled_checkbox = QCheckBox("Enable XR12 Audience")
+        self.xr12_enabled_checkbox.toggled.connect(self._on_xr12_enabled_toggled)
+        xr12_layout.addWidget(self.xr12_enabled_checkbox, 0, 0, 1, 2)
+        self.xr12_status_label = QLabel("XR12 Audience: waiting for MIDI port 3")
+        self.xr12_status_label.setWordWrap(True)
+        self.xr12_status_label.setStyleSheet("font-size: 10px; color: #888; font-style: italic;")
+        xr12_layout.addWidget(self.xr12_status_label, 1, 0, 1, 2)
+        xr12_layout.addWidget(QLabel("Fade:"), 2, 0)
+        self.xr12_fade_duration_spinbox = QDoubleSpinBox()
+        self.xr12_fade_duration_spinbox.setRange(0.0, 10.0)
+        self.xr12_fade_duration_spinbox.setDecimals(1)
+        self.xr12_fade_duration_spinbox.setSingleStep(0.5)
+        self.xr12_fade_duration_spinbox.setSuffix(" s")
+        self.xr12_fade_duration_spinbox.valueChanged.connect(self._on_xr12_fade_duration_changed)
+        xr12_layout.addWidget(self.xr12_fade_duration_spinbox, 2, 1)
+        xr12_layout.addWidget(QLabel("Unity:"), 3, 0)
+        self.xr12_unity_spinbox = QSpinBox()
+        self.xr12_unity_spinbox.setRange(0, 127)
+        self.xr12_unity_spinbox.valueChanged.connect(self._on_xr12_unity_value_changed)
+        xr12_layout.addWidget(self.xr12_unity_spinbox, 3, 1)
+        self.xr12_open_button = QPushButton("Fade Up / Open")
+        self.xr12_open_button.clicked.connect(self.open_xr12_audience)
+        xr12_layout.addWidget(self.xr12_open_button, 4, 0)
+        self.xr12_close_button = QPushButton("Fade Down / Mute")
+        self.xr12_close_button.clicked.connect(self.mute_xr12_audience)
+        xr12_layout.addWidget(self.xr12_close_button, 4, 1)
+        xr12_group.setLayout(xr12_layout)
+
         # --- Overlay Colours Group ---
         overlay_colours_group = QGroupBox("Overlay Colours")
         overlay_colours_layout = QGridLayout()
@@ -3879,7 +4087,7 @@ class LiveController(QWidget):
         midi_test_grid_layout.addWidget(QLabel("<b>Enabled</b>"), 0, 1, Qt.AlignmentFlag.AlignCenter)
         midi_test_grid_layout.addWidget(QLabel("<b>Send Start</b>"), 0, 2, Qt.AlignmentFlag.AlignCenter)
         midi_test_grid_layout.addWidget(QLabel("<b>BPM</b>"), 0, 3, Qt.AlignmentFlag.AlignCenter)
-        port_names = ["Click", "Rich1", "Rich2"]
+        port_names = ["Click", "Rich1"]
         for i, name in enumerate(port_names, start=1):
             port_label = QLabel(name)
             enabled_cb = QCheckBox(); enabled_cb.setChecked(True)
@@ -3956,11 +4164,12 @@ class LiveController(QWidget):
         upper_row.addLayout(right_col, 1)
         controls_vbox.addLayout(upper_row)
 
-        # Lower row: test track | calib loop  (side by side — both are small horizontal groups)
+        # Lower row: test track | calib loop | XR12 audience controls
         lower_row = QHBoxLayout()
         lower_row.setSpacing(8)
         lower_row.addWidget(test_track_group, 2)
         lower_row.addWidget(calib_loop_group, 1)
+        lower_row.addWidget(xr12_group, 1)
         controls_vbox.addLayout(lower_row)
 
         # --- Scrub & Loop Group ---
@@ -4185,7 +4394,7 @@ class LiveController(QWidget):
 
     def set_test_controls_enabled(self, enabled, except_port=None):
         """Enable or disable all test controls, optionally exempting one port."""
-        for port_num in range(1, 4):
+        for port_num in sorted(self.test_port_enabled_cbs):
             is_exempt = (port_num == except_port)
             self.test_port_enabled_cbs[port_num].setEnabled(enabled or is_exempt)
             self.test_port_start_cbs[port_num].setEnabled(enabled or is_exempt)
@@ -4310,6 +4519,9 @@ class LiveController(QWidget):
             "display": DEFAULT_VIDEO_SCREEN_NUMBER,
             "preload": DEFAULT_LOAD_DELAY_SECONDS,
             "sync_show_timing_trim_ms": DEFAULT_SYNC_TIMING_TRIM_MS,
+            "xr12_audience_enabled": DEFAULT_XR12_AUDIENCE_ENABLED,
+            "xr12_audience_fade_duration_sec": DEFAULT_XR12_AUDIENCE_FADE_SECONDS,
+            "xr12_audience_unity_value": DEFAULT_XR12_AUDIENCE_UNITY_VALUE,
         }
         if not os.path.exists(CONFIG_FILE): return defaults
         try:
@@ -4318,7 +4530,7 @@ class LiveController(QWidget):
                 defaults.update(config)
                 return defaults
         except (json.JSONDecodeError, FileNotFoundError):
-            return {}
+            return defaults
     
     def save_config(self):
         """Saves general application configuration to config.json."""
@@ -4328,6 +4540,9 @@ class LiveController(QWidget):
         self.config['sync_show_host'] = self.sync_show_host_input.text().strip()
         self.config['sync_show_session'] = self.sync_show_session_input.text().strip()
         self.config['sync_show_timing_trim_ms'] = self.sync_show_trim_spinbox.value()
+        self.config['xr12_audience_enabled'] = self.xr12_enabled_checkbox.isChecked()
+        self.config['xr12_audience_fade_duration_sec'] = self.xr12_fade_duration_spinbox.value()
+        self.config['xr12_audience_unity_value'] = self.xr12_unity_spinbox.value()
         with open(CONFIG_FILE, 'w') as f:
             json.dump(self.config, f, indent=4)
     
@@ -4340,8 +4555,85 @@ class LiveController(QWidget):
         self.sync_show_session_input.setText(self.config.get('sync_show_session', DEFAULT_SYNC_SHOW_SESSION))
         trim_ms = int(self.config.get('sync_show_timing_trim_ms', DEFAULT_SYNC_TIMING_TRIM_MS))
         self.sync_show_trim_spinbox.setValue(trim_ms)
+        xr12_enabled = bool(self.config.get("xr12_audience_enabled", DEFAULT_XR12_AUDIENCE_ENABLED))
+        xr12_fade = float(self.config.get("xr12_audience_fade_duration_sec", DEFAULT_XR12_AUDIENCE_FADE_SECONDS))
+        xr12_unity = int(self.config.get("xr12_audience_unity_value", DEFAULT_XR12_AUDIENCE_UNITY_VALUE))
+        self.xr12_enabled_checkbox.blockSignals(True)
+        self.xr12_enabled_checkbox.setChecked(xr12_enabled)
+        self.xr12_enabled_checkbox.blockSignals(False)
+        self.xr12_fade_duration_spinbox.blockSignals(True)
+        self.xr12_fade_duration_spinbox.setValue(xr12_fade)
+        self.xr12_fade_duration_spinbox.blockSignals(False)
+        self.xr12_unity_spinbox.blockSignals(True)
+        self.xr12_unity_spinbox.setValue(xr12_unity)
+        self.xr12_unity_spinbox.blockSignals(False)
+        if self.xr12_controller is not None:
+            self.xr12_controller.set_unity_value(xr12_unity)
+            self.xr12_controller.set_fade_duration(xr12_fade)
+            self.xr12_controller.set_enabled(xr12_enabled)
         self._update_zoom_status_label()
         self.check_display_setting()
+
+    def _set_xr12_status_text(self, text):
+        if not hasattr(self, "xr12_status_label"):
+            return
+        color = "#888"
+        if "unavailable" in text or "failed" in text:
+            color = "#e67e22"
+        elif "open @" in text:
+            color = "#27ae60"
+        elif "muted" in text:
+            color = "#e74c3c"
+        elif "disabled" in text:
+            color = "#888"
+        self.xr12_status_label.setText(text)
+        self.xr12_status_label.setStyleSheet(f"font-size: 10px; color: {color}; font-style: italic;")
+
+    def _has_active_playback(self):
+        return (
+            (self.worker and self.worker.isRunning()) or
+            (self.test_worker and self.test_worker.isRunning()) or
+            self.countdown_timer.isActive() or
+            self.calib_loop_active
+        )
+
+    def _open_audience_if_idle(self):
+        if self.xr12_controller is None or self._app_is_closing or self._has_active_playback():
+            return
+        self.xr12_controller.request_open()
+
+    def _restore_audience_after_failed_start(self):
+        if not self._has_active_playback():
+            self._open_audience_if_idle()
+
+    def _on_xr12_enabled_toggled(self, checked):
+        if self.xr12_controller is None:
+            return
+        self.xr12_controller.set_enabled(checked)
+        self.save_config()
+        if checked:
+            if self._has_active_playback():
+                self.xr12_controller.request_close()
+            else:
+                self._open_audience_if_idle()
+
+    def _on_xr12_fade_duration_changed(self, value):
+        if self.xr12_controller is not None:
+            self.xr12_controller.set_fade_duration(value)
+        self.save_config()
+
+    def _on_xr12_unity_value_changed(self, value):
+        if self.xr12_controller is not None:
+            self.xr12_controller.set_unity_value(value)
+        self.save_config()
+
+    def open_xr12_audience(self):
+        self._manual_stop_requested = False
+        self._open_audience_if_idle()
+
+    def mute_xr12_audience(self):
+        if self.xr12_controller is not None:
+            self.xr12_controller.request_close()
 
     def load_zoom_config(self):
         """Loads the zoom/scale configuration from zoom_config.json, migrating old format if needed."""
@@ -4577,7 +4869,6 @@ class LiveController(QWidget):
                 'linked': False,
                 'send_start_port1': True,
                 'send_start_port2': False,
-                'send_start_port3': False,
                 'sync_show_enabled': False,
                 'sync_show_file': '',
             })
@@ -4749,7 +5040,15 @@ class LiveController(QWidget):
 
                 self.table.setCellWidget(i, 4, create_port_checkbox(1))
                 self.table.setCellWidget(i, 5, create_port_checkbox(2))
-                self.table.setCellWidget(i, 6, create_port_checkbox(3))
+                xr12_cell = QLabel("Auto")
+                xr12_cell.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                xr12_cell.setToolTip("MIDI port 3 is dedicated to automatic XR12 audience-mic control.")
+                xr12_container = QWidget()
+                xr12_layout = QHBoxLayout(xr12_container)
+                xr12_layout.addWidget(xr12_cell)
+                xr12_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                xr12_layout.setContentsMargins(0, 0, 0, 0)
+                self.table.setCellWidget(i, 6, xr12_container)
 
                 def create_sync_show_checkbox(row_idx, track_item):
                     sync_container = QWidget()
@@ -4970,12 +5269,12 @@ class LiveController(QWidget):
         # Backwards compatibility and data validation.
         for item in setlist_data:
             if item['type'] == 'track':
+                item.pop('send_start_port3', None)
                 if 'duration' not in item or item['duration'] == 0:
                     item['duration'] = self.get_track_duration(item['path'])
                 if 'send_start_port1' not in item:
                      item['send_start_port1'] = True
                 if 'send_start_port2' not in item: item['send_start_port2'] = False
-                if 'send_start_port3' not in item: item['send_start_port3'] = False
                 if 'linked' not in item: item['linked'] = False
                 if 'sync_show_enabled' not in item: item['sync_show_enabled'] = False
                 if 'sync_show_file' not in item: item['sync_show_file'] = ''
@@ -5355,7 +5654,8 @@ class LiveController(QWidget):
             self.send_led_command("1")
             self.show_no_midi_message()
             return
-        
+        self._manual_stop_requested = False
+        self._playback_error_seen = False
         is_countdown_track = (row_index == 0 and self.count_in_test_checkbox.isChecked())
 
         # Show the "Preparing" overlay unless it's a countdown track.
@@ -5373,6 +5673,8 @@ class LiveController(QWidget):
 
     def start_countdown(self, row_index):
         """Starts the visual countdown timer for the first track."""
+        if self.xr12_controller is not None:
+            self.xr12_controller.request_close()
         self.send_led_command("3")  # LED 3: track 1 count-in started
         self.countdown_seconds = int(self.count_in_combo.currentText())
         self.countdown_label.setText(str(self.countdown_seconds))
@@ -5402,10 +5704,13 @@ class LiveController(QWidget):
 
     def execute_playback(self, track_data, bpm, row_index=None):
         """Creates and starts a MidiSyncWorker to handle playback."""
+        self._manual_stop_requested = False
+        self._playback_error_seen = False
         if self.require_midi_checkbox.isChecked() and not self.midi_available:
             self.status_label.setText("ERROR: No MIDI hardware detected. Cannot start playback.")
             self.send_led_command("1")  # LED 1: no MIDI device connected
             self.show_no_midi_message()
+            self._restore_audience_after_failed_start()
             return
         try:
             # Gather all necessary parameters from the UI.
@@ -5415,11 +5720,13 @@ class LiveController(QWidget):
             timing_method = "high_precision" if self.high_precision_timing_radio.isChecked() else "standard"
             send_start_port1 = track_data.get('send_start_port1', True)
             send_start_port2 = track_data.get('send_start_port2', False)
-            send_start_port3 = track_data.get('send_start_port3', False)
             track_path = track_data.get('path')
         except (ValueError, AttributeError, KeyError) as e: 
             self.status_label.setText(f"ERROR: Invalid settings or track data. {e}")
+            self._restore_audience_after_failed_start()
             return
+        if self.xr12_controller is not None:
+            self.xr12_controller.request_close()
         
         self.clear_highlight()
         if row_index is not None:
@@ -5435,10 +5742,10 @@ class LiveController(QWidget):
         require_midi = self.require_midi_checkbox.isChecked()
         effective_zoom = self.zoom_config if self.apply_zoom_checkbox.isChecked() else {}
         self.worker = MidiSyncWorker(track_path, bpm, display_num, preload_time, midi_offset, 
-                                     send_start_port1, send_start_port2, send_start_port3, timing_method,
+                                     send_start_port1, send_start_port2, timing_method,
                                      require_midi, zoom_config=effective_zoom)
         self.worker.status_update.connect(self.status_label.setText)
-        self.worker.error.connect(lambda msg: self.status_label.setText(f"ERROR: {msg}"))
+        self.worker.error.connect(self.on_playback_error)
         self.worker.finished.connect(self.on_playback_finished)
         self.worker.ipc_socket_path.connect(self.set_ipc_socket)
         self.send_led_command("3")  # LED 3 (orange): song is playing
@@ -5633,6 +5940,7 @@ class LiveController(QWidget):
 
     def stop_all_activity(self):
         """Centralized method to stop any running playback, countdown, or test."""
+        self._manual_stop_requested = True
         if self.countdown_timer.isActive():
             self.countdown_timer.stop()
             if self.countdown_connection:
@@ -5669,10 +5977,22 @@ class LiveController(QWidget):
         self.active_label.hide()
         self.send_led_command("4")  # Turn off all LEDs when playback is manually stopped.
         self._reset_scrub_controls()
+        if not self._app_is_closing:
+            self._open_audience_if_idle()
+
+    def on_playback_error(self, msg):
+        """Shows worker errors and suppresses linked auto-advance after failures."""
+        if self._manual_stop_requested and "stopped by user" in msg.lower():
+            self.status_label.setText("Status: Playback stopped.")
+            return
+        self._playback_error_seen = True
+        self.status_label.setText(f"ERROR: {msg}")
 
     def on_playback_finished(self):
         """Cleans up the UI and state after playback finishes."""
         finished_row = self.currently_playing_row
+        should_autoplay_next = False
+        next_row = None
         self.clear_highlight()
         self.test_file_label.setStyleSheet("font-style: italic; color: #888;") # Reset test label style
         self.status_label.setText("Status: Ready. Press a hotkey to play a track.")
@@ -5688,7 +6008,7 @@ class LiveController(QWidget):
         self.send_led_command("4")  # "4" turns all LEDs off
 
         # Auto-play next track if the finished track was linked.
-        if finished_row is not None and finished_row < len(self.tracks):
+        if (not self._manual_stop_requested) and (not self._playback_error_seen) and finished_row is not None and finished_row < len(self.tracks):
             finished_track = self.tracks[finished_row]
             if finished_track.get('type') == 'track' and finished_track.get('linked', False):
                 # Find the next track in the setlist (skip dividers).
@@ -5696,16 +6016,22 @@ class LiveController(QWidget):
                 while next_row < len(self.tracks) and self.tracks[next_row].get('type') == 'divider':
                     next_row += 1
                 if next_row < len(self.tracks) and self.tracks[next_row].get('type') == 'track':
-                    next_track = self.tracks[next_row]
-                    track_name_widget = self.table.cellWidget(next_row, 1)
-                    if track_name_widget:
-                        self.show_preparing_message(track_name_widget.text())
-                    bpm_widget = self.table.cellWidget(next_row, 3)
-                    try:
-                        bpm = int(bpm_widget.text()) if bpm_widget else 120
-                    except (ValueError, AttributeError):
-                        bpm = 120
-                    self.execute_playback(next_track, bpm, next_row)
+                    should_autoplay_next = True
+        if should_autoplay_next and next_row is not None:
+            next_track = self.tracks[next_row]
+            track_name_widget = self.table.cellWidget(next_row, 1)
+            if track_name_widget:
+                self.show_preparing_message(track_name_widget.text())
+            bpm_widget = self.table.cellWidget(next_row, 3)
+            try:
+                bpm = int(bpm_widget.text()) if bpm_widget else 120
+            except (ValueError, AttributeError):
+                bpm = 120
+            self.execute_playback(next_track, bpm, next_row)
+        else:
+            self._open_audience_if_idle()
+        self._manual_stop_requested = False
+        self._playback_error_seen = False
 
     def on_test_finished(self, port_num):
         """Resets the UI for the MIDI port test controls."""
@@ -5902,7 +6228,7 @@ class LiveController(QWidget):
                 self.calib_loop_button.setEnabled(True)
 
     def play_test_track(self):
-        """Plays the selected test track with all MIDI ports enabled."""
+        """Plays the selected test track with the performance MIDI ports enabled."""
         if (self.worker and self.worker.isRunning()) or (self.test_worker and self.test_worker.isRunning()):
             self.show_danger_message(); return
         if not self.test_track_path:
@@ -5912,19 +6238,21 @@ class LiveController(QWidget):
             self.send_led_command("1")
             self.show_no_midi_message()
             return
-        
+        if self.xr12_controller is not None:
+            self.xr12_controller.request_close()
         self.show_preparing_message(os.path.basename(self.test_track_path))
         
         try:
             bpm = int(self.test_track_bpm_input.text())
         except (ValueError, KeyError):
-             self.status_label.setText("Status: Invalid BPM for test track."); return
+             self.status_label.setText("Status: Invalid BPM for test track.")
+             self._restore_audience_after_failed_start()
+             return
 
         test_track_data = {
             'path': self.test_track_path,
             'send_start_port1': True,
             'send_start_port2': True,
-            'send_start_port3': True,
         }
         self.execute_playback(test_track_data, bpm)
 
@@ -5955,6 +6283,8 @@ class LiveController(QWidget):
             self.status_label.setText("Status: Invalid BPM for calibration loop.")
             return
 
+        if self.xr12_controller is not None:
+            self.xr12_controller.request_close()
         self.calib_loop_active = True
         self.calib_loop_button.setText("Stop Calib Loop")
         self.calib_loop_button.setStyleSheet("background-color: #e74c3c; color: white; font-size: 11px; padding: 3px 6px;")
@@ -5983,7 +6313,7 @@ class LiveController(QWidget):
 
         self.calib_loop_worker = MidiSyncWorker(
             self.test_track_path, bpm, display_num, preload_time, midi_offset,
-            True, True, True, timing_method, require_midi,
+            True, True, timing_method, require_midi,
             max_duration_sec=duration, zoom_config=effective_zoom
         )
         self.calib_loop_worker.status_update.connect(self.status_label.setText)
@@ -6046,6 +6376,8 @@ class LiveController(QWidget):
         self.calib_loop_duration_spinbox.setEnabled(True)
         self.status_label.setText("Status: Calibration loop stopped.")
         self.send_led_command("4")
+        if not self._app_is_closing:
+            self._open_audience_if_idle()
 
     def resizeEvent(self, event):
         """Ensures the overlay labels resize with the main window."""
@@ -6062,6 +6394,7 @@ class LiveController(QWidget):
     def closeEvent(self, event):
         """Handles the application close event."""
         # Save the current session and config.
+        self._app_is_closing = True
         self.save_session()
         self.save_config()
         
@@ -6069,6 +6402,8 @@ class LiveController(QWidget):
         self.hotkey_listener.stop()
         self.hotkey_listener.wait()
         self.stop_all_activity()
+        if self.xr12_controller is not None:
+            self.xr12_controller.shutdown()
 
         # Close the Arduino serial connection if open.
         if self.arduino_serial is not None and self.arduino_serial.is_open:
