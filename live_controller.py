@@ -441,10 +441,16 @@ class Xr12AudienceController(QObject):
     def request_open(self):
         self.fade_timer.stop()
         command = self.state.request_open()
+        # Idempotent: already open at unity with nothing to do.
+        if not command.initial_messages and command.start_value == command.target_value:
+            return True
         if not self._ensure_port():
             return False
         self._send_messages(command.initial_messages)
-        return self._begin_fade(command.start_value, command.target_value, command.mute_after_fade, "fading up")
+        return self._begin_fade(
+            command.start_value, command.target_value, command.mute_after_fade,
+            f"fading up to {command.target_value}",
+        )
 
     def request_close(self):
         self.fade_timer.stop()
@@ -488,7 +494,7 @@ class Xr12AudienceController(QObject):
             self._send_messages(self.state.finish_close())
             self._emit_status("XR12 Audience: connected on MIDI port 3 — muted")
         else:
-            self._emit_status(f"XR12 Audience: connected on MIDI port 3 — open @ {self.state.current_value}")
+            self._emit_status(f"XR12 Audience: connected on MIDI port 3 — open @ {self._fade_target_value}")
 
     def _ensure_port(self):
         if not self.enabled:
@@ -4527,12 +4533,21 @@ class LiveController(QWidget):
             with open(CONFIG_FILE, 'r') as f:
                 config = json.load(f)
                 defaults.update(config)
-                return defaults
+                # Validate and clamp the XR12 unity value; corrupt/missing entries
+                # default to 96 so the fader always opens at a sensible position.
+                try:
+                    unity = int(defaults["xr12_audience_unity_value"])
+                    defaults["xr12_audience_unity_value"] = max(0, min(127, unity))
+                except (TypeError, ValueError, KeyError):
+                    defaults["xr12_audience_unity_value"] = DEFAULT_XR12_AUDIENCE_UNITY_VALUE
         except (json.JSONDecodeError, FileNotFoundError):
-            return defaults
+            pass
+        return defaults
     
     def save_config(self):
         """Saves general application configuration to config.json."""
+        if getattr(self, '_applying_config', False):
+            return
         self.config['display'] = int(self.display_combo.currentText())
         self.config['preload'] = int(self.preload_combo.currentText())
         self.config['apply_zoom'] = self.apply_zoom_checkbox.isChecked()
@@ -4547,31 +4562,35 @@ class LiveController(QWidget):
     
     def apply_config_to_ui(self):
         """Sets UI elements based on the loaded general config."""
-        self.display_combo.setCurrentText(str(self.config.get("display", DEFAULT_VIDEO_SCREEN_NUMBER)))
-        self.preload_combo.setCurrentText(str(self.config.get("preload", DEFAULT_LOAD_DELAY_SECONDS)))
-        self.apply_zoom_checkbox.setChecked(self.config.get('apply_zoom', True))
-        self.sync_show_host_input.setText(self.config.get('sync_show_host', DEFAULT_SYNC_SHOW_HOST))
-        self.sync_show_session_input.setText(self.config.get('sync_show_session', DEFAULT_SYNC_SHOW_SESSION))
-        trim_ms = int(self.config.get('sync_show_timing_trim_ms', DEFAULT_SYNC_TIMING_TRIM_MS))
-        self.sync_show_trim_spinbox.setValue(trim_ms)
-        xr12_enabled = bool(self.config.get("xr12_audience_enabled", DEFAULT_XR12_AUDIENCE_ENABLED))
-        xr12_fade = float(self.config.get("xr12_audience_fade_duration_sec", DEFAULT_XR12_AUDIENCE_FADE_SECONDS))
-        xr12_unity = int(self.config.get("xr12_audience_unity_value", DEFAULT_XR12_AUDIENCE_UNITY_VALUE))
-        self.xr12_enabled_checkbox.blockSignals(True)
-        self.xr12_enabled_checkbox.setChecked(xr12_enabled)
-        self.xr12_enabled_checkbox.blockSignals(False)
-        self.xr12_fade_duration_spinbox.blockSignals(True)
-        self.xr12_fade_duration_spinbox.setValue(xr12_fade)
-        self.xr12_fade_duration_spinbox.blockSignals(False)
-        self.xr12_unity_spinbox.blockSignals(True)
-        self.xr12_unity_spinbox.setValue(xr12_unity)
-        self.xr12_unity_spinbox.blockSignals(False)
-        if self.xr12_controller is not None:
-            self.xr12_controller.set_unity_value(xr12_unity)
-            self.xr12_controller.set_fade_duration(xr12_fade)
-            self.xr12_controller.set_enabled(xr12_enabled)
-        self._update_zoom_status_label()
-        self.check_display_setting()
+        self._applying_config = True
+        try:
+            self.display_combo.setCurrentText(str(self.config.get("display", DEFAULT_VIDEO_SCREEN_NUMBER)))
+            self.preload_combo.setCurrentText(str(self.config.get("preload", DEFAULT_LOAD_DELAY_SECONDS)))
+            self.apply_zoom_checkbox.setChecked(self.config.get('apply_zoom', True))
+            self.sync_show_host_input.setText(self.config.get('sync_show_host', DEFAULT_SYNC_SHOW_HOST))
+            self.sync_show_session_input.setText(self.config.get('sync_show_session', DEFAULT_SYNC_SHOW_SESSION))
+            trim_ms = int(self.config.get('sync_show_timing_trim_ms', DEFAULT_SYNC_TIMING_TRIM_MS))
+            self.sync_show_trim_spinbox.setValue(trim_ms)
+            xr12_enabled = bool(self.config.get("xr12_audience_enabled", DEFAULT_XR12_AUDIENCE_ENABLED))
+            xr12_fade = float(self.config.get("xr12_audience_fade_duration_sec", DEFAULT_XR12_AUDIENCE_FADE_SECONDS))
+            xr12_unity = int(self.config.get("xr12_audience_unity_value", DEFAULT_XR12_AUDIENCE_UNITY_VALUE))
+            self.xr12_enabled_checkbox.blockSignals(True)
+            self.xr12_enabled_checkbox.setChecked(xr12_enabled)
+            self.xr12_enabled_checkbox.blockSignals(False)
+            self.xr12_fade_duration_spinbox.blockSignals(True)
+            self.xr12_fade_duration_spinbox.setValue(xr12_fade)
+            self.xr12_fade_duration_spinbox.blockSignals(False)
+            self.xr12_unity_spinbox.blockSignals(True)
+            self.xr12_unity_spinbox.setValue(xr12_unity)
+            self.xr12_unity_spinbox.blockSignals(False)
+            if self.xr12_controller is not None:
+                self.xr12_controller.set_unity_value(xr12_unity)
+                self.xr12_controller.set_fade_duration(xr12_fade)
+                self.xr12_controller.set_enabled(xr12_enabled)
+            self._update_zoom_status_label()
+            self.check_display_setting()
+        finally:
+            self._applying_config = False
 
     def _set_xr12_status_text(self, text):
         if not hasattr(self, "xr12_status_label"):
