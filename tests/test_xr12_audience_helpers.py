@@ -22,7 +22,7 @@ class Xr12AudienceHelperTests(unittest.TestCase):
             ],
         )
 
-    def test_build_audience_mute_messages_use_channel_two_status_byte(self):
+    def test_build_audience_mute_messages_target_both_channels(self):
         self.assertEqual(
             build_audience_mute_messages(True),
             [

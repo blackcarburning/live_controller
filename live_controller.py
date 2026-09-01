@@ -59,7 +59,6 @@ from xr12_audience import (
     DEFAULT_XR12_AUDIENCE_UNITY_VALUE,
     XR12_AUDIENCE_PORT_INDEX,
     Xr12AudienceState,
-    build_audience_fader_messages,
     interpolate_midi_value,
 )
 
@@ -544,8 +543,8 @@ class Xr12AudienceController(QObject):
         if text != self._last_status_text:
             print(text)
             self._last_status_text = text
-        if self.status_callback is not None:
-            self.status_callback(text)
+            if self.status_callback is not None:
+                self.status_callback(text)
 
 # ---------------------------------------------------------------------------
 # Multi-zone zoom/crop configuration helpers
