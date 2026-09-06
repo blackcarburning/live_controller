@@ -282,11 +282,10 @@ QSlider::sub-page:horizontal:disabled {
 }
 """
 
-# Branded logo HTML — ▲ (U+25B2) replaces each A in KATTMAN CONTROL
-KATTMAN_LOGO_HTML = (
+# Branded logo HTML for the top bar.
+MESH_MACHINE_KONTROL_LOGO_HTML = (
     '<span style="color:#f2f2f7; font-weight:700; font-size:22px; letter-spacing:4px;">'
-    'K<span style="color:#0a84ff;">&#9650;</span>TTM'
-    '<span style="color:#0a84ff;">&#9650;</span>N&nbsp;&nbsp;CONTROL'
+    'MESH MACHINE KONTROL'
     '</span>'
 )
 
@@ -1001,7 +1000,7 @@ class LiveControllerMac(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("KATTMAN CONTROL")
+        self.setWindowTitle("MESH MACHINE KONTROL")
 
         # Debug console (created early so _debug_log works immediately).
         self._debug_console = DebugConsoleWindow(self)
@@ -1095,14 +1094,14 @@ class LiveControllerMac(QWidget):
         left_layout.addWidget(self.active_label)
         left_layout.addStretch(1)
 
-        # Center: K▲TTM▲N CONTROL logo + setlist info stacked
+        # Center: MESH MACHINE KONTROL logo + setlist info stacked
         title_layout = QVBoxLayout()
         title_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title_layout.setSpacing(2)
 
         logo_label = QLabel()
         logo_label.setTextFormat(Qt.TextFormat.RichText)
-        logo_label.setText(KATTMAN_LOGO_HTML)
+        logo_label.setText(MESH_MACHINE_KONTROL_LOGO_HTML)
         logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.title_label = QLabel("Untitled Setlist")
