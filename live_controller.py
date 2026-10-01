@@ -931,6 +931,53 @@ def _default_zone():
     }
 
 
+# Numeric zone fields and their fallback defaults.  NOTE: 0 is a valid explicit
+# value for most of these (border_px=0 means "no border", crop_x/y=0 is the
+# frame origin, offset_y=0 means "no shift") and must never be replaced by a
+# default.  Only missing keys, None, or non-numeric values fall back.
+_ZONE_INT_DEFAULTS = {
+    "crop_x": 0, "crop_y": 0, "crop_w": 1920, "crop_h": 1080,
+    "scale_w": -1, "scale_h": -1,
+    "border_px": 0,
+    "offset_y": 0,
+}
+_COMPOSITE_INT_DEFAULTS = {
+    "out_w": -1, "out_h": -1,
+    "comp_crop_x": 0, "comp_crop_y": 0, "comp_crop_w": 0, "comp_crop_h": 0,
+    "comp_scale_w": -1, "comp_scale_h": -1,
+}
+
+
+def _zoom_int(value, default):
+    """Coerce a zoom-config value to int, preserving explicit zero.
+
+    Returns *default* only for None, booleans, or values that cannot be
+    interpreted as a number (e.g. "", "abc").  Numeric strings such as "0" or
+    "14" and floats such as 14.0 are accepted.  Never use ``value or default``
+    for these fields — that would turn a legitimate 0 into the default.
+    """
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _normalize_zone(z):
+    """Return a sanitised copy of zone dict *z* with all fields present and typed."""
+    if not isinstance(z, dict):
+        return _default_zone()
+    zone = dict(z)
+    for key, default in _ZONE_INT_DEFAULTS.items():
+        zone[key] = _zoom_int(zone.get(key), default)
+    zone["border_px"] = max(0, zone["border_px"])
+    zone["enabled"] = bool(zone.get("enabled", False))
+    if zone.get("mode") not in ("crop", "stretch"):
+        zone["mode"] = "crop"
+    return zone
+
+
 def _migrate_zoom_config(cfg):
     """Return a guaranteed multi-zone config dict, migrating old single-zone format if needed.
 
@@ -942,19 +989,18 @@ def _migrate_zoom_config(cfg):
 
     Backward-compatibility: existing configs without these fields get out_w=-1/out_h=-1
     and comp_crop_w=0/comp_scale_w=-1 so that mpv playback is unchanged.
+
+    Explicit zero values (e.g. border_px=0, offset_y=0, crop_x/y=0, comp_crop_x/y=0)
+    are preserved as-is; only missing/None/invalid values fall back to defaults.
+    This function is shared by the startup load path and the editor's import path
+    so both behave identically.
     """
     def _backfill_composite(d):
-        d.setdefault("out_w", -1)
-        d.setdefault("out_h", -1)
-        d.setdefault("out_sim_enabled", False)
-        d.setdefault("comp_crop_x", 0)
-        d.setdefault("comp_crop_y", 0)
-        d.setdefault("comp_crop_w", 0)
-        d.setdefault("comp_crop_h", 0)
-        d.setdefault("comp_scale_w", -1)
-        d.setdefault("comp_scale_h", -1)
+        for key, default in _COMPOSITE_INT_DEFAULTS.items():
+            d[key] = _zoom_int(d.get(key), default)
+        d["out_sim_enabled"] = bool(d.get("out_sim_enabled", False))
 
-    if not cfg:
+    if not cfg or not isinstance(cfg, dict):
         zones = [_default_zone() for _ in range(NUM_ZONES)]
         zones[0]["enabled"] = True  # Enable zone 0 by default
         result = {"zones": zones, "stack_direction": "horizontal",
@@ -965,18 +1011,16 @@ def _migrate_zoom_config(cfg):
                   "comp_scale_w": -1, "comp_scale_h": -1}
         return result
     if "zones" in cfg:
-        zones = list(cfg["zones"])
+        raw_zones = cfg["zones"] if isinstance(cfg["zones"], list) else []
+        # Ensure every existing zone has the newer fields (zeros preserved)
+        zones = [_normalize_zone(z) for z in raw_zones]
         while len(zones) < NUM_ZONES:
             zones.append(_default_zone())
-        # Ensure every existing zone has the newer fields
-        for z in zones:
-            z.setdefault("border_px", 0)
-            z.setdefault("offset_y", 0)
-            z.setdefault("mode", "crop")
+        direction = cfg.get("stack_direction", "horizontal")
         result = {
             "zones": zones[:NUM_ZONES],
-            "stack_direction": cfg.get("stack_direction", "horizontal"),
-            "frame_snapshot_path": cfg.get("frame_snapshot_path", ""),
+            "stack_direction": "vertical" if direction == "vertical" else "horizontal",
+            "frame_snapshot_path": cfg.get("frame_snapshot_path") or "",
         }
         # Copy composite/output fields, backfilling absent ones as no-ops
         for k in ("out_w", "out_h", "out_sim_enabled",
@@ -987,7 +1031,7 @@ def _migrate_zoom_config(cfg):
         _backfill_composite(result)
         return result
     # Old single-zone format — migrate to zone 0
-    zone0 = {
+    zone0 = _normalize_zone({
         "enabled": cfg.get("enabled", True),
         "crop_x": cfg.get("crop_x", 0),
         "crop_y": cfg.get("crop_y", 0),
@@ -998,7 +1042,7 @@ def _migrate_zoom_config(cfg):
         "border_px": 0,
         "offset_y": 0,
         "mode": "crop",
-    }
+    })
     zones = [zone0] + [_default_zone() for _ in range(NUM_ZONES - 1)]
     result = {"zones": zones, "stack_direction": "horizontal", "frame_snapshot_path": ""}
     _backfill_composite(result)
@@ -1072,6 +1116,25 @@ def _build_vf_for_zones(zoom_config):
     out_h = int(migrated.get("out_h", -1))
     out_sim_enabled = bool(migrated.get("out_sim_enabled", False))
 
+    # Clamp the whole-composite crop to the actual stitched composite size.
+    # The composite shrinks when e.g. a zone border goes from 14 px to 0 px; a
+    # previously-saved comp crop can then exceed the composite, which makes the
+    # ffmpeg crop filter fail and mpv silently drop the whole --vf graph (i.e.
+    # playback appears to "reset" to the uncropped source).  This mirrors the
+    # clamping done by MultiZoomScaleDialog._refresh_final_preview.
+    zone_sizes = [_zone_out_size(z) for z in enabled]
+    if direction == "vertical":
+        composite_w = max(s[0] for s in zone_sizes)
+        composite_h = sum(s[1] for s in zone_sizes)
+    else:
+        composite_w = sum(s[0] for s in zone_sizes)
+        composite_h = max(s[1] for s in zone_sizes)
+    if comp_crop_w > 0 and comp_crop_h > 0 and composite_w > 0 and composite_h > 0:
+        comp_crop_x = max(0, min(comp_crop_x, composite_w - 1))
+        comp_crop_y = max(0, min(comp_crop_y, composite_h - 1))
+        comp_crop_w = min(comp_crop_w, composite_w - comp_crop_x)
+        comp_crop_h = min(comp_crop_h, composite_h - comp_crop_y)
+
     def _composite_suffix():
         """Build filter suffix to apply after zone stacking (no leading comma)."""
         parts = []
@@ -1098,7 +1161,6 @@ def _build_vf_for_zones(zoom_config):
 
     # Multiple zones: use lavfi split + per-zone crop/scale + hstack/vstack.
     n = len(enabled)
-    zone_sizes = [_zone_out_size(z) for z in enabled]
 
     # hstack requires all inputs to share the same height; vstack requires the
     # same width.  Compute the maximum dimension and pad shorter zones so that
@@ -3282,19 +3344,31 @@ class MultiZoomScaleDialog(QDialog):
         tmp_path = os.path.join(self._temp_dir, "composite_preview.png")
         composite.save(tmp_path)
         self._comp_crop_canvas.load_frame(tmp_path)
-        # Restore crop region from spinboxes (if valid)
+        # Restore crop region from spinboxes (if valid).  This is display-only:
+        # guard with _updating so set_region's region_changed signal does not
+        # write the canvas region back into the spinboxes — otherwise a
+        # "no crop" (0) setting is silently converted into an explicit crop of
+        # the current composite size, which becomes stale/out-of-bounds when the
+        # composite later shrinks (e.g. border 14 px -> 0 px).
         cw = self._comp_w_sb.value()
         ch = self._comp_h_sb.value()
-        if cw > 0 and ch > 0:
-            self._comp_crop_canvas.set_region(
-                self._comp_x_sb.value(),
-                self._comp_y_sb.value(),
-                cw, ch,
-            )
-        else:
-            # Full composite — set to whole image
-            self._comp_crop_canvas.set_region(
-                0, 0, composite.width(), composite.height())
+        prev_updating = self._updating
+        self._updating = True
+        try:
+            if cw > 0 and ch > 0:
+                cx = max(0, min(self._comp_x_sb.value(), composite.width() - 1))
+                cy = max(0, min(self._comp_y_sb.value(), composite.height() - 1))
+                self._comp_crop_canvas.set_region(
+                    cx, cy,
+                    min(cw, composite.width() - cx),
+                    min(ch, composite.height() - cy),
+                )
+            else:
+                # Full composite — set to whole image
+                self._comp_crop_canvas.set_region(
+                    0, 0, composite.width(), composite.height())
+        finally:
+            self._updating = prev_updating
 
         # Update the stretch canvas with the composite as the source image
         sw = self._comp_sw_sb.value()
@@ -3850,7 +3924,7 @@ class MultiZoomScaleDialog(QDialog):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError) as exc:
             self._status.setText(f"Import failed: {exc}")
             return
         self._cfg = _migrate_zoom_config(raw)
@@ -5201,16 +5275,20 @@ class LiveController(QWidget):
         if not os.path.exists(ZOOM_CONFIG_FILE):
             return {}
         try:
-            with open(ZOOM_CONFIG_FILE, 'r') as f:
+            # Same encoding + migration as MultiZoomScaleDialog._import_state so
+            # startup load and editor import behave identically.
+            with open(ZOOM_CONFIG_FILE, 'r', encoding='utf-8') as f:
                 raw = json.load(f)
             return _migrate_zoom_config(raw)
-        except (json.JSONDecodeError, OSError):
+        except (ValueError, OSError) as exc:
+            # ValueError covers json.JSONDecodeError and UnicodeDecodeError.
+            print(f"Warning: could not load {ZOOM_CONFIG_FILE} ({exc}); zoom/scale disabled.")
             return {}
 
     def save_zoom_config(self):
         """Saves the zoom/scale configuration to zoom_config.json."""
         try:
-            with open(ZOOM_CONFIG_FILE, 'w') as f:
+            with open(ZOOM_CONFIG_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.zoom_config, f, indent=4)
         except OSError as e:
             self.status_label.setText(f"Warning: Could not save zoom config: {e}")
