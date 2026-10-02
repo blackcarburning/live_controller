@@ -646,10 +646,10 @@ class Xr12AudienceController(QObject):
         self._ch_states[idx].set_open_value(value)
         self._emit_runtime_status()
 
-    def request_open(self):
-        return self.request_open_channels(self._enabled_channel_indexes())
+    def request_open(self, force=False):
+        return self.request_open_channels(self._enabled_channel_indexes(), force=force)
 
-    def request_open_channels(self, channel_indexes):
+    def request_open_channels(self, channel_indexes, force=False):
         self._cancel_fades()
         initial_messages = []
         active_channels = []
@@ -667,6 +667,11 @@ class Xr12AudienceController(QObject):
             self._ch_fade_active[idx] = True
             active_channels.append(idx)
         if not active_channels:
+            if force:
+                return self._send_messages([
+                    message for idx in requested
+                    for message in self._ch_states[idx].apply_fader_value(self._ch_states[idx].open_value)
+                ])
             self._emit_runtime_status()
             return True
         if not self._ensure_port():
@@ -677,7 +682,7 @@ class Xr12AudienceController(QObject):
             return False
         return True
 
-    def request_close(self):
+    def request_close(self, force=False):
         self._cancel_fades()
         active_channels = []
         initial_messages = []
@@ -694,6 +699,11 @@ class Xr12AudienceController(QObject):
             self._ch_fade_active[idx] = True
             active_channels.append(idx)
         if not active_channels:
+            if force:
+                return self._send_messages([
+                    message for idx in self._enabled_channel_indexes()
+                    for message in self._ch_states[idx].apply_fader_value(self._ch_states[idx].closed_value)
+                ])
             self._emit_runtime_status()
             return True
         if not self._ensure_port():
@@ -5418,10 +5428,8 @@ class LiveController(QWidget):
             return
         target = self._lufs_agc.update(value, now)
         if target is not None:
-            if target == "high":
-                succeeded = self.xr12_controller.request_open()
-            else:
-                succeeded = self.xr12_controller.request_close()
+            request = self.xr12_controller.request_open if target == "high" else self.xr12_controller.request_close
+            succeeded = request(force=True) if not self.xr12_controller.available else request()
             if succeeded is False:
                 self._lufs_valid = False
                 self._lufs_fade_owned = False

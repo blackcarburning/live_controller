@@ -269,6 +269,30 @@ class LufsIntegrationTests(unittest.TestCase):
         self.assertEqual(midi._ch_states[0].current_value, 96)
         self.assertFalse(any(midi._ch_fade_active))
 
+    def test_unavailable_midi_forces_cached_target_resend(self):
+        for target, value, method in (("high", -40.0, "request_open"), ("low", -20.0, "request_close")):
+            with self.subTest(target=target):
+                app = make_app()
+                app.xr12_controller.available = False
+                app._lufs_worker.snapshot.return_value = (value, "Measuring", True)
+                app._update_lufs()
+                getattr(app.xr12_controller, method).assert_called_once_with(force=True)
+        midi = HeadlessMidi()
+        midi._ch_enabled = [True, False, False, False]
+        midi._cancel_fades = Mock()
+        midi._emit_runtime_status = Mock()
+        midi._send_messages = Mock(return_value=True)
+        midi._ch_states = [SimpleNamespace(
+            open_value=96, closed_value=0,
+            request_close=lambda: SimpleNamespace(initial_messages=[], start_value=0, target_value=0),
+            request_open=lambda: SimpleNamespace(initial_messages=[], start_value=96, target_value=96),
+            apply_fader_value=lambda value: [[0xB0, 0, value]],
+        ) for _ in range(4)]
+        midi.request_close(force=True)
+        midi._send_messages.assert_called_with([[0xB0, 0, 0]])
+        midi.request_open(force=True)
+        midi._send_messages.assert_called_with([[0xB0, 0, 96]])
+
     def test_all_playback_close_paths_use_guard(self):
         for name in ("start_countdown", "execute_playback", "play_test_track", "_start_calib_loop"):
             method = next(node for node in APP.body if isinstance(node, ast.FunctionDef) and node.name == name)
