@@ -60,6 +60,7 @@ def make_app(enabled=True):
     app._lufs_scan_result = None
     app._lufs_valid = False
     app._lufs_fade_owned = False
+    app._lufs_retry_at = 0.0
     app._lufs_agc = LufsAgc()
     app._lufs_worker = Mock()
     app._lufs_worker.snapshot.return_value = (-40.0, "Measuring", True)
@@ -95,6 +96,21 @@ class LufsIntegrationTests(unittest.TestCase):
         app._close_audience_for_playback()
         app.xr12_controller.request_open.assert_called_once_with()
         app.xr12_controller.request_close.assert_not_called()
+
+    def test_failed_midi_request_retries_without_consuming_transition(self):
+        app = make_app()
+        app.xr12_controller.request_open.side_effect = [False, True]
+        with unittest.mock.patch.object(time, "monotonic", return_value=10):
+            app._update_lufs()
+        self.assertFalse(app._lufs_controls_audience())
+        with unittest.mock.patch.object(time, "monotonic", return_value=11):
+            app._update_lufs()
+        self.assertEqual(app.xr12_controller.request_open.call_count, 1)
+        with unittest.mock.patch.object(time, "monotonic", return_value=12):
+            app._update_lufs()
+            app._update_lufs()
+        self.assertTrue(app._lufs_controls_audience())
+        self.assertEqual(app.xr12_controller.request_open.call_count, 2)
 
     def test_disabled_agc_preserves_playback_automation(self):
         app = make_app(enabled=False)

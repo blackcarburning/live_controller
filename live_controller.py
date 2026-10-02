@@ -4070,6 +4070,7 @@ class LiveController(QWidget):
         self._lufs_agc = LufsAgc()
         self._lufs_valid = False
         self._lufs_fade_owned = False
+        self._lufs_retry_at = 0.0
         self._lufs_device_scan = None
         self._lufs_scan_result = None
         self._manual_stop_requested = False
@@ -5322,6 +5323,7 @@ class LiveController(QWidget):
         if self._lufs_fade_owned and self.xr12_controller is not None:
             self.xr12_controller.cancel_fades()
         self._lufs_fade_owned = False
+        self._lufs_retry_at = 0.0
         self._lufs_agc.reset()
 
     def _restart_lufs_worker(self):
@@ -5400,14 +5402,23 @@ class LiveController(QWidget):
         self.xr12_lufs_meter.setStyleSheet(f"QProgressBar::chunk {{ background: {color}; }}")
         if not self.xr12_lufs_agc_checkbox.isChecked() or self.xr12_controller is None or not self.xr12_controller.enabled:
             return
-        target = self._lufs_agc.update(value, time.monotonic())
+        now = time.monotonic()
+        if now < self._lufs_retry_at:
+            return
+        target = self._lufs_agc.update(value, now)
         if target is not None:
-            self._lufs_valid = True
-            self._lufs_fade_owned = True
             if target == "high":
-                self.xr12_controller.request_open()
+                succeeded = self.xr12_controller.request_open()
             else:
-                self.xr12_controller.request_close()
+                succeeded = self.xr12_controller.request_close()
+            if succeeded is False:
+                self._lufs_valid = False
+                self._lufs_fade_owned = False
+                self._lufs_agc.reset()
+                self._lufs_retry_at = now + 2.0
+            else:
+                self._lufs_valid = True
+                self._lufs_fade_owned = True
 
     def _restore_audience_after_failed_start(self):
         if not self._has_active_playback():

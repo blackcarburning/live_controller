@@ -141,6 +141,7 @@ identical names on the same host API cannot be uniquely distinguished.
   **Low/Closed**. Defaults: -30 LUFS threshold, 2 LU hysteresis, 2 s minimum
   hold between transitions. Inside the deadband the last state is retained.
   The existing fade duration is reused; unchanged states do not restart fades.
+  Failed MIDI requests retry every 2 s; AGC takes authority only after success.
 - Silence (`-inf`) may open mics only after a full window. Unavailable/stale
   readings never issue gain commands and cancel any AGC-owned fade.
 - AGC is authoritative over playback/countdown/calibration automation only
