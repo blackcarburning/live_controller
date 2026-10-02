@@ -107,6 +107,58 @@ python live_fallback.py
 - Live Controller fades XR12 input channels 1-2 (linked audience mics) down on playback start and back to unity when idle.
 - Verified XR12 mute polarity for these controls: **CC 0 = muted**, **CC 127 = unmuted/open**.
 
+### Windows `live_controller.py` — LUFS audience auto gain
+
+The **XR12 Audience Faders** panel in the main Windows application now includes
+an input selector, **Refresh**, a numeric loudness display, and a -60 to 0 LUFS
+meter showing the threshold. Optional audio dependencies:
+
+```bash
+python -m pip install sounddevice numpy
+python -m pip install pyloudnorm
+```
+
+Windows `sounddevice` wheels include PortAudio. Select a room/program audio
+input (and grant Windows microphone permission); XR12 MIDI does not carry audio.
+Missing packages, missing inputs, unsupported formats, or disconnected devices
+show a status message instead of preventing application startup. **Refresh**
+rescans devices and retries capture. Selection is saved by host API/device name;
+identical names on the same host API cannot be uniquely distinguished.
+
+- **Meter** enables capture without moving faders. **Enable LUFS Auto Gain**
+  also enables capture. Both are off by default; capture stops when both are off.
+- Capture and analysis run outside the Qt/MIDI threads with a bounded rolling
+  **2.0-second** window; the display and decisions update at 5 Hz. No decision
+  is made until a complete, uninterrupted window is available.
+- With `pyloudnorm`, BS.1770 K-weighting/gating is applied to each two-second
+  window. This is a practical rolling reading, not the standardized three-second
+  short-term meter. Without it, the display/status identifies an **RMS estimate**:
+  `20*log10(RMS) - 0.691` for mono. Capture uses the input's first channel.
+  A full-scale mono sine estimates -3.70 LUFS. This calibrated dBFS approximation
+  lacks K-weighting/gating: learn and adjust the threshold using the chosen input.
+- Below **threshold - hysteresis/2**, selected mics fade to the existing
+  **High/Open** value; above **threshold + hysteresis/2**, they fade to
+  **Low/Closed**. Defaults: -30 LUFS threshold, 2 LU hysteresis, 2 s minimum
+  hold between transitions. Inside the deadband the last state is retained.
+  The existing fade duration is reused; unchanged states do not restart fades.
+- Silence (`-inf`) may open mics only after a full window. Unavailable/stale
+  readings never issue gain commands and cancel any AGC-owned fade.
+- AGC is authoritative over playback/countdown/calibration automation only
+  while a valid AGC state exists. Otherwise the existing playback/idle behavior
+  remains active. Manual fades and raw-fader tests remain usable until the next
+  AGC state transition. Disabling AGC cancels its fade at the current position;
+  it does not issue an open/close command.
+- All settings persist in `config.json`; old configurations keep AGC off.
+  AGC uses the selected XR12 channels and sends fader CCs, not mute commands.
+
+Hardware-free regression checks:
+
+```bash
+python -m py_compile live_controller.py xr12_lufs.py
+python -m unittest tests.test_xr12_lufs tests.test_xr12_lufs_integration tests.test_xr12_audience_helpers -v
+python -m unittest discover -s tests -v
+```
+
 ---
 
 ## show-sync — Load Testing
