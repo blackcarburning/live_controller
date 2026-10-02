@@ -30,10 +30,6 @@ import urllib.request
 import urllib.parse
 from collections import deque
 from dataclasses import dataclass, field
-from xr12_lufs import (
-    LUFS_DEFAULTS, normalize_lufs_config, LufsAgc,
-    AudioLoudnessWorker, list_input_devices,
-)
 
 # --- Third-Party Library Imports ---
 # This solution requires the 'keyboard' and 'psutil' libraries.
@@ -55,7 +51,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QP
                              QAbstractButton, QSlider, QAbstractItemView, QCheckBox,
                              QGridLayout, QRadioButton, QSpinBox, QDoubleSpinBox,
                              QColorDialog, QDialog, QScrollArea,
-                             QTabWidget, QStackedWidget, QMessageBox, QProgressBar)
+                             QTabWidget, QStackedWidget, QMessageBox)
 from PyQt6.QtCore import QThread, QObject, pyqtSignal, Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtProperty, QTimer, QRect
 from PyQt6.QtGui import QFont, QGuiApplication, QPainter, QColor, QBrush, QPen, QPixmap
 # --- Core Application Configuration ---
@@ -596,10 +592,6 @@ class Xr12AudienceController(QObject):
     def set_fade_duration(self, seconds):
         self.fade_duration_sec = max(0.0, float(seconds))
 
-    def cancel_fades(self):
-        """Stop an automatic fade at its current position."""
-        self._cancel_fades()
-
     def set_open_value(self, value):
         for idx in range(XR12_NUM_CHANNELS):
             self.set_ch_open_value(idx, value)
@@ -646,10 +638,10 @@ class Xr12AudienceController(QObject):
         self._ch_states[idx].set_open_value(value)
         self._emit_runtime_status()
 
-    def request_open(self, force=False):
-        return self.request_open_channels(self._enabled_channel_indexes(), force=force)
+    def request_open(self):
+        return self.request_open_channels(self._enabled_channel_indexes())
 
-    def request_open_channels(self, channel_indexes, force=False):
+    def request_open_channels(self, channel_indexes):
         self._cancel_fades()
         initial_messages = []
         active_channels = []
@@ -667,11 +659,6 @@ class Xr12AudienceController(QObject):
             self._ch_fade_active[idx] = True
             active_channels.append(idx)
         if not active_channels:
-            if force:
-                return self._send_messages([
-                    message for idx in requested
-                    for message in self._ch_states[idx].apply_fader_value(self._ch_states[idx].open_value)
-                ])
             self._emit_runtime_status()
             return True
         if not self._ensure_port():
@@ -682,7 +669,7 @@ class Xr12AudienceController(QObject):
             return False
         return True
 
-    def request_close(self, force=False):
+    def request_close(self):
         self._cancel_fades()
         active_channels = []
         initial_messages = []
@@ -699,11 +686,6 @@ class Xr12AudienceController(QObject):
             self._ch_fade_active[idx] = True
             active_channels.append(idx)
         if not active_channels:
-            if force:
-                return self._send_messages([
-                    message for idx in self._enabled_channel_indexes()
-                    for message in self._ch_states[idx].apply_fader_value(self._ch_states[idx].closed_value)
-                ])
             self._emit_runtime_status()
             return True
         if not self._ensure_port():
@@ -762,7 +744,8 @@ class Xr12AudienceController(QObject):
             for idx in range(XR12_NUM_CHANNELS)
             if self._ch_fade_active[idx]
         ):
-            return self._on_fade_step()
+            self._finish_due_channels(force_complete=True)
+            return True
         self.fade_timer.start()
         return True
 
@@ -771,7 +754,6 @@ class Xr12AudienceController(QObject):
         now = time.monotonic()
         messages = []
         completed = []
-        previous_values = [state.current_value for state in self._ch_states]
         for idx in range(XR12_NUM_CHANNELS):
             if not self._ch_fade_active[idx]:
                 continue
@@ -785,14 +767,9 @@ class Xr12AudienceController(QObject):
             messages.extend(self._ch_states[idx].apply_fader_value(value))
             if progress >= 1.0:
                 completed.append(idx)
-        if self._send_messages(messages) is False:
-            for state, value in zip(self._ch_states, previous_values):
-                state.current_value = value
-            self._cancel_fades()
-            return False
+        self._send_messages(messages)
         if generation == self._fade_generation and completed:
             self._finish_due_channels(completed=completed)
-        return True
 
     def _finish_due_channels(self, completed=None, force_complete=False):
         if completed is None:
@@ -905,19 +882,17 @@ class Xr12AudienceController(QObject):
 
     def _send_messages(self, messages):
         if not messages:
-            return True
+            return
         try:
             if not self._ensure_port():
-                return False
+                return
             for message in messages:
                 self.midiout.send_message(message)
-            return True
         except Exception as exc:
             self.available = False
             self.last_error = str(exc)
             self._close_port()
             self._emit_status(f"XR12 Audience: send failed on MIDI port 3 ({exc})")
-            return False
 
     def _close_port(self):
         if self.midiout is not None:
@@ -4083,13 +4058,6 @@ class LiveController(QWidget):
         self.test_port_bpm_inputs = {}
         self.test_port_buttons = {}
         self.xr12_controller = None
-        self._lufs_worker = None
-        self._lufs_agc = LufsAgc()
-        self._lufs_valid = False
-        self._lufs_fade_owned = False
-        self._lufs_retry_at = 0.0
-        self._lufs_device_scan = None
-        self._lufs_scan_result = None
         self._manual_stop_requested = False
         self._playback_error_seen = False
         self._app_is_closing = False
@@ -4157,12 +4125,6 @@ class LiveController(QWidget):
             parent=self,
         )
         self.apply_config_to_ui()
-        self._lufs_timer = QTimer(self)
-        self._lufs_timer.setInterval(200)
-        self._lufs_timer.timeout.connect(self._update_lufs)
-        self._lufs_timer.start()
-        self._refresh_lufs_devices()
-        self._restart_lufs_worker()
         # Enforce a fixed sync-show session ID and disable editing in the UI so
         # the application always uses the hard-coded session provided by ops.
         try:
@@ -4600,64 +4562,6 @@ class LiveController(QWidget):
         self.xr12_advanced_toggle_button.toggled.connect(self.xr12_advanced_widget.setVisible)
         xr12_layout.addWidget(self.xr12_advanced_widget, 5, 0, 1, 6)
         xr12_layout.setColumnStretch(2, 1)
-        agc_help = (
-            "After a full two-second window, quiet sound raises selected audience mics "
-            "to High/Open; louder sound lowers them to Low/Closed. "
-            "Manual fades last until the next confirmed AGC state transition."
-        )
-        lufs_controls = QWidget()
-        lufs_layout = QGridLayout(lufs_controls)
-        lufs_layout.setContentsMargins(0, 4, 0, 0)
-        self.xr12_lufs_agc_checkbox = QCheckBox("Enable LUFS Auto Gain")
-        self.xr12_lufs_agc_checkbox.setToolTip(agc_help)
-        self.xr12_lufs_agc_checkbox.toggled.connect(self._on_lufs_capture_changed)
-        lufs_layout.addWidget(self.xr12_lufs_agc_checkbox, 0, 0, 1, 2)
-        self.xr12_lufs_device_combo = QComboBox()
-        self.xr12_lufs_device_combo.setMinimumContentsLength(16)
-        self.xr12_lufs_device_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.xr12_lufs_device_combo.setToolTip("Audio input used for the rolling two-second loudness measurement.")
-        self.xr12_lufs_device_combo.addItem("Default audio input", "")
-        self.xr12_lufs_device_combo.currentIndexChanged.connect(self._on_lufs_capture_changed)
-        lufs_layout.addWidget(self.xr12_lufs_device_combo, 0, 2, 1, 3)
-        self.xr12_lufs_refresh_button = QPushButton("Refresh")
-        self.xr12_lufs_refresh_button.clicked.connect(self._refresh_lufs_devices)
-        lufs_layout.addWidget(self.xr12_lufs_refresh_button, 0, 5)
-        self.xr12_lufs_meter_checkbox = QCheckBox("Meter")
-        self.xr12_lufs_meter_checkbox.setToolTip("Capture audio for metering even when Auto Gain is off.")
-        self.xr12_lufs_meter_checkbox.toggled.connect(self._on_lufs_capture_changed)
-        lufs_layout.addWidget(self.xr12_lufs_meter_checkbox, 1, 0)
-        self.xr12_lufs_readout = QLabel("—")
-        self.xr12_lufs_readout.setStyleSheet("font-size: 18px; font-weight: bold;")
-        lufs_layout.addWidget(self.xr12_lufs_readout, 1, 1)
-        self.xr12_lufs_meter = QProgressBar()
-        self.xr12_lufs_meter.setRange(0, 600)
-        self.xr12_lufs_meter.setValue(0)
-        self.xr12_lufs_meter.setFormat("-60 … 0 LUFS")
-        lufs_layout.addWidget(self.xr12_lufs_meter, 1, 2, 1, 4)
-        self.xr12_lufs_settings = {}
-        for column, (key, label, minimum, maximum, suffix) in enumerate((
-            ("xr12_lufs_threshold", "Threshold:", -60.0, 0.0, " LUFS"),
-            ("xr12_lufs_hysteresis", "Hysteresis:", 0.0, 20.0, " LU"),
-            ("xr12_lufs_hold_seconds", "Hold:", 0.0, 60.0, " s"),
-        )):
-            spin = QDoubleSpinBox()
-            spin.setRange(minimum, maximum)
-            spin.setDecimals(1)
-            spin.setSingleStep(0.5)
-            spin.setSuffix(suffix)
-            spin.setValue(LUFS_DEFAULTS[key])
-            spin.setToolTip(agc_help if column == 0 else (
-                "Switch outside threshold ± half the hysteresis; hold is the minimum time between transitions."
-            ))
-            spin.valueChanged.connect(self._on_lufs_settings_changed)
-            self.xr12_lufs_settings[key] = spin
-            lufs_layout.addWidget(QLabel(label), 2, column * 2)
-            lufs_layout.addWidget(spin, 2, column * 2 + 1)
-        self.xr12_lufs_status = QLabel("LUFS: disabled")
-        self.xr12_lufs_status.setWordWrap(True)
-        self.xr12_lufs_status.setStyleSheet("font-size: 10px; color: #aaa;")
-        lufs_layout.addWidget(self.xr12_lufs_status, 3, 0, 1, 6)
-        xr12_layout.addWidget(lufs_controls, 6, 0, 1, 6)
         xr12_group.setLayout(xr12_layout)
 
         # --- Overlay Colours Group ---
@@ -5151,7 +5055,6 @@ class LiveController(QWidget):
             "xr12_audience_open_value": DEFAULT_XR12_AUDIENCE_OPEN_VALUE,
             "xr12_audience_closed_value": DEFAULT_XR12_AUDIENCE_CLOSED_VALUE,
         }
-        defaults.update(LUFS_DEFAULTS)
         for i in range(XR12_NUM_CHANNELS):
             ch_num = i + 1
             defaults.setdefault(f"xr12_audience_ch{ch_num}_enabled", DEFAULT_XR12_CH_ENABLED[i])
@@ -5191,7 +5094,6 @@ class LiveController(QWidget):
                     defaults.setdefault(enabled_key, DEFAULT_XR12_CH_ENABLED[i])
         except (json.JSONDecodeError, FileNotFoundError):
             pass
-        defaults.update(normalize_lufs_config(defaults))
         return defaults
     
     def save_config(self):
@@ -5208,11 +5110,6 @@ class LiveController(QWidget):
         self.config['xr12_audience_fade_duration_sec'] = self.xr12_fade_duration_spinbox.value()
         self.config['xr12_audience_open_value'] = self.xr12_unity_spinbox.value()
         self.config['xr12_audience_closed_value'] = self.xr12_closed_value_spinbox.value()
-        self.config['xr12_lufs_agc_enabled'] = self.xr12_lufs_agc_checkbox.isChecked()
-        self.config['xr12_lufs_meter_enabled'] = self.xr12_lufs_meter_checkbox.isChecked()
-        self.config['xr12_lufs_input_device'] = self.xr12_lufs_device_combo.currentData() or ""
-        for key, spin in self.xr12_lufs_settings.items():
-            self.config[key] = spin.value()
         for i in range(XR12_NUM_CHANNELS):
             ch_num = i + 1
             self.config[f"xr12_audience_ch{ch_num}_enabled"] = self.xr12_ch_enabled_cbs[i].isChecked()
@@ -5262,25 +5159,6 @@ class LiveController(QWidget):
                 self.xr12_ch_enabled_cbs[i].blockSignals(False)
                 if self.xr12_controller is not None:
                     self.xr12_controller.set_ch_enabled(i, ch_en)
-            lufs_config = normalize_lufs_config(self.config)
-            for widget, key in (
-                (self.xr12_lufs_agc_checkbox, "xr12_lufs_agc_enabled"),
-                (self.xr12_lufs_meter_checkbox, "xr12_lufs_meter_enabled"),
-            ):
-                widget.blockSignals(True)
-                widget.setChecked(lufs_config[key])
-                widget.blockSignals(False)
-            for key, spin in self.xr12_lufs_settings.items():
-                spin.blockSignals(True)
-                spin.setValue(lufs_config[key])
-                spin.blockSignals(False)
-            device = lufs_config["xr12_lufs_input_device"]
-            self.xr12_lufs_device_combo.blockSignals(True)
-            if device:
-                self.xr12_lufs_device_combo.addItem(f"Saved input: {device}", device)
-                self.xr12_lufs_device_combo.setCurrentIndex(1)
-            self.xr12_lufs_device_combo.blockSignals(False)
-            self._configure_lufs_agc()
             self._update_zoom_status_label()
             self.check_display_setting()
         finally:
@@ -5310,134 +5188,9 @@ class LiveController(QWidget):
         )
 
     def _open_audience_if_idle(self):
-        if self.xr12_controller is None or self._app_is_closing or self._has_active_playback() or self._lufs_controls_audience():
+        if self.xr12_controller is None or self._app_is_closing or self._has_active_playback():
             return
-        self._lufs_fade_owned = False
         self.xr12_controller.request_open()
-
-    def _lufs_controls_audience(self):
-        if not self.xr12_lufs_agc_checkbox.isChecked() or self._lufs_worker is None:
-            return False
-        value, _, ready = self._lufs_worker.snapshot()
-        return ready and value is not None and value == value and value != float("inf") and self._lufs_valid and self.xr12_controller.available
-
-    def _close_audience_for_playback(self):
-        if self.xr12_controller is not None and not self._lufs_controls_audience():
-            self._lufs_fade_owned = False
-            self.xr12_controller.request_close()
-
-    def _configure_lufs_agc(self):
-        self._lufs_agc = LufsAgc(
-            threshold=self.xr12_lufs_settings["xr12_lufs_threshold"].value(),
-            hysteresis=self.xr12_lufs_settings["xr12_lufs_hysteresis"].value(),
-            hold_seconds=self.xr12_lufs_settings["xr12_lufs_hold_seconds"].value(),
-        )
-        threshold = self.xr12_lufs_settings["xr12_lufs_threshold"].value()
-        self.xr12_lufs_meter.setFormat(f"-60 … 0 LUFS | threshold {threshold:.1f}")
-
-    def _stop_lufs_control(self):
-        self._lufs_valid = False
-        if self._lufs_fade_owned and self.xr12_controller is not None:
-            self.xr12_controller.cancel_fades()
-        self._lufs_fade_owned = False
-        self._lufs_retry_at = 0.0
-        self._lufs_agc.reset()
-
-    def _restart_lufs_worker(self):
-        self._stop_lufs_control()
-        if self._lufs_worker is not None:
-            self._lufs_worker.stop()
-            self._lufs_worker = None
-        self.xr12_lufs_readout.setText("—")
-        self.xr12_lufs_meter.setValue(0)
-        if not self._app_is_closing and (
-            self.xr12_lufs_meter_checkbox.isChecked() or self.xr12_lufs_agc_checkbox.isChecked()
-        ):
-            self._lufs_worker = AudioLoudnessWorker(self.xr12_lufs_device_combo.currentData() or "")
-            self._lufs_worker.start()
-        else:
-            self.xr12_lufs_status.setText("LUFS: disabled")
-
-    def _on_lufs_capture_changed(self, *args):
-        if getattr(self, "_applying_config", False):
-            return
-        self._restart_lufs_worker()
-        self.save_config()
-
-    def _on_lufs_settings_changed(self, *args):
-        if getattr(self, "_applying_config", False):
-            return
-        self._stop_lufs_control()
-        self._configure_lufs_agc()
-        self.save_config()
-
-    def _refresh_lufs_devices(self, *args):
-        if self._lufs_device_scan is not None and self._lufs_device_scan.is_alive():
-            return
-        self.xr12_lufs_refresh_button.setEnabled(False)
-        def scan():
-            self._lufs_scan_result = list_input_devices()
-        self._lufs_device_scan = threading.Thread(target=scan, daemon=True)
-        self._lufs_device_scan.start()
-
-    def _update_lufs(self):
-        if self._app_is_closing:
-            return
-        if self._lufs_scan_result is not None:
-            devices, status = self._lufs_scan_result
-            self._lufs_scan_result = None
-            selected = self.xr12_lufs_device_combo.currentData() or ""
-            self.xr12_lufs_device_combo.blockSignals(True)
-            self.xr12_lufs_device_combo.clear()
-            self.xr12_lufs_device_combo.addItem("Default audio input", "")
-            for identifier, name in devices:
-                self.xr12_lufs_device_combo.addItem(name, identifier)
-            index = self.xr12_lufs_device_combo.findData(selected)
-            if index < 0:
-                self.xr12_lufs_device_combo.addItem(f"Unavailable: {selected}", selected)
-                index = self.xr12_lufs_device_combo.count() - 1
-            self.xr12_lufs_device_combo.setCurrentIndex(index)
-            self.xr12_lufs_device_combo.blockSignals(False)
-            self.xr12_lufs_refresh_button.setEnabled(True)
-            self._restart_lufs_worker()
-            if self._lufs_worker is None:
-                self.xr12_lufs_status.setText(status)
-        if self._lufs_worker is None:
-            return
-        value, status, ready = self._lufs_worker.snapshot()
-        self.xr12_lufs_status.setText(status)
-        if not ready or value is None or value != value or value == float("inf"):
-            if self._lufs_valid:
-                self._stop_lufs_control()
-            self.xr12_lufs_readout.setText("—")
-            self.xr12_lufs_meter.setValue(0)
-            return
-        self.xr12_lufs_readout.setText(f"{value:.1f} LUFS")
-        self.xr12_lufs_meter.setValue(int(max(0, min(600, (value + 60) * 10))))
-        threshold = self.xr12_lufs_settings["xr12_lufs_threshold"].value()
-        color = "#2ecc71" if value < threshold else "#e67e22"
-        self.xr12_lufs_meter.setStyleSheet(f"QProgressBar::chunk {{ background: {color}; }}")
-        if not self.xr12_lufs_agc_checkbox.isChecked() or self.xr12_controller is None or not self.xr12_controller.enabled:
-            return
-        now = time.monotonic()
-        if self._lufs_fade_owned and not self.xr12_controller.available:
-            self._stop_lufs_control()
-            self._lufs_retry_at = now + 2.0
-            return
-        if now < self._lufs_retry_at:
-            return
-        target = self._lufs_agc.update(value, now)
-        if target is not None:
-            request = self.xr12_controller.request_open if target == "high" else self.xr12_controller.request_close
-            succeeded = request(force=True) if not self.xr12_controller.available else request()
-            if succeeded is False:
-                self._lufs_valid = False
-                self._lufs_fade_owned = False
-                self._lufs_agc.reset()
-                self._lufs_retry_at = now + 2.0
-            else:
-                self._lufs_valid = True
-                self._lufs_fade_owned = True
 
     def _restore_audience_after_failed_start(self):
         if not self._has_active_playback():
@@ -5447,10 +5200,9 @@ class LiveController(QWidget):
         if self.xr12_controller is None:
             return
         self.xr12_controller.set_enabled(checked)
-        self._stop_lufs_control()
         self.save_config()
         if checked and not self._has_active_playback() and not self._app_is_closing:
-            self._open_audience_if_idle()
+            self.xr12_controller.request_open()
         elif not checked:
             pass
 
@@ -5469,9 +5221,7 @@ class LiveController(QWidget):
         if self.xr12_controller is None:
             return
         self.xr12_controller.set_ch_enabled(idx, checked)
-        if self._lufs_controls_audience():
-            self._stop_lufs_control()
-        elif checked and not self._has_active_playback() and not self._app_is_closing:
+        if checked and not self._has_active_playback() and not self._app_is_closing:
             self.xr12_controller.request_open_channels((idx,))
 
     def _on_xr12_ch_open_value_changed(self, idx: int, value: int):
@@ -5498,14 +5248,12 @@ class LiveController(QWidget):
         if self.xr12_controller is None:
             return
         value = self.xr12_raw_fader_spinbox.value()
-        self._lufs_fade_owned = False
         self.xr12_controller.send_raw_fader(value)
 
     def _on_xr12_preset_fader(self, value):
         if self.xr12_controller is None:
             return
         self.xr12_raw_fader_spinbox.setValue(value)
-        self._lufs_fade_owned = False
         self.xr12_controller.send_raw_fader(value)
 
     def _on_xr12_send_mute_raw(self, value):
@@ -5516,12 +5264,10 @@ class LiveController(QWidget):
     def open_xr12_audience(self):
         """Manual test open: bypasses idle-state guard for soundcheck use."""
         if self.xr12_controller is not None and not self._app_is_closing:
-            self._lufs_fade_owned = False
             self.xr12_controller.request_open()
 
     def mute_xr12_audience(self):
         if self.xr12_controller is not None:
-            self._lufs_fade_owned = False
             self.xr12_controller.request_close()
 
     def load_zoom_config(self):
@@ -6566,7 +6312,8 @@ class LiveController(QWidget):
 
     def start_countdown(self, row_index):
         """Starts the visual countdown timer for the first track."""
-        self._close_audience_for_playback()
+        if self.xr12_controller is not None:
+            self.xr12_controller.request_close()
         self.send_led_command("3")  # LED 3: track 1 count-in started
         self.countdown_seconds = int(self.count_in_combo.currentText())
         self.countdown_label.setText(str(self.countdown_seconds))
@@ -6617,7 +6364,8 @@ class LiveController(QWidget):
             self.status_label.setText(f"ERROR: Invalid settings or track data. {e}")
             self._restore_audience_after_failed_start()
             return
-        self._close_audience_for_playback()
+        if self.xr12_controller is not None:
+            self.xr12_controller.request_close()
         
         self.clear_highlight()
         if row_index is not None:
@@ -7129,7 +6877,8 @@ class LiveController(QWidget):
             self.send_led_command("1")
             self.show_no_midi_message()
             return
-        self._close_audience_for_playback()
+        if self.xr12_controller is not None:
+            self.xr12_controller.request_close()
         self.show_preparing_message(os.path.basename(self.test_track_path))
         
         try:
@@ -7173,7 +6922,8 @@ class LiveController(QWidget):
             self.status_label.setText("Status: Invalid BPM for calibration loop.")
             return
 
-        self._close_audience_for_playback()
+        if self.xr12_controller is not None:
+            self.xr12_controller.request_close()
         self.calib_loop_active = True
         self.calib_loop_button.setText("Stop Calib Loop")
         self.calib_loop_button.setStyleSheet("background-color: #e74c3c; color: white; font-size: 11px; padding: 3px 6px;")
@@ -7284,8 +7034,6 @@ class LiveController(QWidget):
         """Handles the application close event."""
         # Save the current session and config.
         self._app_is_closing = True
-        self._lufs_timer.stop()
-        self._restart_lufs_worker()
         self.save_session()
         self.save_config()
         
