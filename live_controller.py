@@ -752,8 +752,7 @@ class Xr12AudienceController(QObject):
             for idx in range(XR12_NUM_CHANNELS)
             if self._ch_fade_active[idx]
         ):
-            self._finish_due_channels(force_complete=True)
-            return True
+            return self._on_fade_step()
         self.fade_timer.start()
         return True
 
@@ -762,6 +761,7 @@ class Xr12AudienceController(QObject):
         now = time.monotonic()
         messages = []
         completed = []
+        previous_values = [state.current_value for state in self._ch_states]
         for idx in range(XR12_NUM_CHANNELS):
             if not self._ch_fade_active[idx]:
                 continue
@@ -775,9 +775,14 @@ class Xr12AudienceController(QObject):
             messages.extend(self._ch_states[idx].apply_fader_value(value))
             if progress >= 1.0:
                 completed.append(idx)
-        self._send_messages(messages)
+        if self._send_messages(messages) is False:
+            for state, value in zip(self._ch_states, previous_values):
+                state.current_value = value
+            self._cancel_fades()
+            return False
         if generation == self._fade_generation and completed:
             self._finish_due_channels(completed=completed)
+        return True
 
     def _finish_due_channels(self, completed=None, force_complete=False):
         if completed is None:
@@ -890,17 +895,19 @@ class Xr12AudienceController(QObject):
 
     def _send_messages(self, messages):
         if not messages:
-            return
+            return True
         try:
             if not self._ensure_port():
-                return
+                return False
             for message in messages:
                 self.midiout.send_message(message)
+            return True
         except Exception as exc:
             self.available = False
             self.last_error = str(exc)
             self._close_port()
             self._emit_status(f"XR12 Audience: send failed on MIDI port 3 ({exc})")
+            return False
 
     def _close_port(self):
         if self.midiout is not None:
@@ -5302,7 +5309,7 @@ class LiveController(QWidget):
         if not self.xr12_lufs_agc_checkbox.isChecked() or self._lufs_worker is None:
             return False
         value, _, ready = self._lufs_worker.snapshot()
-        return ready and value is not None and value == value and value != float("inf") and self._lufs_valid
+        return ready and value is not None and value == value and value != float("inf") and self._lufs_valid and self.xr12_controller.available
 
     def _close_audience_for_playback(self):
         if self.xr12_controller is not None and not self._lufs_controls_audience():
@@ -5403,6 +5410,10 @@ class LiveController(QWidget):
         if not self.xr12_lufs_agc_checkbox.isChecked() or self.xr12_controller is None or not self.xr12_controller.enabled:
             return
         now = time.monotonic()
+        if self._lufs_fade_owned and not self.xr12_controller.available:
+            self._stop_lufs_control()
+            self._lufs_retry_at = now + 2.0
+            return
         if now < self._lufs_retry_at:
             return
         target = self._lufs_agc.update(value, now)

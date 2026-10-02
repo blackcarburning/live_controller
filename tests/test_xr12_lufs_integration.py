@@ -31,6 +31,7 @@ NAMESPACE = {
     "DEFAULT_XR12_AUDIENCE_CLOSED_VALUE": 0, "XR12_NUM_CHANNELS": 4,
     "DEFAULT_XR12_CH_ENABLED": [True, True, False, False],
     "clamp_midi_value": lambda value: max(0, min(127, int(round(value)))),
+    "interpolate_midi_value": lambda start, target, progress: round(start + (target - start) * progress),
 }
 CLASS = ast.ClassDef(
     name="HeadlessApp", bases=[], keywords=[],
@@ -43,7 +44,9 @@ MIDI = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and nod
 MIDI_CLASS = ast.ClassDef(
     name="HeadlessMidi", bases=[], keywords=[],
     body=[node for node in MIDI.body if isinstance(node, ast.FunctionDef)
-          and node.name in ("request_open", "request_open_channels", "request_close", "_enabled_channel_indexes")],
+          and node.name in ("request_open", "request_open_channels", "request_close", "_enabled_channel_indexes",
+                            "_on_fade_step", "_start_or_finish_fades", "_finish_due_channels", "_cancel_fades",
+                            "_send_messages")],
     decorator_list=[],
 )
 exec(compile(ast.fix_missing_locations(ast.Module(body=[MIDI_CLASS], type_ignores=[])), str(SOURCE), "exec"), NAMESPACE)
@@ -112,6 +115,23 @@ class LufsIntegrationTests(unittest.TestCase):
         self.assertTrue(app._lufs_controls_audience())
         self.assertEqual(app.xr12_controller.request_open.call_count, 2)
 
+    def test_failed_async_fade_invalidates_authority_and_retries(self):
+        app = make_app()
+        app.xr12_controller.available = True
+        with unittest.mock.patch.object(time, "monotonic", return_value=10):
+            app._update_lufs()
+        app.xr12_controller.available = False
+        self.assertFalse(app._lufs_controls_audience())
+        with unittest.mock.patch.object(time, "monotonic", return_value=11):
+            app._update_lufs()
+        app.xr12_controller.cancel_fades.assert_called_once_with()
+        app.xr12_controller.available = True
+        with unittest.mock.patch.object(time, "monotonic", return_value=13):
+            app._update_lufs()
+            app._update_lufs()
+        self.assertTrue(app._lufs_controls_audience())
+        self.assertEqual(app.xr12_controller.request_open.call_count, 2)
+
     def test_disabled_agc_preserves_playback_automation(self):
         app = make_app(enabled=False)
         app._update_lufs()
@@ -172,6 +192,7 @@ class LufsIntegrationTests(unittest.TestCase):
     def test_agc_uses_actual_fade_targets_and_only_selected_channels(self):
         midi = HeadlessMidi()
         midi.enabled = True
+        midi.available = True
         midi._ch_enabled = [True, False, True, False]
         midi.fade_duration_sec = 3.5
         for field in ("start", "target", "started_at", "total_sec"):
@@ -215,6 +236,38 @@ class LufsIntegrationTests(unittest.TestCase):
         app.xr12_controller.cancel_fades.assert_called_once_with()
         app.xr12_controller.request_open.assert_called_once_with()
         app.xr12_controller.request_close.assert_not_called()
+
+    def test_real_fade_failure_preserves_last_position_and_zero_duration_sends(self):
+        midi = HeadlessMidi()
+        midi._ch_fade_active = [True, False, False, False]
+        midi._ch_fade_started_at = [0.0] * 4
+        midi._ch_fade_total_sec = [0.0] * 4
+        midi._ch_fade_start = [50] * 4
+        midi._ch_fade_target = [96] * 4
+        midi._ch_mute_after = [False] * 4
+        midi._fade_generation = 0
+        midi.fade_timer = Mock()
+        midi._emit_runtime_status = Mock()
+        midi._ch_states = [SimpleNamespace(current_value=50) for _ in range(4)]
+        for index, state in enumerate(midi._ch_states):
+            def apply(value, state=state, index=index):
+                state.current_value = value
+                return [[0xB0, index, value]]
+            state.apply_fader_value = apply
+        midi._ensure_port = Mock(return_value=True)
+        midi._close_port = Mock()
+        midi._emit_status = Mock()
+        midi.midiout = Mock()
+        midi.midiout.send_message.side_effect = RuntimeError("Disconnected")
+        self.assertFalse(midi._start_or_finish_fades())
+        self.assertEqual(midi._ch_states[0].current_value, 50)
+        self.assertFalse(any(midi._ch_fade_active))
+        midi.midiout.send_message.side_effect = None
+        midi._ch_fade_active[0] = True
+        self.assertTrue(midi._start_or_finish_fades())
+        midi.midiout.send_message.assert_called_with([0xB0, 0, 96])
+        self.assertEqual(midi._ch_states[0].current_value, 96)
+        self.assertFalse(any(midi._ch_fade_active))
 
     def test_all_playback_close_paths_use_guard(self):
         for name in ("start_countdown", "execute_playback", "play_test_track", "_start_calib_loop"):
