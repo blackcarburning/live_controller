@@ -5,9 +5,11 @@ import hmac
 import html
 import json
 import logging
+import math
 import mimetypes
 import os
 import pathlib
+import random
 import re
 import secrets
 import socket
@@ -17,10 +19,13 @@ import time
 import traceback
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from io import StringIO
+from io import BytesIO, StringIO
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+import numpy as np
 import paramiko
+from scipy import signal
+from scipy.io import wavfile
 
 
 ROOT = pathlib.Path(__file__).resolve().parent
@@ -107,6 +112,16 @@ TEST_COMMAND = "lssystem -delim :"
 MYGRAIN_WAVS_ROUTE = "/mygrain-wavs"
 MYGRAIN_WAVS_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-loops")
 MYGRAIN_WAVS_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+MYGRAIN_BASTARDLOOP_REMOTE = "dropbox:SAMPLEDROP"
+MYGRAIN_BASTARDLOOP_STEPS = 16
+MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE = 44100
+MYGRAIN_BASTARDLOOP_LIST_CACHE_SECONDS = 180
+MYGRAIN_BASTARDLOOP_MIN_BPM = 40
+MYGRAIN_BASTARDLOOP_MAX_BPM = 300
+MYGRAIN_BASTARDLOOP_SAMPLE_CACHE = {
+    "expires_at": 0.0,
+    "files": [],
+}
 CUSTOMER_CHAT_STORE_PATH = ROOT / "data" / "customer_chat.json"
 CUSTOMER_CHAT_LOCK = threading.RLock()
 CUSTOMER_CHAT_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -200,6 +215,264 @@ def list_mygrain_wav_files():
             "url": f"{MYGRAIN_WAVS_ROUTE}/{quote(path.name)}",
         })
     return files
+
+
+def list_bastardloop_source_files(force_refresh=False):
+    now = time.time()
+    cached_files = MYGRAIN_BASTARDLOOP_SAMPLE_CACHE.get("files") or []
+    if (
+        not force_refresh
+        and cached_files
+        and MYGRAIN_BASTARDLOOP_SAMPLE_CACHE.get("expires_at", 0) > now
+    ):
+        return list(cached_files)
+
+    result = subprocess.run(
+        [
+            "rclone",
+            "lsf",
+            MYGRAIN_BASTARDLOOP_REMOTE,
+            "--files-only",
+            "--recursive",
+            "--include",
+            "*.wav",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    files = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not files:
+        raise RuntimeError("No WAV files were found in Dropbox SAMPLEDROP.")
+
+    MYGRAIN_BASTARDLOOP_SAMPLE_CACHE["files"] = files
+    MYGRAIN_BASTARDLOOP_SAMPLE_CACHE["expires_at"] = now + MYGRAIN_BASTARDLOOP_LIST_CACHE_SECONDS
+    return list(files)
+
+
+def fetch_bastardloop_sample_bytes(relative_path):
+    safe_relative_path = str(relative_path or "").replace("\\", "/").lstrip("/")
+    if not safe_relative_path:
+        raise ValueError("Missing SAMPLEDROP file path.")
+
+    remote_path = f"{MYGRAIN_BASTARDLOOP_REMOTE.rstrip('/')}/{safe_relative_path}"
+    result = subprocess.run(
+        ["rclone", "cat", remote_path],
+        check=True,
+        capture_output=True,
+    )
+    if not result.stdout:
+        raise RuntimeError(f"Downloaded sample was empty: {safe_relative_path}")
+    return result.stdout
+
+
+def clamp_bastardloop_bpm(value, fallback=120):
+    try:
+        bpm = float(value)
+    except (TypeError, ValueError):
+        bpm = float(fallback)
+    bpm = max(MYGRAIN_BASTARDLOOP_MIN_BPM, min(MYGRAIN_BASTARDLOOP_MAX_BPM, bpm))
+    return int(round(bpm))
+
+
+def audio_samples_to_float32(data):
+    samples = np.asarray(data)
+    if samples.ndim == 1:
+        samples = samples[:, np.newaxis]
+    elif samples.ndim > 2:
+        samples = samples.reshape(samples.shape[0], -1)
+
+    if np.issubdtype(samples.dtype, np.floating):
+        return np.clip(samples.astype(np.float32), -1.0, 1.0)
+
+    if not np.issubdtype(samples.dtype, np.integer):
+        raise ValueError(f"Unsupported WAV sample type: {samples.dtype}")
+
+    if samples.dtype == np.uint8:
+        return ((samples.astype(np.float32) - 128.0) / 128.0).clip(-1.0, 1.0)
+
+    info = np.iinfo(samples.dtype)
+    if samples.dtype == np.int32:
+        max_abs = int(np.max(np.abs(samples.astype(np.int64)))) if samples.size else 0
+        scale = float(0x800000 if max_abs <= 0x7FFFFF else max(abs(info.min), info.max))
+    else:
+        scale = float(max(abs(info.min), info.max))
+    return np.clip(samples.astype(np.float32) / scale, -1.0, 1.0)
+
+
+def resample_audio_channels(samples, source_rate, target_rate):
+    if source_rate == target_rate or samples.shape[0] == 0:
+        return samples.astype(np.float32, copy=False)
+
+    gcd = math.gcd(int(source_rate), int(target_rate))
+    up = int(target_rate // gcd)
+    down = int(source_rate // gcd)
+    return signal.resample_poly(samples, up, down, axis=0).astype(np.float32, copy=False)
+
+
+def ensure_stereo(samples):
+    if samples.ndim != 2:
+        raise ValueError("Expected 2D audio array after decoding.")
+    if samples.shape[1] == 1:
+        return np.repeat(samples, 2, axis=1)
+    if samples.shape[1] >= 2:
+        return samples[:, :2]
+    return np.zeros((0, 2), dtype=np.float32)
+
+
+def resize_audio_linear(samples, target_frames):
+    target_frames = int(target_frames)
+    if target_frames <= 0:
+        raise ValueError("Target frame count must be positive.")
+    if samples.shape[0] == target_frames:
+        return samples.astype(np.float32, copy=False)
+    if samples.shape[0] == 0:
+        return np.zeros((target_frames, samples.shape[1]), dtype=np.float32)
+    if samples.shape[0] == 1:
+        return np.repeat(samples.astype(np.float32, copy=False), target_frames, axis=0)
+
+    source_positions = np.arange(samples.shape[0], dtype=np.float32)
+    target_positions = np.linspace(0, samples.shape[0] - 1, target_frames, dtype=np.float32)
+    resized = np.empty((target_frames, samples.shape[1]), dtype=np.float32)
+    for channel_index in range(samples.shape[1]):
+        resized[:, channel_index] = np.interp(target_positions, source_positions, samples[:, channel_index]).astype(np.float32)
+    return resized
+
+
+def choose_bastardloop_segment(samples, sample_rate, step_frames, rng, step_index):
+    total_frames = int(samples.shape[0])
+    if total_frames <= 0:
+        raise ValueError("Sample had no audio frames.")
+
+    min_source_frames = max(int(sample_rate * 0.045), int(step_frames * 0.55))
+    max_source_frames = min(total_frames, max(min_source_frames, int(step_frames * 2.25)))
+    if max_source_frames <= 0:
+        raise ValueError("Could not allocate source frames for the sample.")
+
+    if max_source_frames == min_source_frames:
+        source_frames = max_source_frames
+    else:
+        source_frames = rng.randint(min_source_frames, max_source_frames)
+
+    if total_frames <= source_frames:
+        start_frame = 0
+    else:
+        best_score = None
+        best_start = 0
+        for _ in range(7):
+            candidate_start = rng.randint(0, total_frames - source_frames)
+            window = samples[candidate_start:candidate_start + source_frames]
+            rms = float(np.sqrt(np.mean(np.square(window), dtype=np.float64))) if window.size else 0.0
+            transient = float(np.max(np.abs(window))) if window.size else 0.0
+            score = (rms * 0.82) + (transient * 0.18) + (rng.random() * 0.025)
+            if best_score is None or score > best_score:
+                best_score = score
+                best_start = candidate_start
+        start_frame = best_start
+
+    segment = samples[start_frame:start_frame + source_frames].copy()
+    reversed_segment = False
+    if rng.random() < 0.2:
+        segment = np.flip(segment, axis=0).copy()
+        reversed_segment = True
+
+    segment = resize_audio_linear(segment, step_frames)
+
+    if rng.random() < 0.22 and segment.shape[0] > 8:
+        contour = np.linspace(0.4, 1.0, segment.shape[0], dtype=np.float32)
+        if step_index % 2:
+            contour = contour[::-1]
+        segment *= contour[:, np.newaxis]
+
+    pan = rng.uniform(-0.72, 0.72)
+    left_gain = math.cos((pan + 1.0) * math.pi / 4.0)
+    right_gain = math.sin((pan + 1.0) * math.pi / 4.0)
+    accent = 1.08 if step_index % 4 == 0 else (0.76 + rng.random() * 0.28)
+    segment[:, 0] *= left_gain * accent
+    segment[:, 1] *= right_gain * accent
+
+    fade_frames = min(segment.shape[0] // 2, max(24, int(sample_rate * 0.0065)))
+    if fade_frames > 1:
+        fade = np.linspace(0.0, 1.0, fade_frames, dtype=np.float32)
+        segment[:fade_frames] *= fade[:, np.newaxis]
+        segment[-fade_frames:] *= fade[::-1][:, np.newaxis]
+
+    return segment, {
+        "start_frame": start_frame,
+        "source_frames": source_frames,
+        "reversed": reversed_segment,
+    }
+
+
+def generate_bastardloop_file(bpm, seed=None):
+    ensure_mygrain_wavs_root()
+    bpm_value = clamp_bastardloop_bpm(bpm)
+    resolved_seed = str(seed or secrets.token_hex(8))
+    rng = random.Random(resolved_seed)
+    available_files = list_bastardloop_source_files()
+    if not available_files:
+        raise RuntimeError("SAMPLEDROP is empty.")
+
+    target_step_seconds = (60.0 / bpm_value) / 4.0
+    target_step_frames = max(1, int(round(target_step_seconds * MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE)))
+    total_frames = target_step_frames * MYGRAIN_BASTARDLOOP_STEPS
+    output = np.zeros((total_frames, 2), dtype=np.float32)
+    selected_files = []
+
+    pool = available_files[:]
+    rng.shuffle(pool)
+    attempts = 0
+    max_attempts = max(MYGRAIN_BASTARDLOOP_STEPS * 4, len(available_files) * 2)
+
+    while len(selected_files) < MYGRAIN_BASTARDLOOP_STEPS and attempts < max_attempts:
+        relative_path = pool.pop() if pool else rng.choice(available_files)
+        attempts += 1
+        try:
+            payload = fetch_bastardloop_sample_bytes(relative_path)
+            source_rate, raw_data = wavfile.read(BytesIO(payload))
+            samples = audio_samples_to_float32(raw_data)
+            samples = resample_audio_channels(samples, int(source_rate), MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE)
+            samples = ensure_stereo(samples)
+            segment, _ = choose_bastardloop_segment(samples, MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE, target_step_frames, rng, len(selected_files))
+        except Exception:
+            continue
+
+        step_index = len(selected_files)
+        frame_start = step_index * target_step_frames
+        frame_end = frame_start + target_step_frames
+        output[frame_start:frame_end] += segment[:target_step_frames]
+        selected_files.append(relative_path)
+
+    if len(selected_files) != MYGRAIN_BASTARDLOOP_STEPS:
+        raise RuntimeError("Could not build a full 16-step bastardloop from SAMPLEDROP.")
+
+    output -= np.mean(output, axis=0, keepdims=True)
+    peak = float(np.max(np.abs(output))) if output.size else 0.0
+    if peak > 0:
+        output *= min(0.94 / peak, 6.0)
+    pcm = np.int16(np.clip(output, -1.0, 1.0) * 32767.0)
+
+    filename = unique_mygrain_wav_filename(
+        sanitize_mygrain_wav_filename(f"bastardloop-{bpm_value}bpm-{int(time.time())}.wav")
+    )
+    target_path = MYGRAIN_WAVS_ROOT / filename
+    wavfile.write(target_path, MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE, pcm)
+
+    duration_seconds = total_frames / MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE
+    sample_names = [pathlib.PurePosixPath(path).name for path in selected_files]
+    return {
+        "ok": True,
+        "savedName": filename,
+        "size": target_path.stat().st_size,
+        "url": f"{MYGRAIN_WAVS_ROUTE}/{quote(filename)}",
+        "bpm": bpm_value,
+        "seed": resolved_seed,
+        "stepCount": MYGRAIN_BASTARDLOOP_STEPS,
+        "durationSeconds": duration_seconds,
+        "sampleRate": MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE,
+        "sampleNames": sample_names,
+        "summary": f"{duration_seconds:.2f}s · {MYGRAIN_BASTARDLOOP_STEPS} cuts",
+    }
 
 
 def b64url(data):
@@ -1168,6 +1441,9 @@ class DocumenterHandler(BaseHTTPRequestHandler):
         if route.get("base") == MYGRAIN_WAVS_ROUTE and route["inner"] == "/api/upload":
             self.handle_mygrain_wavs_upload()
             return
+        if route.get("base") == MYGRAIN_WAVS_ROUTE and route["inner"] == "/api/bastardloop":
+            self.handle_mygrain_bastardloop()
+            return
         if route.get("base") == MYGRAIN_WAVS_ROUTE and route["inner"] == "/api/rename":
             self.handle_mygrain_wavs_rename()
             return
@@ -1229,6 +1505,17 @@ class DocumenterHandler(BaseHTTPRequestHandler):
                 "size": stat.st_size,
                 "url": f"{MYGRAIN_WAVS_ROUTE}/{quote(safe_name)}",
             }, status=201, extra_headers=mygrain_wavs_cors_headers())
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
+
+    def handle_mygrain_bastardloop(self):
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            payload = self.read_json() if content_length > 0 else {}
+            bpm = payload.get("bpm", 120) if isinstance(payload, dict) else 120
+            seed = payload.get("seed") if isinstance(payload, dict) else None
+            result = generate_bastardloop_file(bpm, seed=seed)
+            self.send_json(result, status=201, extra_headers=mygrain_wavs_cors_headers())
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
 
@@ -2104,6 +2391,9 @@ class DocumenterHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
+        if route.get("base") == MYGRAIN_WAVS_ROUTE:
+            for key, value in mygrain_wavs_cors_headers().items():
+                self.send_header(key, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
