@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MYGRAIN Bastardloop Browser</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0f14;
+      --panel: #111826;
+      --text: #e9eef7;
+      --muted: #93a4bf;
+      --accent: #67d6ff;
+      --border: rgba(255, 255, 255, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top, #162131 0, var(--bg) 55%);
+      color: var(--text);
+    }
+
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .hero {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      align-items: end;
+      justify-content: space-between;
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: 0.02em;
+    }
+
+    .subtitle {
+      margin: 8px 0 0;
+      color: var(--muted);
+      max-width: 68ch;
+      line-height: 1.45;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      justify-content: flex-end;
+    }
+
+    input, button {
+      font: inherit;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+      padding: 10px 12px;
+    }
+
+    button {
+      cursor: pointer;
+      background: linear-gradient(135deg, rgba(103, 214, 255, 0.18), rgba(124, 255, 192, 0.14));
+    }
+
+    button:hover, a.download:hover {
+      border-color: rgba(103, 214, 255, 0.35);
+    }
+
+    .stats {
+      margin: 18px 0 14px;
+      color: var(--muted);
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      background: linear-gradient(180deg, rgba(17, 24, 38, 0.98), rgba(14, 20, 32, 0.98));
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 14px;
+      box-shadow: 0 18px 34px rgba(0, 0, 0, 0.22);
+    }
+
+    .card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .name {
+      font-weight: 650;
+      overflow-wrap: anywhere;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    audio {
+      width: 100%;
+      margin: 10px 0 12px;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .card-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+
+    a.download {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    button.danger {
+      background: linear-gradient(135deg, rgba(255, 92, 92, 0.2), rgba(255, 255, 255, 0.04));
+    }
+
+    .empty {
+      color: var(--muted);
+      padding: 20px 0;
+    }
+
+    .footer {
+      margin-top: 22px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div>
+        <h1>MYGRAIN Bastardloop Browser</h1>
+        <p class="subtitle">Audition server-generated Bastardloops, download them, and keep a separate history away from the shared upload repository.</p>
+      </div>
+      <div class="controls">
+        <input id="filter" type="search" placeholder="Filter files">
+        <button id="refresh">Refresh</button>
+      </div>
+    </div>
+
+    <div class="stats" id="stats">Loading repository…</div>
+    <div class="stats" id="status"></div>
+    <div class="grid" id="grid"></div>
+    <div class="footer">Repository path: <code>/srv/sftp/mark_sftp/files/mygrain-bastardloops</code></div>
+  </div>
+
+  <script>
+    const stats = document.getElementById('stats');
+    const statusLine = document.getElementById('status');
+    const grid = document.getElementById('grid');
+    const filterInput = document.getElementById('filter');
+    let files = [];
+
+    function formatBytes(bytes) {
+      if (!Number.isFinite(bytes)) return '';
+      const units = ['B', 'KB', 'MB', 'GB'];
+      let value = bytes;
+      let unit = 0;
+      while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit += 1;
+      }
+      return `${value.toFixed(value >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+    }
+
+    function formatTime(timestamp) {
+      if (!timestamp) return '';
+      return new Date(timestamp * 1000).toLocaleString();
+    }
+
+    function render() {
+      const query = filterInput.value.trim().toLowerCase();
+      const visible = files.filter((file) => !query || file.name.toLowerCase().includes(query));
+      stats.textContent = `${visible.length} of ${files.length} file${files.length === 1 ? '' : 's'} shown`;
+      grid.innerHTML = '';
+
+      if (!visible.length) {
+        grid.innerHTML = '<div class="empty">No Bastardloops found.</div>';
+        return;
+      }
+
+      visible.forEach((file) => {
+        const card = document.createElement('article');
+        card.className = 'card';
+
+        const head = document.createElement('div');
+        head.className = 'card-head';
+
+        const name = document.createElement('div');
+        name.className = 'name';
+        name.textContent = file.name;
+
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        meta.textContent = `${formatBytes(file.size)} • ${formatTime(file.modified)}`;
+
+        const audio = document.createElement('audio');
+        audio.controls = true;
+        audio.preload = 'none';
+        audio.src = file.url;
+
+        const actions = document.createElement('div');
+        actions.className = 'actions';
+
+        const download = document.createElement('a');
+        download.className = 'download';
+        download.href = file.url;
+        download.download = '';
+        download.textContent = 'Download';
+
+        const cardActions = document.createElement('div');
+        cardActions.className = 'card-actions';
+
+        const renameButton = document.createElement('button');
+        renameButton.type = 'button';
+        renameButton.textContent = 'Rename';
+
+        const deleteButton = document.createElement('button');
+        deleteButton.type = 'button';
+        deleteButton.textContent = 'Delete';
+        deleteButton.classList.add('danger');
+
+        renameButton.addEventListener('click', async () => {
+          const nextName = prompt('Rename this Bastardloop to:', file.name.replace(/\.wav$/i, ''));
+          if (!nextName) return;
+          renameButton.disabled = true;
+          deleteButton.disabled = true;
+          statusLine.textContent = `Renaming ${file.name}…`;
+          try {
+            const response = await fetch('./api/rename', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ from: file.name, to: nextName })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || !payload.ok) {
+              throw new Error(payload.error || `Rename failed with status ${response.status}`);
+            }
+            statusLine.textContent = `Renamed to ${payload.savedName || nextName}.`;
+            await loadFiles();
+          } catch (error) {
+            console.error(error);
+            statusLine.textContent = `Rename failed: ${error.message}`;
+          } finally {
+            renameButton.disabled = false;
+            deleteButton.disabled = false;
+          }
+        });
+
+        deleteButton.addEventListener('click', async () => {
+          if (!confirm(`Delete ${file.name}?`)) return;
+          renameButton.disabled = true;
+          deleteButton.disabled = true;
+          statusLine.textContent = `Deleting ${file.name}…`;
+          try {
+            const response = await fetch(`./api/delete?filename=${encodeURIComponent(file.name)}`, {
+              method: 'DELETE'
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || !payload.ok) {
+              throw new Error(payload.error || `Delete failed with status ${response.status}`);
+            }
+            statusLine.textContent = `Deleted ${payload.deletedName || file.name}.`;
+            await loadFiles();
+          } catch (error) {
+            console.error(error);
+            statusLine.textContent = `Delete failed: ${error.message}`;
+          } finally {
+            renameButton.disabled = false;
+            deleteButton.disabled = false;
+          }
+        });
+
+        head.append(name, meta);
+        cardActions.append(renameButton, deleteButton);
+        actions.append(download, cardActions);
+        card.append(head, audio, actions);
+        grid.appendChild(card);
+      });
+    }
+
+    async function loadFiles() {
+      stats.textContent = 'Loading repository…';
+      const response = await fetch('./api/list', { cache: 'no-store' });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || `Could not load repository (${response.status})`);
+      }
+      files = payload.files || [];
+      render();
+    }
+
+    document.getElementById('refresh').addEventListener('click', () => {
+      loadFiles().catch((error) => {
+        console.error(error);
+        stats.textContent = `Repository load failed: ${error.message}`;
+      });
+    });
+
+    filterInput.addEventListener('input', render);
+
+    loadFiles().catch((error) => {
+      console.error(error);
+      stats.textContent = `Repository load failed: ${error.message}`;
+    });
+  </script>
+</body>
+</html>

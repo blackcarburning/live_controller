@@ -52,7 +52,9 @@ PROTECTED_ROUTES = [
     {"base": "/unison-veeam", "root": pathlib.Path("/usr/share/caddy/unison-veeam"), "documenter_api": False},
     {"base": "/kingston-university-veeam", "root": pathlib.Path("/usr/share/caddy/kingston-university-veeam"), "documenter_api": False},
     {"base": "/customer-chat", "root": pathlib.Path("/root/.openclaw/workspace/customer-chat"), "documenter_api": False},
+    {"base": "/mygrain", "root": pathlib.Path("/root/.openclaw/workspace/sandboxGRANULAR"), "documenter_api": False, "public": True},
     {"base": "/mygrain-wavs", "root": pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-loops"), "documenter_api": False, "public": True},
+    {"base": "/mygrain-bastardloops", "root": pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-bastardloops"), "documenter_api": False, "public": True},
 ]
 
 FETCH_GROUPS = [
@@ -111,13 +113,22 @@ HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 TEST_COMMAND = "lssystem -delim :"
 MYGRAIN_WAVS_ROUTE = "/mygrain-wavs"
 MYGRAIN_WAVS_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-loops")
+MYGRAIN_BASTARDLOOPS_ROUTE = "/mygrain-bastardloops"
+MYGRAIN_BASTARDLOOPS_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-bastardloops")
 MYGRAIN_WAVS_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 MYGRAIN_BASTARDLOOP_REMOTE = "dropbox:SAMPLEDROP"
-MYGRAIN_BASTARDLOOP_STEPS = 16
 MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE = 44100
 MYGRAIN_BASTARDLOOP_LIST_CACHE_SECONDS = 180
 MYGRAIN_BASTARDLOOP_MIN_BPM = 40
 MYGRAIN_BASTARDLOOP_MAX_BPM = 300
+MYGRAIN_BASTARDLOOP_BAR_SLOTS = 32
+MYGRAIN_BASTARDLOOP_DIVISION_SLOT_MAP = {
+    "1/4": 8,
+    "1/8": 4,
+    "1/16": 2,
+    "1/32": 1,
+}
+MYGRAIN_BASTARDLOOP_DEFAULT_DIVISIONS = ("1/16",)
 MYGRAIN_BASTARDLOOP_SAMPLE_CACHE = {
     "expires_at": 0.0,
     "files": [],
@@ -167,8 +178,30 @@ def mygrain_wavs_cors_headers():
     }
 
 
+def is_mygrain_repository_route(route_base):
+    return route_base in (MYGRAIN_WAVS_ROUTE, MYGRAIN_BASTARDLOOPS_ROUTE)
+
+
+def mygrain_repository_root(route_base):
+    if route_base == MYGRAIN_WAVS_ROUTE:
+        return MYGRAIN_WAVS_ROOT
+    if route_base == MYGRAIN_BASTARDLOOPS_ROUTE:
+        return MYGRAIN_BASTARDLOOPS_ROOT
+    raise ValueError(f"Unknown MYGRAIN repository route: {route_base}")
+
+
+def ensure_mygrain_repository_root(route_base):
+    root = mygrain_repository_root(route_base)
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def ensure_mygrain_wavs_root():
-    MYGRAIN_WAVS_ROOT.mkdir(parents=True, exist_ok=True)
+    ensure_mygrain_repository_root(MYGRAIN_WAVS_ROUTE)
+
+
+def ensure_mygrain_bastardloops_root():
+    ensure_mygrain_repository_root(MYGRAIN_BASTARDLOOPS_ROUTE)
 
 
 def sanitize_mygrain_wav_filename(value):
@@ -185,25 +218,33 @@ def sanitize_mygrain_wav_filename(value):
     return cleaned
 
 
-def unique_mygrain_wav_filename(filename):
-    ensure_mygrain_wavs_root()
-    candidate = MYGRAIN_WAVS_ROOT / filename
+def unique_mygrain_repository_filename(route_base, filename):
+    root = ensure_mygrain_repository_root(route_base)
+    candidate = root / filename
     if not candidate.exists():
         return filename
     stem = candidate.stem
     suffix = candidate.suffix or ".wav"
     for index in range(1, 1000):
         next_name = f"{stem}-{index}{suffix}"
-        if not (MYGRAIN_WAVS_ROOT / next_name).exists():
+        if not (root / next_name).exists():
             return next_name
     raise RuntimeError("Could not allocate a unique WAV filename.")
 
 
-def list_mygrain_wav_files():
-    ensure_mygrain_wavs_root()
+def unique_mygrain_wav_filename(filename):
+    return unique_mygrain_repository_filename(MYGRAIN_WAVS_ROUTE, filename)
+
+
+def unique_mygrain_bastardloop_filename(filename):
+    return unique_mygrain_repository_filename(MYGRAIN_BASTARDLOOPS_ROUTE, filename)
+
+
+def list_mygrain_repository_files(route_base):
+    root = ensure_mygrain_repository_root(route_base)
     files = []
     for path in sorted(
-        (item for item in MYGRAIN_WAVS_ROOT.iterdir() if item.is_file() and item.suffix.lower() == ".wav"),
+        (item for item in root.iterdir() if item.is_file() and item.suffix.lower() == ".wav"),
         key=lambda item: item.stat().st_mtime,
         reverse=True,
     ):
@@ -212,9 +253,17 @@ def list_mygrain_wav_files():
             "name": path.name,
             "size": stat.st_size,
             "modified": stat.st_mtime,
-            "url": f"{MYGRAIN_WAVS_ROUTE}/{quote(path.name)}",
+            "url": f"{route_base}/{quote(path.name)}",
         })
     return files
+
+
+def list_mygrain_wav_files():
+    return list_mygrain_repository_files(MYGRAIN_WAVS_ROUTE)
+
+
+def list_mygrain_bastardloop_files():
+    return list_mygrain_repository_files(MYGRAIN_BASTARDLOOPS_ROUTE)
 
 
 def list_bastardloop_source_files(force_refresh=False):
@@ -404,8 +453,39 @@ def choose_bastardloop_segment(samples, sample_rate, step_frames, rng, step_inde
     }
 
 
-def generate_bastardloop_file(bpm, seed=None):
-    ensure_mygrain_wavs_root()
+def normalize_bastardloop_divisions(divisions):
+    if isinstance(divisions, str):
+        values = [divisions]
+    elif isinstance(divisions, (list, tuple, set)):
+        values = [str(value).strip() for value in divisions]
+    else:
+        values = []
+    normalized = []
+    for value in values:
+        if value in MYGRAIN_BASTARDLOOP_DIVISION_SLOT_MAP and value not in normalized:
+            normalized.append(value)
+    return normalized or list(MYGRAIN_BASTARDLOOP_DEFAULT_DIVISIONS)
+
+
+def build_bastardloop_schedule(rng, divisions):
+    allowed = [
+        {"label": label, "slots": MYGRAIN_BASTARDLOOP_DIVISION_SLOT_MAP[label]}
+        for label in normalize_bastardloop_divisions(divisions)
+    ]
+    remaining_slots = MYGRAIN_BASTARDLOOP_BAR_SLOTS
+    schedule = []
+    while remaining_slots > 0:
+        fitting = [item for item in allowed if item["slots"] <= remaining_slots]
+        if not fitting:
+            raise RuntimeError("Could not fit the selected bastardloop divisions into one bar.")
+        choice = rng.choice(fitting)
+        schedule.append(choice.copy())
+        remaining_slots -= choice["slots"]
+    return schedule
+
+
+def generate_bastardloop_file(bpm, seed=None, divisions=None):
+    ensure_mygrain_bastardloops_root()
     bpm_value = clamp_bastardloop_bpm(bpm)
     resolved_seed = str(seed or secrets.token_hex(8))
     rng = random.Random(resolved_seed)
@@ -413,18 +493,20 @@ def generate_bastardloop_file(bpm, seed=None):
     if not available_files:
         raise RuntimeError("SAMPLEDROP is empty.")
 
-    target_step_seconds = (60.0 / bpm_value) / 4.0
-    target_step_frames = max(1, int(round(target_step_seconds * MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE)))
-    total_frames = target_step_frames * MYGRAIN_BASTARDLOOP_STEPS
+    enabled_divisions = normalize_bastardloop_divisions(divisions)
+    schedule = build_bastardloop_schedule(rng, enabled_divisions)
+    slot_seconds = (60.0 / bpm_value) / 8.0
+    slot_frames = max(1, int(round(slot_seconds * MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE)))
+    total_frames = slot_frames * MYGRAIN_BASTARDLOOP_BAR_SLOTS
     output = np.zeros((total_frames, 2), dtype=np.float32)
     selected_files = []
 
     pool = available_files[:]
     rng.shuffle(pool)
     attempts = 0
-    max_attempts = max(MYGRAIN_BASTARDLOOP_STEPS * 4, len(available_files) * 2)
+    max_attempts = max(len(schedule) * 4, len(available_files) * 2)
 
-    while len(selected_files) < MYGRAIN_BASTARDLOOP_STEPS and attempts < max_attempts:
+    while len(selected_files) < len(schedule) and attempts < max_attempts:
         relative_path = pool.pop() if pool else rng.choice(available_files)
         attempts += 1
         try:
@@ -433,18 +515,20 @@ def generate_bastardloop_file(bpm, seed=None):
             samples = audio_samples_to_float32(raw_data)
             samples = resample_audio_channels(samples, int(source_rate), MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE)
             samples = ensure_stereo(samples)
-            segment, _ = choose_bastardloop_segment(samples, MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE, target_step_frames, rng, len(selected_files))
+            schedule_entry = schedule[len(selected_files)]
+            target_frames = max(1, slot_frames * int(schedule_entry["slots"]))
+            segment, _ = choose_bastardloop_segment(samples, MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE, target_frames, rng, len(selected_files))
         except Exception:
             continue
 
         step_index = len(selected_files)
-        frame_start = step_index * target_step_frames
-        frame_end = frame_start + target_step_frames
-        output[frame_start:frame_end] += segment[:target_step_frames]
+        frame_start = sum(int(entry["slots"]) for entry in schedule[:step_index]) * slot_frames
+        frame_end = frame_start + target_frames
+        output[frame_start:frame_end] += segment[:target_frames]
         selected_files.append(relative_path)
 
-    if len(selected_files) != MYGRAIN_BASTARDLOOP_STEPS:
-        raise RuntimeError("Could not build a full 16-step bastardloop from SAMPLEDROP.")
+    if len(selected_files) != len(schedule):
+        raise RuntimeError("Could not build a full bastardloop from SAMPLEDROP.")
 
     output -= np.mean(output, axis=0, keepdims=True)
     peak = float(np.max(np.abs(output))) if output.size else 0.0
@@ -452,26 +536,29 @@ def generate_bastardloop_file(bpm, seed=None):
         output *= min(0.94 / peak, 6.0)
     pcm = np.int16(np.clip(output, -1.0, 1.0) * 32767.0)
 
-    filename = unique_mygrain_wav_filename(
+    filename = unique_mygrain_bastardloop_filename(
         sanitize_mygrain_wav_filename(f"bastardloop-{bpm_value}bpm-{int(time.time())}.wav")
     )
-    target_path = MYGRAIN_WAVS_ROOT / filename
+    target_path = MYGRAIN_BASTARDLOOPS_ROOT / filename
     wavfile.write(target_path, MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE, pcm)
 
     duration_seconds = total_frames / MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE
     sample_names = [pathlib.PurePosixPath(path).name for path in selected_files]
+    event_divisions = [entry["label"] for entry in schedule]
     return {
         "ok": True,
         "savedName": filename,
         "size": target_path.stat().st_size,
-        "url": f"{MYGRAIN_WAVS_ROUTE}/{quote(filename)}",
+        "url": f"{MYGRAIN_BASTARDLOOPS_ROUTE}/{quote(filename)}",
         "bpm": bpm_value,
         "seed": resolved_seed,
-        "stepCount": MYGRAIN_BASTARDLOOP_STEPS,
+        "stepCount": len(schedule),
         "durationSeconds": duration_seconds,
         "sampleRate": MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE,
         "sampleNames": sample_names,
-        "summary": f"{duration_seconds:.2f}s · {MYGRAIN_BASTARDLOOP_STEPS} cuts",
+        "selectedDivisions": enabled_divisions,
+        "eventDivisions": event_divisions,
+        "summary": f"{duration_seconds:.2f}s · {len(schedule)} cuts · {'/'.join(enabled_divisions)}",
     }
 
 
@@ -1376,7 +1463,7 @@ class DocumenterHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         route = route_for_path(urlparse(self.path).path)
-        if route.get("base") == MYGRAIN_WAVS_ROUTE:
+        if is_mygrain_repository_route(route.get("base")):
             self.send_response(204)
             for key, value in mygrain_wavs_cors_headers().items():
                 self.send_header(key, value)
@@ -1389,8 +1476,8 @@ class DocumenterHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         request_path = parsed.path
         route = route_for_path(request_path)
-        if route.get("base") == MYGRAIN_WAVS_ROUTE and route["inner"] == "/api/list":
-            self.send_json({"ok": True, "files": list_mygrain_wav_files()}, extra_headers=mygrain_wavs_cors_headers())
+        if is_mygrain_repository_route(route.get("base")) and route["inner"] == "/api/list":
+            self.send_json({"ok": True, "files": list_mygrain_repository_files(route["base"])}, extra_headers=mygrain_wavs_cors_headers())
             return
         if route.get("homepage") and route["inner"] == "/":
             self.serve_homepage()
@@ -1418,7 +1505,7 @@ class DocumenterHandler(BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", expire_session_cookie())
             self.end_headers()
             return
-        if route.get("base") == MYGRAIN_WAVS_ROUTE:
+        if route.get("public"):
             self.serve_static(route)
             return
         if route["base"] == "/customer-chat" and route["inner"].startswith("/api/"):
@@ -1441,11 +1528,11 @@ class DocumenterHandler(BaseHTTPRequestHandler):
         if route.get("base") == MYGRAIN_WAVS_ROUTE and route["inner"] == "/api/upload":
             self.handle_mygrain_wavs_upload()
             return
-        if route.get("base") == MYGRAIN_WAVS_ROUTE and route["inner"] == "/api/bastardloop":
+        if route.get("base") == MYGRAIN_BASTARDLOOPS_ROUTE and route["inner"] == "/api/bastardloop":
             self.handle_mygrain_bastardloop()
             return
-        if route.get("base") == MYGRAIN_WAVS_ROUTE and route["inner"] == "/api/rename":
-            self.handle_mygrain_wavs_rename()
+        if is_mygrain_repository_route(route.get("base")) and route["inner"] == "/api/rename":
+            self.handle_mygrain_wavs_rename(route["base"])
             return
         if route.get("homepage") and route["inner"] in ("/login", "/api/login"):
             self.send_response(303)
@@ -1461,7 +1548,7 @@ class DocumenterHandler(BaseHTTPRequestHandler):
                 return
             self.handle_customer_chat_api("POST", route["inner"])
             return
-        if route.get("base") == MYGRAIN_WAVS_ROUTE:
+        if is_mygrain_repository_route(route.get("base")):
             self.send_json({"ok": False, "error": "Unknown API endpoint"}, status=404, extra_headers=mygrain_wavs_cors_headers())
             return
         if not self.is_authenticated():
@@ -1514,7 +1601,8 @@ class DocumenterHandler(BaseHTTPRequestHandler):
             payload = self.read_json() if content_length > 0 else {}
             bpm = payload.get("bpm", 120) if isinstance(payload, dict) else 120
             seed = payload.get("seed") if isinstance(payload, dict) else None
-            result = generate_bastardloop_file(bpm, seed=seed)
+            divisions = payload.get("divisions") if isinstance(payload, dict) else None
+            result = generate_bastardloop_file(bpm, seed=seed, divisions=divisions)
             self.send_json(result, status=201, extra_headers=mygrain_wavs_cors_headers())
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
@@ -1522,24 +1610,24 @@ class DocumenterHandler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         request_path = urlparse(self.path).path
         route = route_for_path(request_path)
-        if route.get("base") == MYGRAIN_WAVS_ROUTE and route["inner"] == "/api/delete":
-            self.handle_mygrain_wavs_delete()
+        if is_mygrain_repository_route(route.get("base")) and route["inner"] == "/api/delete":
+            self.handle_mygrain_wavs_delete(route["base"])
             return
-        if route.get("base") == MYGRAIN_WAVS_ROUTE:
+        if is_mygrain_repository_route(route.get("base")):
             self.send_json({"ok": False, "error": "Unknown API endpoint"}, status=404, extra_headers=mygrain_wavs_cors_headers())
             return
         self.send_json({"ok": False, "error": "Method not allowed"}, status=405)
 
-    def handle_mygrain_wavs_delete(self):
+    def handle_mygrain_wavs_delete(self, route_base):
         try:
-            ensure_mygrain_wavs_root()
+            root = ensure_mygrain_repository_root(route_base)
             parsed = urlparse(self.path)
             filename = self.headers.get("X-Filename") or ""
             if not filename and parsed.query:
                 query = parse_qs(parsed.query)
                 filename = (query.get("filename") or [""])[0]
             target_name = sanitize_mygrain_wav_filename(filename)
-            target_path = MYGRAIN_WAVS_ROOT / target_name
+            target_path = root / target_name
             if not target_path.exists():
                 raise FileNotFoundError("File not found.")
             target_path.unlink()
@@ -1550,9 +1638,9 @@ class DocumenterHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
 
-    def handle_mygrain_wavs_rename(self):
+    def handle_mygrain_wavs_rename(self, route_base):
         try:
-            ensure_mygrain_wavs_root()
+            root = ensure_mygrain_repository_root(route_base)
             payload = self.read_json()
             current_name = str(payload.get("from") or payload.get("filename") or "").strip()
             desired_name = str(payload.get("to") or payload.get("name") or "").strip()
@@ -1561,19 +1649,19 @@ class DocumenterHandler(BaseHTTPRequestHandler):
             if not desired_name:
                 raise ValueError("Missing destination filename.")
             source_name = sanitize_mygrain_wav_filename(current_name)
-            source_path = MYGRAIN_WAVS_ROOT / source_name
+            source_path = root / source_name
             if not source_path.exists():
                 raise FileNotFoundError("File not found.")
             target_name = sanitize_mygrain_wav_filename(desired_name)
-            target_name = unique_mygrain_wav_filename(target_name) if target_name != source_name else source_name
-            target_path = MYGRAIN_WAVS_ROOT / target_name
+            target_name = unique_mygrain_repository_filename(route_base, target_name) if target_name != source_name else source_name
+            target_path = root / target_name
             if target_path != source_path:
                 source_path.rename(target_path)
             self.send_json({
                 "ok": True,
                 "oldName": source_name,
                 "savedName": target_name,
-                "url": f"{MYGRAIN_WAVS_ROUTE}/{quote(target_name)}",
+                "url": f"{route_base}/{quote(target_name)}",
             }, extra_headers=mygrain_wavs_cors_headers())
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
@@ -2377,6 +2465,8 @@ class DocumenterHandler(BaseHTTPRequestHandler):
         request_path = route["inner"]
         if request_path in ("", "/"):
             request_path = "/index.html"
+        if is_mygrain_repository_route(route.get("base")):
+            ensure_mygrain_repository_root(route["base"])
         root = route["root"].resolve()
         candidate = (root / request_path.lstrip("/")).resolve()
         if root not in candidate.parents and candidate != root:
@@ -2391,7 +2481,7 @@ class DocumenterHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
-        if route.get("base") == MYGRAIN_WAVS_ROUTE:
+        if is_mygrain_repository_route(route.get("base")):
             for key, value in mygrain_wavs_cors_headers().items():
                 self.send_header(key, value)
         self.send_header("Content-Length", str(len(body)))
