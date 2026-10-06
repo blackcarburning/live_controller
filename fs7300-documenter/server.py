@@ -194,6 +194,7 @@ def mygrain_wavs_cors_headers():
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, X-Filename",
+        "Access-Control-Expose-Headers": "X-Mygrain-Source-Name, X-Mygrain-Source-Key, X-Mygrain-Source-Label, X-Mygrain-Source-Path",
         "Access-Control-Max-Age": "86400",
     }
 
@@ -363,6 +364,27 @@ def fetch_bastardloop_sample_bytes(source_key, relative_path):
     if not result.stdout:
         raise RuntimeError(f"Downloaded sample was empty: {safe_relative_path}")
     return result.stdout
+
+
+def choose_bastardloop_source_sample(source_key=None, seed=None):
+    source_key, source_config = get_bastardloop_source_config(source_key)
+    available_files = list_bastardloop_source_files(source_key)
+    if not available_files:
+        raise RuntimeError(f"{source_config['label']} is empty.")
+
+    resolved_seed = str(seed or secrets.token_hex(8))
+    rng = random.Random(resolved_seed)
+    relative_path = rng.choice(available_files)
+    payload = fetch_bastardloop_sample_bytes(source_key, relative_path)
+    return {
+        "ok": True,
+        "seed": resolved_seed,
+        "sourceKey": source_key,
+        "sourceLabel": source_config["label"],
+        "relativePath": relative_path,
+        "filename": pathlib.PurePosixPath(relative_path).name,
+        "bytes": payload,
+    }
 
 
 def clamp_bastardloop_bpm(value, fallback=120):
@@ -1584,6 +1606,9 @@ class DocumenterHandler(BaseHTTPRequestHandler):
         if route.get("base") == MYGRAIN_BASTARDLOOPS_ROUTE and route["inner"] == "/api/bastardloop":
             self.handle_mygrain_bastardloop()
             return
+        if route.get("base") == MYGRAIN_BASTARDLOOPS_ROUTE and route["inner"] == "/api/source-sample":
+            self.handle_mygrain_source_sample()
+            return
         if is_mygrain_repository_route(route.get("base")) and route["inner"] == "/api/rename":
             self.handle_mygrain_wavs_rename(route["base"])
             return
@@ -1658,6 +1683,29 @@ class DocumenterHandler(BaseHTTPRequestHandler):
             source_key = payload.get("source") if isinstance(payload, dict) else None
             result = generate_bastardloop_file(bpm, seed=seed, divisions=divisions, source_key=source_key)
             self.send_json(result, status=201, extra_headers=mygrain_wavs_cors_headers())
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
+
+    def handle_mygrain_source_sample(self):
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            payload = self.read_json() if content_length > 0 else {}
+            source_key = payload.get("source") if isinstance(payload, dict) else None
+            seed = payload.get("seed") if isinstance(payload, dict) else None
+            result = choose_bastardloop_source_sample(source_key=source_key, seed=seed)
+            audio_bytes = result.pop("bytes")
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(audio_bytes)))
+            self.send_header("X-Mygrain-Source-Name", quote(result["filename"]))
+            self.send_header("X-Mygrain-Source-Key", result["sourceKey"])
+            self.send_header("X-Mygrain-Source-Label", result["sourceLabel"])
+            self.send_header("X-Mygrain-Source-Path", quote(result["relativePath"]))
+            for key, value in mygrain_wavs_cors_headers().items():
+                self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(audio_bytes)
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
 
