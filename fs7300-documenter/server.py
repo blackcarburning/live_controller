@@ -387,6 +387,47 @@ def choose_bastardloop_source_sample(source_key=None, seed=None):
     }
 
 
+def list_bastardloop_source_file_entries(source_key=None):
+    source_key, source_config = get_bastardloop_source_config(source_key)
+    files = []
+    for relative_path in list_bastardloop_source_files(source_key):
+        filename = pathlib.PurePosixPath(relative_path).name
+        quoted_source = quote(source_key)
+        quoted_path = quote(relative_path, safe="")
+        files.append({
+            "name": filename,
+            "relativePath": relative_path,
+            "sourceKey": source_key,
+            "sourceLabel": source_config["label"],
+            "previewUrl": f"{MYGRAIN_BASTARDLOOPS_ROUTE}/api/source-sample?source={quoted_source}&path={quoted_path}",
+        })
+    return {
+        "ok": True,
+        "sourceKey": source_key,
+        "sourceLabel": source_config["label"],
+        "files": files,
+    }
+
+
+def resolve_bastardloop_source_sample(source_key=None, seed=None, relative_path=None):
+    source_key, source_config = get_bastardloop_source_config(source_key)
+    if relative_path:
+        normalized_path = str(relative_path or "").replace("\\", "/").lstrip("/")
+        if not normalized_path:
+            raise ValueError("Missing source sample path.")
+        payload = fetch_bastardloop_sample_bytes(source_key, normalized_path)
+        return {
+            "ok": True,
+            "seed": str(seed or ""),
+            "sourceKey": source_key,
+            "sourceLabel": source_config["label"],
+            "relativePath": normalized_path,
+            "filename": pathlib.PurePosixPath(normalized_path).name,
+            "bytes": payload,
+        }
+    return choose_bastardloop_source_sample(source_key=source_key, seed=seed)
+
+
 def clamp_bastardloop_bpm(value, fallback=120):
     try:
         bpm = float(value)
@@ -1553,6 +1594,43 @@ class DocumenterHandler(BaseHTTPRequestHandler):
         route = route_for_path(request_path)
         if is_mygrain_repository_route(route.get("base")) and route["inner"] == "/api/list":
             self.send_json({"ok": True, "files": list_mygrain_repository_files(route["base"])}, extra_headers=mygrain_wavs_cors_headers())
+            return
+        if route.get("base") == MYGRAIN_BASTARDLOOPS_ROUTE and route["inner"] == "/api/source-files":
+            try:
+                query = parse_qs(parsed.query or "", keep_blank_values=True)
+                source_key = (query.get("source") or [None])[0]
+                refresh_requested = (query.get("refresh") or [""])[0].strip().lower() in {"1", "true", "yes"}
+                if refresh_requested:
+                    list_bastardloop_source_files(source_key, force_refresh=True)
+                self.send_json(list_bastardloop_source_file_entries(source_key), extra_headers=mygrain_wavs_cors_headers())
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
+            return
+        if route.get("base") == MYGRAIN_BASTARDLOOPS_ROUTE and route["inner"] == "/api/source-sample":
+            try:
+                query = parse_qs(parsed.query or "", keep_blank_values=True)
+                source_key = (query.get("source") or [None])[0]
+                relative_path = (
+                    (query.get("path") or [None])[0]
+                    or (query.get("relativePath") or [None])[0]
+                    or (query.get("file") or [None])[0]
+                )
+                result = resolve_bastardloop_source_sample(source_key=source_key, relative_path=relative_path)
+                audio_bytes = result.pop("bytes")
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(audio_bytes)))
+                self.send_header("X-Mygrain-Source-Name", quote(result["filename"]))
+                self.send_header("X-Mygrain-Source-Key", result["sourceKey"])
+                self.send_header("X-Mygrain-Source-Label", result["sourceLabel"])
+                self.send_header("X-Mygrain-Source-Path", quote(result["relativePath"]))
+                for key, value in mygrain_wavs_cors_headers().items():
+                    self.send_header(key, value)
+                self.end_headers()
+                self.wfile.write(audio_bytes)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
             return
         if route.get("homepage") and route["inner"] == "/":
             self.serve_homepage()
