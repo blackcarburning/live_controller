@@ -116,7 +116,24 @@ MYGRAIN_WAVS_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-loops")
 MYGRAIN_BASTARDLOOPS_ROUTE = "/mygrain-bastardloops"
 MYGRAIN_BASTARDLOOPS_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-bastardloops")
 MYGRAIN_WAVS_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
-MYGRAIN_BASTARDLOOP_REMOTE = "dropbox:SAMPLEDROP"
+MYGRAIN_BASTARDLOOP_SOURCE_CONFIG = {
+    "sampledrop": {
+        "remote": "dropbox:SAMPLEDROP",
+        "label": "SAMPLEDROP",
+        "filename_prefix": "bastardloop-a",
+    },
+    "sampledrop2": {
+        "remote": "dropbox:SAMPLEDROP_2",
+        "label": "SAMPLEDROP_2",
+        "filename_prefix": "bastardloop-b",
+    },
+    "splice_claw": {
+        "remote": "dropbox:SPLICE_CLAW",
+        "label": "SPLICE_CLAW",
+        "filename_prefix": "bastardloop-c",
+    },
+}
+MYGRAIN_BASTARDLOOP_DEFAULT_SOURCE = "sampledrop"
 MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE = 44100
 MYGRAIN_BASTARDLOOP_LIST_CACHE_SECONDS = 180
 MYGRAIN_BASTARDLOOP_MIN_BPM = 40
@@ -130,8 +147,11 @@ MYGRAIN_BASTARDLOOP_DIVISION_SLOT_MAP = {
 }
 MYGRAIN_BASTARDLOOP_DEFAULT_DIVISIONS = ("1/16",)
 MYGRAIN_BASTARDLOOP_SAMPLE_CACHE = {
-    "expires_at": 0.0,
-    "files": [],
+    source_key: {
+        "expires_at": 0.0,
+        "files": [],
+    }
+    for source_key in MYGRAIN_BASTARDLOOP_SOURCE_CONFIG
 }
 CUSTOMER_CHAT_STORE_PATH = ROOT / "data" / "customer_chat.json"
 CUSTOMER_CHAT_LOCK = threading.RLock()
@@ -266,13 +286,42 @@ def list_mygrain_bastardloop_files():
     return list_mygrain_repository_files(MYGRAIN_BASTARDLOOPS_ROUTE)
 
 
-def list_bastardloop_source_files(force_refresh=False):
+def normalize_bastardloop_source_key(value):
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "": MYGRAIN_BASTARDLOOP_DEFAULT_SOURCE,
+        "sampledrop": "sampledrop",
+        "a": "sampledrop",
+        "sampledrop2": "sampledrop2",
+        "sampledrop_2": "sampledrop2",
+        "b": "sampledrop2",
+        "spliceclaw": "splice_claw",
+        "splice_claw": "splice_claw",
+        "c": "splice_claw",
+    }
+    resolved = aliases.get(normalized, normalized)
+    if resolved not in MYGRAIN_BASTARDLOOP_SOURCE_CONFIG:
+        raise ValueError(f"Unknown bastardloop source: {value}")
+    return resolved
+
+
+def get_bastardloop_source_config(source_key=None):
+    normalized = normalize_bastardloop_source_key(source_key)
+    return normalized, MYGRAIN_BASTARDLOOP_SOURCE_CONFIG[normalized]
+
+
+def list_bastardloop_source_files(source_key=None, force_refresh=False):
+    source_key, source_config = get_bastardloop_source_config(source_key)
+    cache_entry = MYGRAIN_BASTARDLOOP_SAMPLE_CACHE.setdefault(source_key, {
+        "expires_at": 0.0,
+        "files": [],
+    })
     now = time.time()
-    cached_files = MYGRAIN_BASTARDLOOP_SAMPLE_CACHE.get("files") or []
+    cached_files = cache_entry.get("files") or []
     if (
         not force_refresh
         and cached_files
-        and MYGRAIN_BASTARDLOOP_SAMPLE_CACHE.get("expires_at", 0) > now
+        and cache_entry.get("expires_at", 0) > now
     ):
         return list(cached_files)
 
@@ -280,7 +329,7 @@ def list_bastardloop_source_files(force_refresh=False):
         [
             "rclone",
             "lsf",
-            MYGRAIN_BASTARDLOOP_REMOTE,
+            source_config["remote"],
             "--files-only",
             "--recursive",
             "--include",
@@ -292,19 +341,20 @@ def list_bastardloop_source_files(force_refresh=False):
     )
     files = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     if not files:
-        raise RuntimeError("No WAV files were found in Dropbox SAMPLEDROP.")
+        raise RuntimeError(f"No WAV files were found in Dropbox {source_config['label']}.")
 
-    MYGRAIN_BASTARDLOOP_SAMPLE_CACHE["files"] = files
-    MYGRAIN_BASTARDLOOP_SAMPLE_CACHE["expires_at"] = now + MYGRAIN_BASTARDLOOP_LIST_CACHE_SECONDS
+    cache_entry["files"] = files
+    cache_entry["expires_at"] = now + MYGRAIN_BASTARDLOOP_LIST_CACHE_SECONDS
     return list(files)
 
 
-def fetch_bastardloop_sample_bytes(relative_path):
+def fetch_bastardloop_sample_bytes(source_key, relative_path):
+    _, source_config = get_bastardloop_source_config(source_key)
     safe_relative_path = str(relative_path or "").replace("\\", "/").lstrip("/")
     if not safe_relative_path:
-        raise ValueError("Missing SAMPLEDROP file path.")
+        raise ValueError(f"Missing {source_config['label']} file path.")
 
-    remote_path = f"{MYGRAIN_BASTARDLOOP_REMOTE.rstrip('/')}/{safe_relative_path}"
+    remote_path = f"{source_config['remote'].rstrip('/')}/{safe_relative_path}"
     result = subprocess.run(
         ["rclone", "cat", remote_path],
         check=True,
@@ -484,14 +534,15 @@ def build_bastardloop_schedule(rng, divisions):
     return schedule
 
 
-def generate_bastardloop_file(bpm, seed=None, divisions=None):
+def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None):
     ensure_mygrain_bastardloops_root()
+    source_key, source_config = get_bastardloop_source_config(source_key)
     bpm_value = clamp_bastardloop_bpm(bpm)
     resolved_seed = str(seed or secrets.token_hex(8))
     rng = random.Random(resolved_seed)
-    available_files = list_bastardloop_source_files()
+    available_files = list_bastardloop_source_files(source_key)
     if not available_files:
-        raise RuntimeError("SAMPLEDROP is empty.")
+        raise RuntimeError(f"{source_config['label']} is empty.")
 
     enabled_divisions = normalize_bastardloop_divisions(divisions)
     schedule = build_bastardloop_schedule(rng, enabled_divisions)
@@ -510,7 +561,7 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None):
         relative_path = pool.pop() if pool else rng.choice(available_files)
         attempts += 1
         try:
-            payload = fetch_bastardloop_sample_bytes(relative_path)
+            payload = fetch_bastardloop_sample_bytes(source_key, relative_path)
             source_rate, raw_data = wavfile.read(BytesIO(payload))
             samples = audio_samples_to_float32(raw_data)
             samples = resample_audio_channels(samples, int(source_rate), MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE)
@@ -528,7 +579,7 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None):
         selected_files.append(relative_path)
 
     if len(selected_files) != len(schedule):
-        raise RuntimeError("Could not build a full bastardloop from SAMPLEDROP.")
+        raise RuntimeError(f"Could not build a full bastardloop from {source_config['label']}.")
 
     output -= np.mean(output, axis=0, keepdims=True)
     peak = float(np.max(np.abs(output))) if output.size else 0.0
@@ -537,7 +588,7 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None):
     pcm = np.int16(np.clip(output, -1.0, 1.0) * 32767.0)
 
     filename = unique_mygrain_bastardloop_filename(
-        sanitize_mygrain_wav_filename(f"bastardloop-{bpm_value}bpm-{int(time.time())}.wav")
+        sanitize_mygrain_wav_filename(f"{source_config['filename_prefix']}-{bpm_value}bpm-{int(time.time())}.wav")
     )
     target_path = MYGRAIN_BASTARDLOOPS_ROOT / filename
     wavfile.write(target_path, MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE, pcm)
@@ -555,10 +606,12 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None):
         "stepCount": len(schedule),
         "durationSeconds": duration_seconds,
         "sampleRate": MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE,
+        "sourceKey": source_key,
+        "sourceLabel": source_config["label"],
         "sampleNames": sample_names,
         "selectedDivisions": enabled_divisions,
         "eventDivisions": event_divisions,
-        "summary": f"{duration_seconds:.2f}s · {len(schedule)} cuts · {'/'.join(enabled_divisions)}",
+        "summary": f"{duration_seconds:.2f}s · {len(schedule)} cuts · {'/'.join(enabled_divisions)} · {source_config['label']}",
     }
 
 
@@ -1602,7 +1655,8 @@ class DocumenterHandler(BaseHTTPRequestHandler):
             bpm = payload.get("bpm", 120) if isinstance(payload, dict) else 120
             seed = payload.get("seed") if isinstance(payload, dict) else None
             divisions = payload.get("divisions") if isinstance(payload, dict) else None
-            result = generate_bastardloop_file(bpm, seed=seed, divisions=divisions)
+            source_key = payload.get("source") if isinstance(payload, dict) else None
+            result = generate_bastardloop_file(bpm, seed=seed, divisions=divisions, source_key=source_key)
             self.send_json(result, status=201, extra_headers=mygrain_wavs_cors_headers())
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
