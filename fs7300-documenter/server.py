@@ -132,6 +132,16 @@ MYGRAIN_BASTARDLOOP_SOURCE_CONFIG = {
         "label": "SPLICE_CLAW",
         "filename_prefix": "bastardloop-c",
     },
+    "samples_kicks": {
+        "remote": "dropbox:SAMPLES_KICKS",
+        "label": "SAMPLES_KICKS",
+        "filename_prefix": "drum-kick",
+    },
+    "samples_snares": {
+        "remote": "dropbox:SAMPLES_SNARES",
+        "label": "SAMPLES_SNARES",
+        "filename_prefix": "drum-snare",
+    },
 }
 MYGRAIN_BASTARDLOOP_DEFAULT_SOURCE = "sampledrop"
 MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE = 44100
@@ -299,6 +309,14 @@ def normalize_bastardloop_source_key(value):
         "spliceclaw": "splice_claw",
         "splice_claw": "splice_claw",
         "c": "splice_claw",
+        "samples_kicks": "samples_kicks",
+        "sample_kicks": "samples_kicks",
+        "kicks": "samples_kicks",
+        "kick": "samples_kicks",
+        "samples_snares": "samples_snares",
+        "sample_snares": "samples_snares",
+        "snares": "samples_snares",
+        "snare": "samples_snares",
     }
     resolved = aliases.get(normalized, normalized)
     if resolved not in MYGRAIN_BASTARDLOOP_SOURCE_CONFIG:
