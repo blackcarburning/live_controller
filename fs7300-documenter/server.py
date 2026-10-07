@@ -168,6 +168,8 @@ MYGRAIN_BASTARDLOOP_SAMPLE_CACHE = {
     }
     for source_key in MYGRAIN_BASTARDLOOP_SOURCE_CONFIG
 }
+MYGRAIN_SAMPLE_FEEDBACK_PATH = ROOT / "data" / "mygrain_sample_feedback.json"
+MYGRAIN_SAMPLE_FEEDBACK_LOCK = threading.RLock()
 CUSTOMER_CHAT_STORE_PATH = ROOT / "data" / "customer_chat.json"
 CUSTOMER_CHAT_LOCK = threading.RLock()
 CUSTOMER_CHAT_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -416,17 +418,20 @@ def choose_bastardloop_source_sample(source_key=None, seed=None):
 
 def list_bastardloop_source_file_entries(source_key=None):
     source_key, source_config = get_bastardloop_source_config(source_key)
+    feedback_items = load_mygrain_sample_feedback_store().get("items", {})
     files = []
     for relative_path in list_bastardloop_source_files(source_key):
         filename = pathlib.PurePosixPath(relative_path).name
         quoted_source = quote(source_key)
         quoted_path = quote(relative_path, safe="")
+        feedback_key = sample_feedback_item_key(source_key, relative_path)
         files.append({
             "name": filename,
             "relativePath": relative_path,
             "sourceKey": source_key,
             "sourceLabel": source_config["label"],
             "previewUrl": f"{MYGRAIN_BASTARDLOOPS_ROUTE}/api/source-sample?source={quoted_source}&path={quoted_path}",
+            "feedback": normalize_sample_feedback_item(feedback_items.get(feedback_key), source_key=source_key, relative_path=relative_path),
         })
     return {
         "ok": True,
@@ -716,6 +721,110 @@ def b64url_decode(value):
 
 def customer_chat_now():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def sample_feedback_now():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def sample_feedback_item_key(source_key, relative_path):
+    normalized_source_key = normalize_bastardloop_source_key(source_key)
+    normalized_relative_path = str(relative_path or "").replace("\\", "/").lstrip("/")
+    if not normalized_relative_path:
+        raise ValueError("Missing source sample path.")
+    return f"{normalized_source_key}::{normalized_relative_path}"
+
+
+def normalize_sample_feedback_reaction(value):
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"", "like", "love"} else ""
+
+
+def normalize_sample_feedback_item(item, source_key=None, relative_path=None):
+    normalized_source_key = normalize_bastardloop_source_key(source_key or (item or {}).get("sourceKey"))
+    normalized_relative_path = str(relative_path or (item or {}).get("relativePath") or "").replace("\\", "/").lstrip("/")
+    if not normalized_relative_path:
+        raise ValueError("Missing source sample path.")
+
+    raw_comment = (item or {}).get("comment", "")
+    comment = str(raw_comment if raw_comment is not None else "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if len(comment) > 2000:
+        comment = comment[:2000].rstrip()
+
+    normalized = {
+        "sourceKey": normalized_source_key,
+        "relativePath": normalized_relative_path,
+        "comment": comment,
+        "reaction": normalize_sample_feedback_reaction((item or {}).get("reaction")),
+        "updatedAt": str((item or {}).get("updatedAt") or "").strip(),
+    }
+    return normalized
+
+
+def normalize_mygrain_sample_feedback_store(store=None):
+    root = store if isinstance(store, dict) else {}
+    raw_items = root.get("items")
+    items = raw_items if isinstance(raw_items, dict) else {}
+    normalized_items = {}
+    for key, value in items.items():
+        try:
+            normalized = normalize_sample_feedback_item(value)
+        except Exception:
+            continue
+        normalized_items[sample_feedback_item_key(normalized["sourceKey"], normalized["relativePath"])] = normalized
+    return {
+        "version": 1,
+        "items": normalized_items,
+    }
+
+
+def load_mygrain_sample_feedback_store():
+    with MYGRAIN_SAMPLE_FEEDBACK_LOCK:
+        try:
+            raw = MYGRAIN_SAMPLE_FEEDBACK_PATH.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            store = normalize_mygrain_sample_feedback_store()
+            save_mygrain_sample_feedback_store(store)
+            return store
+        except Exception:
+            return normalize_mygrain_sample_feedback_store()
+        try:
+            store = normalize_mygrain_sample_feedback_store(json.loads(raw))
+        except Exception:
+            store = normalize_mygrain_sample_feedback_store()
+        save_mygrain_sample_feedback_store(store)
+        return store
+
+
+def save_mygrain_sample_feedback_store(store):
+    with MYGRAIN_SAMPLE_FEEDBACK_LOCK:
+        MYGRAIN_SAMPLE_FEEDBACK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(normalize_mygrain_sample_feedback_store(store), indent=2, sort_keys=True)
+        tmp_path = MYGRAIN_SAMPLE_FEEDBACK_PATH.with_suffix(".json.tmp")
+        tmp_path.write_text(payload, encoding="utf-8")
+        tmp_path.replace(MYGRAIN_SAMPLE_FEEDBACK_PATH)
+
+
+def update_mygrain_sample_feedback(source_key=None, relative_path=None, comment="", reaction=""):
+    normalized_source_key = normalize_bastardloop_source_key(source_key)
+    normalized_relative_path = str(relative_path or "").replace("\\", "/").lstrip("/")
+    if not normalized_relative_path:
+        raise ValueError("Missing source sample path.")
+    store = load_mygrain_sample_feedback_store()
+    item = normalize_sample_feedback_item(
+        {
+            "sourceKey": normalized_source_key,
+            "relativePath": normalized_relative_path,
+            "comment": comment,
+            "reaction": reaction,
+            "updatedAt": sample_feedback_now(),
+        },
+        source_key=normalized_source_key,
+        relative_path=normalized_relative_path,
+    )
+    store["items"][sample_feedback_item_key(normalized_source_key, normalized_relative_path)] = item
+    save_mygrain_sample_feedback_store(store)
+    return {"ok": True, "feedback": item}
 
 
 def customer_chat_message(message_id, role, text, created_at=None):
@@ -1633,6 +1742,24 @@ class DocumenterHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
             return
+        if route.get("base") == MYGRAIN_BASTARDLOOPS_ROUTE and route["inner"] == "/api/source-file-feedback":
+            try:
+                query = parse_qs(parsed.query or "", keep_blank_values=True)
+                source_key = (query.get("source") or [None])[0]
+                relative_path = (
+                    (query.get("path") or [None])[0]
+                    or (query.get("relativePath") or [None])[0]
+                    or (query.get("file") or [None])[0]
+                )
+                normalized_source_key = normalize_bastardloop_source_key(source_key)
+                store = load_mygrain_sample_feedback_store()
+                key = sample_feedback_item_key(normalized_source_key, relative_path)
+                item = store.get("items", {}).get(key)
+                feedback = normalize_sample_feedback_item(item, source_key=normalized_source_key, relative_path=relative_path)
+                self.send_json({"ok": True, "feedback": feedback}, extra_headers=mygrain_wavs_cors_headers())
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
+            return
         if route.get("base") == MYGRAIN_BASTARDLOOPS_ROUTE and route["inner"] == "/api/source-sample":
             try:
                 query = parse_qs(parsed.query or "", keep_blank_values=True)
@@ -1713,6 +1840,9 @@ class DocumenterHandler(BaseHTTPRequestHandler):
             return
         if route.get("base") == MYGRAIN_BASTARDLOOPS_ROUTE and route["inner"] == "/api/source-sample":
             self.handle_mygrain_source_sample()
+            return
+        if route.get("base") == MYGRAIN_BASTARDLOOPS_ROUTE and route["inner"] == "/api/source-file-feedback":
+            self.handle_mygrain_source_file_feedback()
             return
         if is_mygrain_repository_route(route.get("base")) and route["inner"] == "/api/rename":
             self.handle_mygrain_wavs_rename(route["base"])
@@ -1811,6 +1941,29 @@ class DocumenterHandler(BaseHTTPRequestHandler):
                 self.send_header(key, value)
             self.end_headers()
             self.wfile.write(audio_bytes)
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
+
+    def handle_mygrain_source_file_feedback(self):
+        try:
+            payload = self.read_form()
+            source_key = payload.get("source") if isinstance(payload, dict) else None
+            relative_path = (
+                payload.get("path") if isinstance(payload, dict) else None
+            ) or (
+                payload.get("relativePath") if isinstance(payload, dict) else None
+            ) or (
+                payload.get("file") if isinstance(payload, dict) else None
+            )
+            comment = payload.get("comment", "") if isinstance(payload, dict) else ""
+            reaction = payload.get("reaction", "") if isinstance(payload, dict) else ""
+            result = update_mygrain_sample_feedback(
+                source_key=source_key,
+                relative_path=relative_path,
+                comment=comment,
+                reaction=reaction,
+            )
+            self.send_json(result, status=200, extra_headers=mygrain_wavs_cors_headers())
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
 
