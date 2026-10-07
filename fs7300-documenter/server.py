@@ -142,6 +142,11 @@ MYGRAIN_BASTARDLOOP_SOURCE_CONFIG = {
         "label": "SAMPLES_SNARES",
         "filename_prefix": "drum-snare",
     },
+    "samples_hats": {
+        "remote": "dropbox:SAMPLES_HATS",
+        "label": "SAMPLES_HATS",
+        "filename_prefix": "drum-hat",
+    },
 }
 MYGRAIN_BASTARDLOOP_DEFAULT_SOURCE = "sampledrop"
 MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE = 44100
@@ -317,6 +322,10 @@ def normalize_bastardloop_source_key(value):
         "sample_snares": "samples_snares",
         "snares": "samples_snares",
         "snare": "samples_snares",
+        "samples_hats": "samples_hats",
+        "sample_hats": "samples_hats",
+        "hats": "samples_hats",
+        "hat": "samples_hats",
     }
     resolved = aliases.get(normalized, normalized)
     if resolved not in MYGRAIN_BASTARDLOOP_SOURCE_CONFIG:
