@@ -170,6 +170,8 @@ MYGRAIN_BASTARDLOOP_SAMPLE_CACHE = {
 }
 MYGRAIN_SAMPLE_FEEDBACK_PATH = ROOT / "data" / "mygrain_sample_feedback.json"
 MYGRAIN_SAMPLE_FEEDBACK_LOCK = threading.RLock()
+MYGRAIN_REPOSITORY_FEEDBACK_PATH = ROOT / "data" / "mygrain_repository_feedback.json"
+MYGRAIN_REPOSITORY_FEEDBACK_LOCK = threading.RLock()
 CUSTOMER_CHAT_STORE_PATH = ROOT / "data" / "customer_chat.json"
 CUSTOMER_CHAT_LOCK = threading.RLock()
 CUSTOMER_CHAT_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -280,6 +282,7 @@ def unique_mygrain_bastardloop_filename(filename):
 
 def list_mygrain_repository_files(route_base):
     root = ensure_mygrain_repository_root(route_base)
+    feedback_items = load_mygrain_repository_feedback_store().get("items", {})
     files = []
     for path in sorted(
         (item for item in root.iterdir() if item.is_file() and item.suffix.lower() == ".wav"),
@@ -287,11 +290,13 @@ def list_mygrain_repository_files(route_base):
         reverse=True,
     ):
         stat = path.stat()
+        feedback = feedback_items.get(repository_feedback_item_key(route_base, path.name))
         files.append({
             "name": path.name,
             "size": stat.st_size,
             "modified": stat.st_mtime,
             "url": f"{route_base}/{quote(path.name)}",
+            "feedback": normalize_repository_feedback_item(feedback, route_base=route_base, file_name=path.name),
         })
     return files
 
@@ -725,6 +730,142 @@ def customer_chat_now():
 
 def sample_feedback_now():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def normalize_mygrain_repository_route_base(route_base):
+    normalized_route_base = str(route_base or "").strip()
+    if not is_mygrain_repository_route(normalized_route_base):
+        raise ValueError("Unknown MYGRAIN repository route.")
+    return normalized_route_base
+
+
+def repository_feedback_item_key(route_base, file_name):
+    normalized_route_base = normalize_mygrain_repository_route_base(route_base)
+    normalized_file_name = sanitize_mygrain_wav_filename(file_name)
+    if not normalized_file_name:
+        raise ValueError("Missing repository filename.")
+    return f"{normalized_route_base}::{normalized_file_name}"
+
+
+def normalize_repository_feedback_item(item, route_base=None, file_name=None):
+    normalized_route_base = normalize_mygrain_repository_route_base(route_base or (item or {}).get("routeBase"))
+    normalized_file_name = sanitize_mygrain_wav_filename(file_name or (item or {}).get("fileName"))
+    if not normalized_file_name:
+        raise ValueError("Missing repository filename.")
+
+    raw_comment = (item or {}).get("comment", "")
+    comment = str(raw_comment if raw_comment is not None else "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if len(comment) > 2000:
+        comment = comment[:2000].rstrip()
+
+    return {
+        "routeBase": normalized_route_base,
+        "fileName": normalized_file_name,
+        "comment": comment,
+        "reaction": normalize_sample_feedback_reaction((item or {}).get("reaction")),
+        "updatedAt": str((item or {}).get("updatedAt") or "").strip(),
+    }
+
+
+def normalize_mygrain_repository_feedback_store(store=None):
+    root = store if isinstance(store, dict) else {}
+    raw_items = root.get("items")
+    items = raw_items if isinstance(raw_items, dict) else {}
+    normalized_items = {}
+    for value in items.values():
+        try:
+            normalized = normalize_repository_feedback_item(value)
+        except Exception:
+            continue
+        normalized_items[repository_feedback_item_key(normalized["routeBase"], normalized["fileName"])] = normalized
+    return {
+        "version": 1,
+        "items": normalized_items,
+    }
+
+
+def load_mygrain_repository_feedback_store():
+    with MYGRAIN_REPOSITORY_FEEDBACK_LOCK:
+        try:
+            raw = MYGRAIN_REPOSITORY_FEEDBACK_PATH.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            store = normalize_mygrain_repository_feedback_store()
+            save_mygrain_repository_feedback_store(store)
+            return store
+        except Exception:
+            return normalize_mygrain_repository_feedback_store()
+        try:
+            store = normalize_mygrain_repository_feedback_store(json.loads(raw))
+        except Exception:
+            store = normalize_mygrain_repository_feedback_store()
+        save_mygrain_repository_feedback_store(store)
+        return store
+
+
+def save_mygrain_repository_feedback_store(store):
+    with MYGRAIN_REPOSITORY_FEEDBACK_LOCK:
+        MYGRAIN_REPOSITORY_FEEDBACK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(normalize_mygrain_repository_feedback_store(store), indent=2, sort_keys=True)
+        tmp_path = MYGRAIN_REPOSITORY_FEEDBACK_PATH.with_suffix(".json.tmp")
+        tmp_path.write_text(payload, encoding="utf-8")
+        tmp_path.replace(MYGRAIN_REPOSITORY_FEEDBACK_PATH)
+
+
+def get_mygrain_repository_feedback(route_base=None, file_name=None):
+    normalized_route_base = normalize_mygrain_repository_route_base(route_base)
+    normalized_file_name = sanitize_mygrain_wav_filename(file_name)
+    if not normalized_file_name:
+        raise ValueError("Missing repository filename.")
+    store = load_mygrain_repository_feedback_store()
+    item = store.get("items", {}).get(repository_feedback_item_key(normalized_route_base, normalized_file_name))
+    return normalize_repository_feedback_item(item, route_base=normalized_route_base, file_name=normalized_file_name)
+
+
+def update_mygrain_repository_feedback(route_base=None, file_name=None, comment="", reaction=""):
+    normalized_route_base = normalize_mygrain_repository_route_base(route_base)
+    normalized_file_name = sanitize_mygrain_wav_filename(file_name)
+    if not normalized_file_name:
+        raise ValueError("Missing repository filename.")
+    store = load_mygrain_repository_feedback_store()
+    item = normalize_repository_feedback_item(
+        {
+            "routeBase": normalized_route_base,
+            "fileName": normalized_file_name,
+            "comment": comment,
+            "reaction": reaction,
+            "updatedAt": sample_feedback_now(),
+        },
+        route_base=normalized_route_base,
+        file_name=normalized_file_name,
+    )
+    store["items"][repository_feedback_item_key(normalized_route_base, normalized_file_name)] = item
+    save_mygrain_repository_feedback_store(store)
+    return {"ok": True, "feedback": item}
+
+
+def delete_mygrain_repository_feedback(route_base=None, file_name=None):
+    normalized_route_base = normalize_mygrain_repository_route_base(route_base)
+    normalized_file_name = sanitize_mygrain_wav_filename(file_name)
+    if not normalized_file_name:
+        raise ValueError("Missing repository filename.")
+    store = load_mygrain_repository_feedback_store()
+    store.get("items", {}).pop(repository_feedback_item_key(normalized_route_base, normalized_file_name), None)
+    save_mygrain_repository_feedback_store(store)
+
+
+def rename_mygrain_repository_feedback(route_base=None, old_file_name=None, new_file_name=None):
+    normalized_route_base = normalize_mygrain_repository_route_base(route_base)
+    normalized_old_file_name = sanitize_mygrain_wav_filename(old_file_name)
+    normalized_new_file_name = sanitize_mygrain_wav_filename(new_file_name)
+    if not normalized_old_file_name or not normalized_new_file_name:
+        raise ValueError("Missing repository filename.")
+    store = load_mygrain_repository_feedback_store()
+    old_key = repository_feedback_item_key(normalized_route_base, normalized_old_file_name)
+    item = store.get("items", {}).pop(old_key, None)
+    if item:
+        normalized_item = normalize_repository_feedback_item(item, route_base=normalized_route_base, file_name=normalized_new_file_name)
+        store["items"][repository_feedback_item_key(normalized_route_base, normalized_new_file_name)] = normalized_item
+        save_mygrain_repository_feedback_store(store)
 
 
 def sample_feedback_item_key(source_key, relative_path):
@@ -1731,6 +1872,20 @@ class DocumenterHandler(BaseHTTPRequestHandler):
         if is_mygrain_repository_route(route.get("base")) and route["inner"] == "/api/list":
             self.send_json({"ok": True, "files": list_mygrain_repository_files(route["base"])}, extra_headers=mygrain_wavs_cors_headers())
             return
+        if is_mygrain_repository_route(route.get("base")) and route["inner"] == "/api/file-feedback":
+            try:
+                query = parse_qs(parsed.query or "", keep_blank_values=True)
+                file_name = (
+                    (query.get("filename") or [None])[0]
+                    or (query.get("file") or [None])[0]
+                    or (query.get("name") or [None])[0]
+                    or (query.get("path") or [None])[0]
+                )
+                feedback = get_mygrain_repository_feedback(route["base"], file_name)
+                self.send_json({"ok": True, "feedback": feedback}, extra_headers=mygrain_wavs_cors_headers())
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
+            return
         if route.get("base") == MYGRAIN_BASTARDLOOPS_ROUTE and route["inner"] == "/api/source-files":
             try:
                 query = parse_qs(parsed.query or "", keep_blank_values=True)
@@ -1843,6 +1998,9 @@ class DocumenterHandler(BaseHTTPRequestHandler):
             return
         if route.get("base") == MYGRAIN_BASTARDLOOPS_ROUTE and route["inner"] == "/api/source-file-feedback":
             self.handle_mygrain_source_file_feedback()
+            return
+        if is_mygrain_repository_route(route.get("base")) and route["inner"] == "/api/file-feedback":
+            self.handle_mygrain_repository_file_feedback(route["base"])
             return
         if is_mygrain_repository_route(route.get("base")) and route["inner"] == "/api/rename":
             self.handle_mygrain_wavs_rename(route["base"])
@@ -1967,6 +2125,30 @@ class DocumenterHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
 
+    def handle_mygrain_repository_file_feedback(self, route_base):
+        try:
+            payload = self.read_form()
+            file_name = (
+                payload.get("filename") if isinstance(payload, dict) else None
+            ) or (
+                payload.get("file") if isinstance(payload, dict) else None
+            ) or (
+                payload.get("name") if isinstance(payload, dict) else None
+            ) or (
+                payload.get("path") if isinstance(payload, dict) else None
+            )
+            comment = payload.get("comment", "") if isinstance(payload, dict) else ""
+            reaction = payload.get("reaction", "") if isinstance(payload, dict) else ""
+            result = update_mygrain_repository_feedback(
+                route_base=route_base,
+                file_name=file_name,
+                comment=comment,
+                reaction=reaction,
+            )
+            self.send_json(result, status=200, extra_headers=mygrain_wavs_cors_headers())
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
+
     def do_DELETE(self):
         request_path = urlparse(self.path).path
         route = route_for_path(request_path)
@@ -1991,6 +2173,7 @@ class DocumenterHandler(BaseHTTPRequestHandler):
             if not target_path.exists():
                 raise FileNotFoundError("File not found.")
             target_path.unlink()
+            delete_mygrain_repository_feedback(route_base, target_name)
             self.send_json({
                 "ok": True,
                 "deletedName": target_name,
@@ -2017,6 +2200,7 @@ class DocumenterHandler(BaseHTTPRequestHandler):
             target_path = root / target_name
             if target_path != source_path:
                 source_path.rename(target_path)
+                rename_mygrain_repository_feedback(route_base, source_name, target_name)
             self.send_json({
                 "ok": True,
                 "oldName": source_name,
