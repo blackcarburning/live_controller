@@ -143,7 +143,7 @@ MYGRAIN_BASTARDLOOP_SOURCE_CONFIG = {
         "filename_prefix": "drum-snare",
     },
     "samples_hats": {
-        "remote": "dropbox:SAMPLES_HATS",
+        "remote": "dropbox:SAMPLES_SPLICE/CLOSED HATS",
         "label": "SAMPLES_HATS",
         "filename_prefix": "drum-hat",
     },
