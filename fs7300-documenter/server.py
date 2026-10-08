@@ -115,22 +115,26 @@ MYGRAIN_WAVS_ROUTE = "/mygrain-wavs"
 MYGRAIN_WAVS_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-loops")
 MYGRAIN_BASTARDLOOPS_ROUTE = "/mygrain-bastardloops"
 MYGRAIN_BASTARDLOOPS_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-bastardloops")
+MYGRAIN_BASTARDLOOP_LOCAL_SOURCE_ROOT = MYGRAIN_BASTARDLOOPS_ROOT / "sources"
 MYGRAIN_WAVS_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 MYGRAIN_BASTARDLOOP_SOURCE_CONFIG = {
     "sampledrop": {
         "remote": "dropbox:SAMPLEDROP",
         "label": "SAMPLEDROP",
         "filename_prefix": "bastardloop-a",
+        "local_dir": "SAMPLEDROP",
     },
     "sampledrop2": {
         "remote": "dropbox:SAMPLEDROP_2",
         "label": "SAMPLEDROP_2",
         "filename_prefix": "bastardloop-b",
+        "local_dir": "SAMPLEDROP2",
     },
     "splice_claw": {
         "remote": "dropbox:SPLICE_CLAW",
         "label": "SPLICE_CLAW",
         "filename_prefix": "bastardloop-c",
+        "local_dir": "SAMPLEDROP_CLAW",
     },
     "samples_kicks": {
         "remote": "dropbox:SAMPLES_KICKS",
@@ -345,6 +349,25 @@ def get_bastardloop_source_config(source_key=None):
     return normalized, MYGRAIN_BASTARDLOOP_SOURCE_CONFIG[normalized]
 
 
+def get_bastardloop_local_source_root(source_key):
+    _, source_config = get_bastardloop_source_config(source_key)
+    local_dir = str(source_config.get("local_dir") or "").strip()
+    if not local_dir:
+        return None
+    return (MYGRAIN_BASTARDLOOP_LOCAL_SOURCE_ROOT / local_dir).resolve()
+
+
+def list_local_bastardloop_source_files(local_root):
+    files = []
+    for path in sorted(local_root.rglob("*")):
+        if not path.is_file() or path.suffix.lower() != ".wav":
+            continue
+        relative_path = path.relative_to(local_root).as_posix()
+        if relative_path:
+            files.append(relative_path)
+    return files
+
+
 def list_bastardloop_source_files(source_key=None, force_refresh=False):
     source_key, source_config = get_bastardloop_source_config(source_key)
     cache_entry = MYGRAIN_BASTARDLOOP_SAMPLE_CACHE.setdefault(source_key, {
@@ -360,23 +383,30 @@ def list_bastardloop_source_files(source_key=None, force_refresh=False):
     ):
         return list(cached_files)
 
-    result = subprocess.run(
-        [
-            "rclone",
-            "lsf",
-            source_config["remote"],
-            "--files-only",
-            "--recursive",
-            "--include",
-            "*.wav",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    files = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    local_root = get_bastardloop_local_source_root(source_key)
+    if local_root:
+        if not local_root.exists():
+            raise RuntimeError(f"Local source mirror is missing for {source_config['label']}: {local_root}")
+        files = list_local_bastardloop_source_files(local_root)
+    else:
+        result = subprocess.run(
+            [
+                "rclone",
+                "lsf",
+                source_config["remote"],
+                "--files-only",
+                "--recursive",
+                "--include",
+                "*.wav",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        files = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     if not files:
-        raise RuntimeError(f"No WAV files were found in Dropbox {source_config['label']}.")
+        location_label = f"local mirror {local_root}" if local_root else f"Dropbox {source_config['label']}"
+        raise RuntimeError(f"No WAV files were found in {location_label}.")
 
     cache_entry["files"] = files
     cache_entry["expires_at"] = now + MYGRAIN_BASTARDLOOP_LIST_CACHE_SECONDS
@@ -389,15 +419,29 @@ def fetch_bastardloop_sample_bytes(source_key, relative_path):
     if not safe_relative_path:
         raise ValueError(f"Missing {source_config['label']} file path.")
 
-    remote_path = f"{source_config['remote'].rstrip('/')}/{safe_relative_path}"
-    result = subprocess.run(
-        ["rclone", "cat", remote_path],
-        check=True,
-        capture_output=True,
-    )
-    if not result.stdout:
+    local_root = get_bastardloop_local_source_root(source_key)
+    if local_root:
+        if not local_root.exists():
+            raise RuntimeError(f"Local source mirror is missing for {source_config['label']}: {local_root}")
+        local_path = (local_root / safe_relative_path).resolve()
+        try:
+            local_path.relative_to(local_root)
+        except ValueError as exc:
+            raise ValueError(f"Invalid {source_config['label']} file path: {safe_relative_path}") from exc
+        if not local_path.is_file():
+            raise RuntimeError(f"Missing mirrored sample for {source_config['label']}: {safe_relative_path}")
+        payload = local_path.read_bytes()
+    else:
+        remote_path = f"{source_config['remote'].rstrip('/')}/{safe_relative_path}"
+        result = subprocess.run(
+            ["rclone", "cat", remote_path],
+            check=True,
+            capture_output=True,
+        )
+        payload = result.stdout
+    if not payload:
         raise RuntimeError(f"Downloaded sample was empty: {safe_relative_path}")
-    return result.stdout
+    return payload
 
 
 def choose_bastardloop_source_sample(source_key=None, seed=None):
