@@ -115,7 +115,7 @@ MYGRAIN_WAVS_ROUTE = "/mygrain-wavs"
 MYGRAIN_WAVS_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-loops")
 MYGRAIN_BASTARDLOOPS_ROUTE = "/mygrain-bastardloops"
 MYGRAIN_BASTARDLOOPS_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-bastardloops")
-MYGRAIN_BASTARDLOOP_LOCAL_SOURCE_ROOT = MYGRAIN_BASTARDLOOPS_ROOT / "sources"
+MYGRAIN_BASTARDLOOP_LOCAL_SOURCE_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-source-mirrors")
 MYGRAIN_WAVS_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 MYGRAIN_BASTARDLOOP_SOURCE_CONFIG = {
     "sampledrop": {

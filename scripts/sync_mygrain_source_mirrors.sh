@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="/srv/sftp/mark_sftp/files/mygrain-bastardloops/sources"
+ROOT="/srv/sftp/mark_sftp/files/mygrain-source-mirrors"
 LOCK_FILE="/tmp/openclaw-mygrain-source-sync.lock"
 LOG_FILE="/root/.openclaw/workspace/logs/mygrain-source-sync.log"
 
