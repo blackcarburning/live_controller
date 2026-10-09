@@ -186,6 +186,8 @@ MYGRAIN_BASTARDLOOP_DEFAULT_PATTERN_STEPS = 16
 MYGRAIN_BASTARDLOOP_MIN_PATTERN_STEPS = 8
 MYGRAIN_BASTARDLOOP_MAX_PATTERN_STEPS = 64
 MYGRAIN_BASTARDLOOP_DIVISION_SLOT_MAP = {
+    "4": 128,
+    "2": 64,
     "1": 32,
     "1/2": 16,
     "1/4": 8,
@@ -684,7 +686,11 @@ def choose_bastardloop_segment(samples, sample_rate, step_frames, rng, step_inde
 
     min_source_frames = max(int(sample_rate * 0.045), int(step_frames * 0.55))
     two_beat_frames = int(beat_frames * 2) if beat_frames else 0
-    max_source_frames = min(total_frames, max(min_source_frames, int(step_frames * 2.25), two_beat_frames))
+    if total_frames <= min_source_frames:
+        min_source_frames = total_frames
+        max_source_frames = total_frames
+    else:
+        max_source_frames = min(total_frames, max(min_source_frames, int(step_frames * 2.25), two_beat_frames))
     if max_source_frames <= 0:
         raise ValueError("Could not allocate source frames for the sample.")
 
@@ -752,18 +758,24 @@ def normalize_bastardloop_divisions(divisions):
         values = []
     normalized = []
     for value in values:
+        if value.lower() == "uncut":
+            return ["uncut"]
         if value in MYGRAIN_BASTARDLOOP_DIVISION_SLOT_MAP and value not in normalized:
             normalized.append(value)
     return normalized or list(MYGRAIN_BASTARDLOOP_DEFAULT_DIVISIONS)
 
 
 def build_bastardloop_schedule(rng, divisions, pattern_steps=None):
-    allowed = [
-        {"label": label, "slots": MYGRAIN_BASTARDLOOP_DIVISION_SLOT_MAP[label]}
-        for label in normalize_bastardloop_divisions(divisions)
-    ]
     pattern_step_count = clamp_bastardloop_pattern_steps(pattern_steps)
-    remaining_slots = pattern_step_count * 2
+    total_slots = pattern_step_count * 2
+    normalized_divisions = normalize_bastardloop_divisions(divisions)
+    if normalized_divisions == ["uncut"]:
+        return [{"label": "uncut", "slots": total_slots, "uncut": True}]
+    allowed = [
+        {"label": label, "slots": min(MYGRAIN_BASTARDLOOP_DIVISION_SLOT_MAP[label], total_slots)}
+        for label in normalized_divisions
+    ]
+    remaining_slots = total_slots
     schedule = []
     while remaining_slots > 0:
         fitting = [item for item in allowed if item["slots"] <= remaining_slots]
@@ -796,31 +808,48 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, p
     output = np.zeros((total_frames, 2), dtype=np.float32)
     selected_files = []
 
-    pool = available_files[:]
-    rng.shuffle(pool)
-    attempts = 0
-    max_attempts = max(len(schedule) * 4, len(available_files) * 2)
+    if enabled_divisions == ["uncut"]:
+        attempts = 0
+        max_attempts = max(len(available_files) * 2, 4)
+        while not selected_files and attempts < max_attempts:
+            relative_path = rng.choice(available_files)
+            attempts += 1
+            try:
+                payload = fetch_bastardloop_sample_bytes(source_key, relative_path)
+                source_rate, raw_data = wavfile.read(BytesIO(payload))
+                samples = audio_samples_to_float32(raw_data)
+                samples = resample_audio_channels(samples, int(source_rate), MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE)
+                samples = ensure_stereo(samples)
+                output += resize_audio_linear(samples, total_frames)
+                selected_files.append(relative_path)
+            except Exception:
+                continue
+    else:
+        pool = available_files[:]
+        rng.shuffle(pool)
+        attempts = 0
+        max_attempts = max(len(schedule) * 4, len(available_files) * 2)
 
-    while len(selected_files) < len(schedule) and attempts < max_attempts:
-        relative_path = pool.pop() if pool else rng.choice(available_files)
-        attempts += 1
-        try:
-            payload = fetch_bastardloop_sample_bytes(source_key, relative_path)
-            source_rate, raw_data = wavfile.read(BytesIO(payload))
-            samples = audio_samples_to_float32(raw_data)
-            samples = resample_audio_channels(samples, int(source_rate), MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE)
-            samples = ensure_stereo(samples)
-            schedule_entry = schedule[len(selected_files)]
-            target_frames = max(1, slot_frames * int(schedule_entry["slots"]))
-            segment, _ = choose_bastardloop_segment(samples, MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE, target_frames, rng, len(selected_files), beat_frames=beat_frames)
-        except Exception:
-            continue
+        while len(selected_files) < len(schedule) and attempts < max_attempts:
+            relative_path = pool.pop() if pool else rng.choice(available_files)
+            attempts += 1
+            try:
+                payload = fetch_bastardloop_sample_bytes(source_key, relative_path)
+                source_rate, raw_data = wavfile.read(BytesIO(payload))
+                samples = audio_samples_to_float32(raw_data)
+                samples = resample_audio_channels(samples, int(source_rate), MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE)
+                samples = ensure_stereo(samples)
+                schedule_entry = schedule[len(selected_files)]
+                target_frames = max(1, slot_frames * int(schedule_entry["slots"]))
+                segment, _ = choose_bastardloop_segment(samples, MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE, target_frames, rng, len(selected_files), beat_frames=beat_frames)
+            except Exception:
+                continue
 
-        step_index = len(selected_files)
-        frame_start = sum(int(entry["slots"]) for entry in schedule[:step_index]) * slot_frames
-        frame_end = frame_start + target_frames
-        output[frame_start:frame_end] += segment[:target_frames]
-        selected_files.append(relative_path)
+            step_index = len(selected_files)
+            frame_start = sum(int(entry["slots"]) for entry in schedule[:step_index]) * slot_frames
+            frame_end = frame_start + target_frames
+            output[frame_start:frame_end] += segment[:target_frames]
+            selected_files.append(relative_path)
 
     if len(selected_files) != len(schedule):
         raise RuntimeError(f"Could not build a full bastardloop from {source_config['label']}.")
@@ -859,7 +888,6 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, p
         "eventDivisions": event_divisions,
         "summary": f"{duration_seconds:.2f}s · {pattern_step_count} steps · {len(schedule)} cuts · {'/'.join(enabled_divisions)} · {source_config['label']}",
     }
-
 
 def b64url(data):
     return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
