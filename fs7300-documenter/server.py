@@ -117,6 +117,9 @@ MYGRAIN_BASTARDLOOPS_ROUTE = "/mygrain-bastardloops"
 MYGRAIN_BASTARDLOOPS_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-bastardloops")
 MYGRAIN_BASTARDLOOP_LOCAL_SOURCE_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-source-mirrors")
 MYGRAIN_WAVS_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+MYGRAIN_PATCHES_ROOT = pathlib.Path("/root/.openclaw/workspace/sandboxGRANULAR/patches")
+MYGRAIN_PATCHES_ROUTE = "/mygrain/patches"
+MYGRAIN_PATCHES_MAX_UPLOAD_BYTES = 128 * 1024 * 1024
 MYGRAIN_BASTARDLOOP_SOURCE_CONFIG = {
     "sampledrop": {
         "remote": "dropbox:SAMPLEDROP",
@@ -136,20 +139,41 @@ MYGRAIN_BASTARDLOOP_SOURCE_CONFIG = {
         "filename_prefix": "bastardloop-c",
         "local_dir": "SAMPLEDROP_CLAW",
     },
+    "samples_vocal": {
+        "remote": "dropbox:SAMPLES_VOCAL",
+        "label": "SAMPLES_VOCAL",
+        "filename_prefix": "bastardloop-v",
+        "local_dir": "SAMPLES_VOCAL",
+    },
+    "samples_piano": {
+        "remote": "dropbox:SAMPLES_PIANO",
+        "label": "SAMPLES_PIANO",
+        "filename_prefix": "bastardloop-p",
+        "local_dir": "SAMPLES_PIANO",
+    },
+    "samples_orch": {
+        "remote": "dropbox:SAMPLES_ORCH",
+        "label": "SAMPLES_ORCH",
+        "filename_prefix": "bastardloop-o",
+        "local_dir": "SAMPLES_ORCH",
+    },
     "samples_kicks": {
         "remote": "dropbox:SAMPLES_KICKS",
         "label": "SAMPLES_KICKS",
         "filename_prefix": "drum-kick",
+        "local_dir": "SAMPLES_KICKS",
     },
     "samples_snares": {
         "remote": "dropbox:SAMPLES/SAMPLE_LIBRARY/FL049_EDM_Snares_&_Claps/FL049_EDM_Snares_&_Claps/ESC_Dynamic Snares_FRK",
         "label": "SAMPLES_SNARES",
         "filename_prefix": "drum-snare",
+        "local_dir": "SAMPLES_SNARES",
     },
     "samples_hats": {
         "remote": "dropbox:SAMPLES_SPLICE/CLOSED HATS",
         "label": "SAMPLES_HATS",
         "filename_prefix": "drum-hat",
+        "local_dir": "SAMPLES_HATS",
     },
 }
 MYGRAIN_BASTARDLOOP_DEFAULT_SOURCE = "sampledrop"
@@ -158,7 +182,12 @@ MYGRAIN_BASTARDLOOP_LIST_CACHE_SECONDS = 180
 MYGRAIN_BASTARDLOOP_MIN_BPM = 40
 MYGRAIN_BASTARDLOOP_MAX_BPM = 300
 MYGRAIN_BASTARDLOOP_BAR_SLOTS = 32
+MYGRAIN_BASTARDLOOP_DEFAULT_PATTERN_STEPS = 16
+MYGRAIN_BASTARDLOOP_MIN_PATTERN_STEPS = 8
+MYGRAIN_BASTARDLOOP_MAX_PATTERN_STEPS = 64
 MYGRAIN_BASTARDLOOP_DIVISION_SLOT_MAP = {
+    "1": 32,
+    "1/2": 16,
     "1/4": 8,
     "1/8": 4,
     "1/16": 2,
@@ -282,6 +311,63 @@ def unique_mygrain_wav_filename(filename):
 
 def unique_mygrain_bastardloop_filename(filename):
     return unique_mygrain_repository_filename(MYGRAIN_BASTARDLOOPS_ROUTE, filename)
+
+
+def ensure_mygrain_patches_root():
+    MYGRAIN_PATCHES_ROOT.mkdir(parents=True, exist_ok=True)
+    return MYGRAIN_PATCHES_ROOT
+
+
+def sanitize_mygrain_patch_filename(value):
+    fallback = "mygrain-patch.zip"
+    name = pathlib.PurePath(str(value or fallback).replace("\\", "/")).name
+    name = name or fallback
+    stem = re.sub(r"\.zip$", "", name, flags=re.IGNORECASE)
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem)
+    stem = re.sub(r"-+", "-", stem).strip("-_.")
+    return f"{stem or 'mygrain-patch'}.zip"
+
+
+def unique_mygrain_patch_filename(filename):
+    root = ensure_mygrain_patches_root()
+    cleaned = sanitize_mygrain_patch_filename(filename)
+    candidate = root / cleaned
+    if not candidate.exists():
+        return cleaned
+    stem = candidate.stem
+    suffix = candidate.suffix or ".zip"
+    for index in range(1, 10000):
+        next_name = f"{stem}-{index}{suffix}"
+        if not (root / next_name).exists():
+            return next_name
+    raise RuntimeError("Could not choose a unique patch filename.")
+
+
+def resolve_mygrain_patch_file(filename):
+    root = ensure_mygrain_patches_root()
+    cleaned = sanitize_mygrain_patch_filename(filename)
+    path = (root / cleaned).resolve()
+    if path.parent != root.resolve():
+        raise ValueError("Invalid patch filename.")
+    return cleaned, path
+
+
+def list_mygrain_patch_files():
+    root = ensure_mygrain_patches_root()
+    files = []
+    for path in sorted(
+        (item for item in root.iterdir() if item.is_file() and item.suffix.lower() == ".zip"),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    ):
+        stat = path.stat()
+        files.append({
+            "name": path.name,
+            "size": stat.st_size,
+            "modified": int(stat.st_mtime),
+            "url": f"{MYGRAIN_PATCHES_ROUTE}/{quote(path.name)}",
+        })
+    return files
 
 
 def list_mygrain_repository_files(route_base):
@@ -518,6 +604,15 @@ def clamp_bastardloop_bpm(value, fallback=120):
     return int(round(bpm))
 
 
+def clamp_bastardloop_pattern_steps(value, fallback=MYGRAIN_BASTARDLOOP_DEFAULT_PATTERN_STEPS):
+    try:
+        steps = float(value)
+    except (TypeError, ValueError):
+        steps = float(fallback)
+    steps = max(MYGRAIN_BASTARDLOOP_MIN_PATTERN_STEPS, min(MYGRAIN_BASTARDLOOP_MAX_PATTERN_STEPS, steps))
+    return int(round(steps))
+
+
 def audio_samples_to_float32(data):
     samples = np.asarray(data)
     if samples.ndim == 1:
@@ -582,13 +677,14 @@ def resize_audio_linear(samples, target_frames):
     return resized
 
 
-def choose_bastardloop_segment(samples, sample_rate, step_frames, rng, step_index):
+def choose_bastardloop_segment(samples, sample_rate, step_frames, rng, step_index, beat_frames=None):
     total_frames = int(samples.shape[0])
     if total_frames <= 0:
         raise ValueError("Sample had no audio frames.")
 
     min_source_frames = max(int(sample_rate * 0.045), int(step_frames * 0.55))
-    max_source_frames = min(total_frames, max(min_source_frames, int(step_frames * 2.25)))
+    two_beat_frames = int(beat_frames * 2) if beat_frames else 0
+    max_source_frames = min(total_frames, max(min_source_frames, int(step_frames * 2.25), two_beat_frames))
     if max_source_frames <= 0:
         raise ValueError("Could not allocate source frames for the sample.")
 
@@ -661,27 +757,29 @@ def normalize_bastardloop_divisions(divisions):
     return normalized or list(MYGRAIN_BASTARDLOOP_DEFAULT_DIVISIONS)
 
 
-def build_bastardloop_schedule(rng, divisions):
+def build_bastardloop_schedule(rng, divisions, pattern_steps=None):
     allowed = [
         {"label": label, "slots": MYGRAIN_BASTARDLOOP_DIVISION_SLOT_MAP[label]}
         for label in normalize_bastardloop_divisions(divisions)
     ]
-    remaining_slots = MYGRAIN_BASTARDLOOP_BAR_SLOTS
+    pattern_step_count = clamp_bastardloop_pattern_steps(pattern_steps)
+    remaining_slots = pattern_step_count * 2
     schedule = []
     while remaining_slots > 0:
         fitting = [item for item in allowed if item["slots"] <= remaining_slots]
         if not fitting:
-            raise RuntimeError("Could not fit the selected bastardloop divisions into one bar.")
+            raise RuntimeError("Could not fit the selected bastardloop divisions into the pattern length.")
         choice = rng.choice(fitting)
         schedule.append(choice.copy())
         remaining_slots -= choice["slots"]
     return schedule
 
 
-def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None):
+def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, pattern_steps=None):
     ensure_mygrain_bastardloops_root()
     source_key, source_config = get_bastardloop_source_config(source_key)
     bpm_value = clamp_bastardloop_bpm(bpm)
+    pattern_step_count = clamp_bastardloop_pattern_steps(pattern_steps)
     resolved_seed = str(seed or secrets.token_hex(8))
     rng = random.Random(resolved_seed)
     available_files = list_bastardloop_source_files(source_key)
@@ -689,10 +787,12 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None):
         raise RuntimeError(f"{source_config['label']} is empty.")
 
     enabled_divisions = normalize_bastardloop_divisions(divisions)
-    schedule = build_bastardloop_schedule(rng, enabled_divisions)
+    schedule = build_bastardloop_schedule(rng, enabled_divisions, pattern_step_count)
     slot_seconds = (60.0 / bpm_value) / 8.0
     slot_frames = max(1, int(round(slot_seconds * MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE)))
-    total_frames = slot_frames * MYGRAIN_BASTARDLOOP_BAR_SLOTS
+    total_slots = pattern_step_count * 2
+    total_frames = slot_frames * total_slots
+    beat_frames = slot_frames * 8
     output = np.zeros((total_frames, 2), dtype=np.float32)
     selected_files = []
 
@@ -712,7 +812,7 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None):
             samples = ensure_stereo(samples)
             schedule_entry = schedule[len(selected_files)]
             target_frames = max(1, slot_frames * int(schedule_entry["slots"]))
-            segment, _ = choose_bastardloop_segment(samples, MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE, target_frames, rng, len(selected_files))
+            segment, _ = choose_bastardloop_segment(samples, MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE, target_frames, rng, len(selected_files), beat_frames=beat_frames)
         except Exception:
             continue
 
@@ -747,6 +847,8 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None):
         "url": f"{MYGRAIN_BASTARDLOOPS_ROUTE}/{quote(filename)}",
         "bpm": bpm_value,
         "seed": resolved_seed,
+        "patternLength": pattern_step_count,
+        "totalSlots": total_slots,
         "stepCount": len(schedule),
         "durationSeconds": duration_seconds,
         "sampleRate": MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE,
@@ -755,7 +857,7 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None):
         "sampleNames": sample_names,
         "selectedDivisions": enabled_divisions,
         "eventDivisions": event_divisions,
-        "summary": f"{duration_seconds:.2f}s · {len(schedule)} cuts · {'/'.join(enabled_divisions)} · {source_config['label']}",
+        "summary": f"{duration_seconds:.2f}s · {pattern_step_count} steps · {len(schedule)} cuts · {'/'.join(enabled_divisions)} · {source_config['label']}",
     }
 
 
@@ -1900,7 +2002,9 @@ class DocumenterHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         route = route_for_path(urlparse(self.path).path)
-        if is_mygrain_repository_route(route.get("base")):
+        if is_mygrain_repository_route(route.get("base")) or (
+            route.get("base") == "/mygrain" and route.get("inner", "").startswith("/api/patches/")
+        ):
             self.send_response(204)
             for key, value in mygrain_wavs_cors_headers().items():
                 self.send_header(key, value)
@@ -1913,6 +2017,9 @@ class DocumenterHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         request_path = parsed.path
         route = route_for_path(request_path)
+        if route.get("base") == "/mygrain" and route["inner"] == "/api/patches/list":
+            self.send_json({"ok": True, "files": list_mygrain_patch_files()}, extra_headers=mygrain_wavs_cors_headers())
+            return
         if is_mygrain_repository_route(route.get("base")) and route["inner"] == "/api/list":
             self.send_json({"ok": True, "files": list_mygrain_repository_files(route["base"])}, extra_headers=mygrain_wavs_cors_headers())
             return
@@ -2031,6 +2138,12 @@ class DocumenterHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         request_path = urlparse(self.path).path
         route = route_for_path(request_path)
+        if route.get("base") == "/mygrain" and route["inner"] == "/api/patches/upload":
+            self.handle_mygrain_patch_upload()
+            return
+        if route.get("base") == "/mygrain" and route["inner"] == "/api/patches/rename":
+            self.handle_mygrain_patch_rename()
+            return
         if route.get("base") == MYGRAIN_WAVS_ROUTE and route["inner"] == "/api/upload":
             self.handle_mygrain_wavs_upload()
             return
@@ -2110,6 +2223,74 @@ class DocumenterHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
 
+    def handle_mygrain_patch_upload(self):
+        try:
+            ensure_mygrain_patches_root()
+            filename = self.headers.get("X-Filename") or ""
+            parsed = urlparse(self.path)
+            if not filename and parsed.query:
+                query = parse_qs(parsed.query)
+                filename = (query.get("filename") or [""])[0]
+            safe_name = unique_mygrain_patch_filename(filename)
+            content_length = int(self.headers.get("Content-Length", "0"))
+            if content_length <= 0:
+                raise ValueError("Empty upload body.")
+            if content_length > MYGRAIN_PATCHES_MAX_UPLOAD_BYTES:
+                raise ValueError("Patch ZIP is too large.")
+            payload = self.rfile.read(content_length)
+            if len(payload) != content_length:
+                raise ValueError("Could not read the full upload body.")
+            if not payload.startswith(b"PK\x03\x04"):
+                raise ValueError("Patch upload must be a ZIP file.")
+            target_path = MYGRAIN_PATCHES_ROOT / safe_name
+            with open(target_path, "wb") as handle:
+                handle.write(payload)
+            stat = target_path.stat()
+            self.send_json({
+                "ok": True,
+                "savedName": safe_name,
+                "size": stat.st_size,
+                "url": f"{MYGRAIN_PATCHES_ROUTE}/{quote(safe_name)}",
+            }, status=201, extra_headers=mygrain_wavs_cors_headers())
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
+
+    def handle_mygrain_patch_rename(self):
+        try:
+            payload = self.read_json()
+            current_name = str(
+                payload.get("from")
+                or payload.get("oldName")
+                or payload.get("filename")
+                or ""
+            ).strip()
+            desired_name = str(
+                payload.get("to")
+                or payload.get("newName")
+                or payload.get("name")
+                or ""
+            ).strip()
+            if not current_name:
+                raise ValueError("Missing source patch filename.")
+            if not desired_name:
+                raise ValueError("Missing destination patch filename.")
+            source_name, source_path = resolve_mygrain_patch_file(current_name)
+            if not source_path.exists() or not source_path.is_file():
+                raise FileNotFoundError("Patch ZIP not found.")
+            target_name = sanitize_mygrain_patch_filename(desired_name)
+            target_name = unique_mygrain_patch_filename(target_name) if target_name != source_name else source_name
+            _, target_path = resolve_mygrain_patch_file(target_name)
+            if target_path != source_path:
+                source_path.rename(target_path)
+            self.send_json({
+                "ok": True,
+                "oldName": source_name,
+                "savedName": target_name,
+                "url": f"{MYGRAIN_PATCHES_ROUTE}/{quote(target_name)}",
+            }, extra_headers=mygrain_wavs_cors_headers())
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
+
     def handle_mygrain_bastardloop(self):
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
@@ -2118,7 +2299,8 @@ class DocumenterHandler(BaseHTTPRequestHandler):
             seed = payload.get("seed") if isinstance(payload, dict) else None
             divisions = payload.get("divisions") if isinstance(payload, dict) else None
             source_key = payload.get("source") if isinstance(payload, dict) else None
-            result = generate_bastardloop_file(bpm, seed=seed, divisions=divisions, source_key=source_key)
+            pattern_steps = payload.get("patternLength", payload.get("patternSteps")) if isinstance(payload, dict) else None
+            result = generate_bastardloop_file(bpm, seed=seed, divisions=divisions, source_key=source_key, pattern_steps=pattern_steps)
             self.send_json(result, status=201, extra_headers=mygrain_wavs_cors_headers())
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
@@ -2196,6 +2378,9 @@ class DocumenterHandler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         request_path = urlparse(self.path).path
         route = route_for_path(request_path)
+        if route.get("base") == "/mygrain" and route["inner"] == "/api/patches/delete":
+            self.handle_mygrain_patch_delete()
+            return
         if is_mygrain_repository_route(route.get("base")) and route["inner"] == "/api/delete":
             self.handle_mygrain_wavs_delete(route["base"])
             return
@@ -2218,6 +2403,24 @@ class DocumenterHandler(BaseHTTPRequestHandler):
                 raise FileNotFoundError("File not found.")
             target_path.unlink()
             delete_mygrain_repository_feedback(route_base, target_name)
+            self.send_json({
+                "ok": True,
+                "deletedName": target_name,
+            }, extra_headers=mygrain_wavs_cors_headers())
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
+
+    def handle_mygrain_patch_delete(self):
+        try:
+            parsed = urlparse(self.path)
+            filename = self.headers.get("X-Filename") or ""
+            if not filename and parsed.query:
+                query = parse_qs(parsed.query)
+                filename = (query.get("filename") or [""])[0]
+            target_name, target_path = resolve_mygrain_patch_file(filename)
+            if not target_path.exists() or not target_path.is_file():
+                raise FileNotFoundError("Patch ZIP not found.")
+            target_path.unlink()
             self.send_json({
                 "ok": True,
                 "deletedName": target_name,
