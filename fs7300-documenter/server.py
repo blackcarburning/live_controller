@@ -1005,7 +1005,33 @@ def build_bastardloop_schedule(rng, divisions, pattern_steps=None):
     return schedule
 
 
-def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, pattern_steps=None):
+def resolve_bastardloop_requested_source_files(source_key, requested_files, available_files):
+    if not isinstance(requested_files, (list, tuple)):
+        return []
+    exact_paths = {str(path).replace("\\", "/").lstrip("/") for path in available_files}
+    basename_map = {}
+    for path in exact_paths:
+        basename_map.setdefault(pathlib.PurePosixPath(path).name, []).append(path)
+
+    resolved = []
+    for requested in requested_files[:256]:
+        value = str(requested or "").replace("\\", "/").lstrip("/")
+        if not value:
+            continue
+        if value in exact_paths:
+            resolved.append(value)
+            continue
+        matches = basename_map.get(pathlib.PurePosixPath(value).name) or []
+        if len(matches) == 1:
+            resolved.append(matches[0])
+            continue
+        if len(matches) > 1:
+            raise RuntimeError(f"Sample name is ambiguous in {source_key}: {value}")
+        raise RuntimeError(f"Requested sample was not found in {source_key}: {value}")
+    return resolved
+
+
+def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, pattern_steps=None, source_files=None):
     ensure_mygrain_bastardloops_root()
     source_key, source_config = get_bastardloop_source_config(source_key)
     bpm_value = clamp_bastardloop_bpm(bpm)
@@ -1015,6 +1041,8 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, p
     available_files = list_bastardloop_source_files(source_key)
     if not available_files:
         raise RuntimeError(f"{source_config['label']} is empty.")
+    requested_source_files = resolve_bastardloop_requested_source_files(source_key, source_files, available_files)
+    source_pool = requested_source_files or available_files
 
     enabled_divisions = normalize_bastardloop_divisions(divisions)
     schedule = build_bastardloop_schedule(rng, enabled_divisions, pattern_step_count)
@@ -1029,9 +1057,9 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, p
 
     if enabled_divisions == ["uncut"]:
         attempts = 0
-        max_attempts = max(len(available_files) * 2, 4)
+        max_attempts = max(len(source_pool) * 2, 4)
         while not selected_files and attempts < max_attempts:
-            relative_path = rng.choice(available_files)
+            relative_path = rng.choice(source_pool)
             attempts += 1
             try:
                 payload = fetch_bastardloop_sample_bytes(source_key, relative_path)
@@ -1053,13 +1081,13 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, p
             except Exception:
                 continue
     else:
-        pool = available_files[:]
+        pool = source_pool[:]
         rng.shuffle(pool)
         attempts = 0
-        max_attempts = max(len(schedule) * 4, len(available_files) * 2)
+        max_attempts = max(len(schedule) * 4, len(source_pool) * 2)
 
         while len(selected_files) < len(schedule) and attempts < max_attempts:
-            relative_path = pool.pop() if pool else rng.choice(available_files)
+            relative_path = pool.pop() if pool else rng.choice(source_pool)
             attempts += 1
             try:
                 payload = fetch_bastardloop_sample_bytes(source_key, relative_path)
@@ -1121,6 +1149,8 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, p
         "sourceLabel": source_config["label"],
         "detectedSourceBpms": [int(value) for value in detected_source_bpms if value],
         "sampleNames": sample_names,
+        "samplePaths": selected_files,
+        "reusedSourceFiles": bool(requested_source_files),
         "selectedDivisions": enabled_divisions,
         "eventDivisions": event_divisions,
         "summary": f"{duration_seconds:.2f}s · {pattern_step_count} steps · {len(schedule)} cuts · {'/'.join(enabled_divisions)} · {source_config['label']}",
@@ -2570,8 +2600,16 @@ class DocumenterHandler(BaseHTTPRequestHandler):
             seed = payload.get("seed") if isinstance(payload, dict) else None
             divisions = payload.get("divisions") if isinstance(payload, dict) else None
             source_key = payload.get("source") if isinstance(payload, dict) else None
+            source_files = payload.get("sourceFiles") if isinstance(payload, dict) else None
             pattern_steps = payload.get("patternLength", payload.get("patternSteps")) if isinstance(payload, dict) else None
-            result = generate_bastardloop_file(bpm, seed=seed, divisions=divisions, source_key=source_key, pattern_steps=pattern_steps)
+            result = generate_bastardloop_file(
+                bpm,
+                seed=seed,
+                divisions=divisions,
+                source_key=source_key,
+                pattern_steps=pattern_steps,
+                source_files=source_files,
+            )
             self.send_json(result, status=201, extra_headers=mygrain_wavs_cors_headers())
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
