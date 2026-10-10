@@ -170,7 +170,7 @@ MYGRAIN_BASTARDLOOP_SOURCE_CONFIG = {
         "local_dir": "SAMPLES_SNARES",
     },
     "samples_hats": {
-        "remote": "dropbox:SAMPLES_SPLICE/CLOSED HATS",
+        "remote": "dropbox:SAMPLES_HATS",
         "label": "SAMPLES_HATS",
         "filename_prefix": "drum-hat",
         "local_dir": "SAMPLES_HATS",
