@@ -200,6 +200,11 @@ MYGRAIN_BASTARDLOOP_DIVISION_SLOT_MAP = {
     "1/32": 1,
 }
 MYGRAIN_BASTARDLOOP_DEFAULT_DIVISIONS = ("1/16",)
+MYGRAIN_BASTARDLOOP_BAR_LOCKED_SOURCE_KEYS = {
+    "samples_vocal",
+    "samples_piano",
+    "samples_orch",
+}
 MYGRAIN_BASTARDLOOP_FILENAME_BPM_RE = re.compile(
     r"(?<!\d)(?:bpm[\s._-]*([4-9]\d|[12]\d{2}|300)|([4-9]\d|[12]\d{2}|300)[\s._-]*bpm)(?!\d)",
     re.IGNORECASE,
@@ -834,8 +839,8 @@ def time_stretch_audio_preserve_pitch(samples, rate):
     return pad_or_truncate_audio(stacked, target_frames)
 
 
-def maybe_prepare_v_bastardloop_source(samples, sample_rate, source_key, relative_path, target_bpm):
-    if source_key != "samples_vocal":
+def maybe_prepare_bar_locked_bastardloop_source(samples, sample_rate, source_key, relative_path, target_bpm):
+    if source_key not in MYGRAIN_BASTARDLOOP_BAR_LOCKED_SOURCE_KEYS:
         return samples, {}
     source_bpm = detect_bastardloop_filename_bpm(relative_path)
     if not source_bpm:
@@ -1034,7 +1039,7 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, p
                 samples = audio_samples_to_float32(raw_data)
                 samples = resample_audio_channels(samples, int(source_rate), MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE)
                 samples = ensure_stereo(samples)
-                samples, prep_meta = maybe_prepare_v_bastardloop_source(
+                samples, prep_meta = maybe_prepare_bar_locked_bastardloop_source(
                     samples,
                     MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE,
                     source_key,
@@ -1062,7 +1067,7 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, p
                 samples = audio_samples_to_float32(raw_data)
                 samples = resample_audio_channels(samples, int(source_rate), MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE)
                 samples = ensure_stereo(samples)
-                samples, prep_meta = maybe_prepare_v_bastardloop_source(
+                samples, prep_meta = maybe_prepare_bar_locked_bastardloop_source(
                     samples,
                     MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE,
                     source_key,
