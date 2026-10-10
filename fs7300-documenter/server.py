@@ -445,6 +445,13 @@ def get_bastardloop_local_source_root(source_key):
     return (MYGRAIN_BASTARDLOOP_LOCAL_SOURCE_ROOT / local_dir).resolve()
 
 
+def resolve_existing_bastardloop_local_source_root(source_key):
+    local_root = get_bastardloop_local_source_root(source_key)
+    if not local_root or not local_root.exists():
+        return None
+    return local_root
+
+
 def list_local_bastardloop_source_files(local_root):
     files = []
     for path in sorted(local_root.rglob("*")):
@@ -471,10 +478,8 @@ def list_bastardloop_source_files(source_key=None, force_refresh=False):
     ):
         return list(cached_files)
 
-    local_root = get_bastardloop_local_source_root(source_key)
+    local_root = resolve_existing_bastardloop_local_source_root(source_key)
     if local_root:
-        if not local_root.exists():
-            raise RuntimeError(f"Local source mirror is missing for {source_config['label']}: {local_root}")
         files = list_local_bastardloop_source_files(local_root)
     else:
         result = subprocess.run(
@@ -507,10 +512,8 @@ def fetch_bastardloop_sample_bytes(source_key, relative_path):
     if not safe_relative_path:
         raise ValueError(f"Missing {source_config['label']} file path.")
 
-    local_root = get_bastardloop_local_source_root(source_key)
+    local_root = resolve_existing_bastardloop_local_source_root(source_key)
     if local_root:
-        if not local_root.exists():
-            raise RuntimeError(f"Local source mirror is missing for {source_config['label']}: {local_root}")
         local_path = (local_root / safe_relative_path).resolve()
         try:
             local_path.relative_to(local_root)
