@@ -164,7 +164,7 @@ MYGRAIN_BASTARDLOOP_SOURCE_CONFIG = {
         "local_dir": "SAMPLES_KICKS",
     },
     "samples_snares": {
-        "remote": "dropbox:SAMPLES/SAMPLE_LIBRARY/FL049_EDM_Snares_&_Claps/FL049_EDM_Snares_&_Claps/ESC_Dynamic Snares_FRK",
+        "remote": "dropbox:SAMPLES_SNARES",
         "label": "SAMPLES_SNARES",
         "filename_prefix": "drum-snare",
         "local_dir": "SAMPLES_SNARES",
