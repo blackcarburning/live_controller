@@ -55,6 +55,7 @@ PROTECTED_ROUTES = [
     {"base": "/mygrain", "root": pathlib.Path("/root/.openclaw/workspace/sandboxGRANULAR"), "documenter_api": False, "public": True},
     {"base": "/mygrain-wavs", "root": pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-loops"), "documenter_api": False, "public": True},
     {"base": "/mygrain-bastardloops", "root": pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-bastardloops"), "documenter_api": False, "public": True},
+    {"base": "/mygrain-stems", "root": pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-stems"), "documenter_api": False, "public": True},
 ]
 
 FETCH_GROUPS = [
@@ -115,8 +116,11 @@ MYGRAIN_WAVS_ROUTE = "/mygrain-wavs"
 MYGRAIN_WAVS_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-loops")
 MYGRAIN_BASTARDLOOPS_ROUTE = "/mygrain-bastardloops"
 MYGRAIN_BASTARDLOOPS_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-bastardloops")
+MYGRAIN_STEMS_ROUTE = "/mygrain-stems"
+MYGRAIN_STEMS_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-stems")
 MYGRAIN_BASTARDLOOP_LOCAL_SOURCE_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-source-mirrors")
 MYGRAIN_WAVS_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+MYGRAIN_STEMS_MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 MYGRAIN_PATCHES_ROOT = pathlib.Path("/root/.openclaw/workspace/sandboxGRANULAR/patches")
 MYGRAIN_PATCHES_ROUTE = "/mygrain/patches"
 MYGRAIN_PATCHES_MAX_UPLOAD_BYTES = 128 * 1024 * 1024
@@ -254,7 +258,7 @@ def mygrain_wavs_cors_headers():
 
 
 def is_mygrain_repository_route(route_base):
-    return route_base in (MYGRAIN_WAVS_ROUTE, MYGRAIN_BASTARDLOOPS_ROUTE)
+    return route_base in (MYGRAIN_WAVS_ROUTE, MYGRAIN_BASTARDLOOPS_ROUTE, MYGRAIN_STEMS_ROUTE)
 
 
 def mygrain_repository_root(route_base):
@@ -262,7 +266,19 @@ def mygrain_repository_root(route_base):
         return MYGRAIN_WAVS_ROOT
     if route_base == MYGRAIN_BASTARDLOOPS_ROUTE:
         return MYGRAIN_BASTARDLOOPS_ROOT
+    if route_base == MYGRAIN_STEMS_ROUTE:
+        return MYGRAIN_STEMS_ROOT
     raise ValueError(f"Unknown MYGRAIN repository route: {route_base}")
+
+
+def mygrain_repository_extension(route_base):
+    normalized_route_base = normalize_mygrain_repository_route_base(route_base)
+    return ".zip" if normalized_route_base == MYGRAIN_STEMS_ROUTE else ".wav"
+
+
+def mygrain_repository_max_upload_bytes(route_base):
+    normalized_route_base = normalize_mygrain_repository_route_base(route_base)
+    return MYGRAIN_STEMS_MAX_UPLOAD_BYTES if normalized_route_base == MYGRAIN_STEMS_ROUTE else MYGRAIN_WAVS_MAX_UPLOAD_BYTES
 
 
 def ensure_mygrain_repository_root(route_base):
@@ -279,6 +295,10 @@ def ensure_mygrain_bastardloops_root():
     ensure_mygrain_repository_root(MYGRAIN_BASTARDLOOPS_ROUTE)
 
 
+def ensure_mygrain_stems_root():
+    ensure_mygrain_repository_root(MYGRAIN_STEMS_ROUTE)
+
+
 def sanitize_mygrain_wav_filename(value):
     fallback = "mygrain-loop.wav"
     raw = str(value or "").strip()
@@ -293,18 +313,36 @@ def sanitize_mygrain_wav_filename(value):
     return cleaned
 
 
+def sanitize_mygrain_stem_filename(value):
+    fallback = "mygrain-stems.zip"
+    name = pathlib.PurePath(str(value or fallback).replace("\\", "/")).name
+    name = name or fallback
+    stem = re.sub(r"\.zip$", "", name, flags=re.IGNORECASE)
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem)
+    stem = re.sub(r"-+", "-", stem).strip("-_.")
+    return f"{stem or 'mygrain-stems'}.zip"
+
+
+def sanitize_mygrain_repository_filename(route_base, value):
+    normalized_route_base = normalize_mygrain_repository_route_base(route_base)
+    if normalized_route_base == MYGRAIN_STEMS_ROUTE:
+        return sanitize_mygrain_stem_filename(value)
+    return sanitize_mygrain_wav_filename(value)
+
+
 def unique_mygrain_repository_filename(route_base, filename):
     root = ensure_mygrain_repository_root(route_base)
-    candidate = root / filename
+    cleaned = sanitize_mygrain_repository_filename(route_base, filename)
+    candidate = root / cleaned
     if not candidate.exists():
-        return filename
+        return cleaned
     stem = candidate.stem
-    suffix = candidate.suffix or ".wav"
+    suffix = candidate.suffix or mygrain_repository_extension(route_base)
     for index in range(1, 1000):
         next_name = f"{stem}-{index}{suffix}"
         if not (root / next_name).exists():
             return next_name
-    raise RuntimeError("Could not allocate a unique WAV filename.")
+    raise RuntimeError("Could not allocate a unique MYGRAIN repository filename.")
 
 
 def unique_mygrain_wav_filename(filename):
@@ -313,6 +351,10 @@ def unique_mygrain_wav_filename(filename):
 
 def unique_mygrain_bastardloop_filename(filename):
     return unique_mygrain_repository_filename(MYGRAIN_BASTARDLOOPS_ROUTE, filename)
+
+
+def unique_mygrain_stem_filename(filename):
+    return unique_mygrain_repository_filename(MYGRAIN_STEMS_ROUTE, filename)
 
 
 def ensure_mygrain_patches_root():
@@ -374,10 +416,11 @@ def list_mygrain_patch_files():
 
 def list_mygrain_repository_files(route_base):
     root = ensure_mygrain_repository_root(route_base)
+    suffix = mygrain_repository_extension(route_base)
     feedback_items = load_mygrain_repository_feedback_store().get("items", {})
     files = []
     for path in sorted(
-        (item for item in root.iterdir() if item.is_file() and item.suffix.lower() == ".wav"),
+        (item for item in root.iterdir() if item.is_file() and item.suffix.lower() == suffix),
         key=lambda item: item.stat().st_mtime,
         reverse=True,
     ):
@@ -954,7 +997,7 @@ def normalize_mygrain_repository_route_base(route_base):
 
 def repository_feedback_item_key(route_base, file_name):
     normalized_route_base = normalize_mygrain_repository_route_base(route_base)
-    normalized_file_name = sanitize_mygrain_wav_filename(file_name)
+    normalized_file_name = sanitize_mygrain_repository_filename(normalized_route_base, file_name)
     if not normalized_file_name:
         raise ValueError("Missing repository filename.")
     return f"{normalized_route_base}::{normalized_file_name}"
@@ -962,7 +1005,7 @@ def repository_feedback_item_key(route_base, file_name):
 
 def normalize_repository_feedback_item(item, route_base=None, file_name=None):
     normalized_route_base = normalize_mygrain_repository_route_base(route_base or (item or {}).get("routeBase"))
-    normalized_file_name = sanitize_mygrain_wav_filename(file_name or (item or {}).get("fileName"))
+    normalized_file_name = sanitize_mygrain_repository_filename(normalized_route_base, file_name or (item or {}).get("fileName"))
     if not normalized_file_name:
         raise ValueError("Missing repository filename.")
 
@@ -1026,7 +1069,7 @@ def save_mygrain_repository_feedback_store(store):
 
 def get_mygrain_repository_feedback(route_base=None, file_name=None):
     normalized_route_base = normalize_mygrain_repository_route_base(route_base)
-    normalized_file_name = sanitize_mygrain_wav_filename(file_name)
+    normalized_file_name = sanitize_mygrain_repository_filename(normalized_route_base, file_name)
     if not normalized_file_name:
         raise ValueError("Missing repository filename.")
     store = load_mygrain_repository_feedback_store()
@@ -1036,7 +1079,7 @@ def get_mygrain_repository_feedback(route_base=None, file_name=None):
 
 def update_mygrain_repository_feedback(route_base=None, file_name=None, comment="", reaction=""):
     normalized_route_base = normalize_mygrain_repository_route_base(route_base)
-    normalized_file_name = sanitize_mygrain_wav_filename(file_name)
+    normalized_file_name = sanitize_mygrain_repository_filename(normalized_route_base, file_name)
     if not normalized_file_name:
         raise ValueError("Missing repository filename.")
     store = load_mygrain_repository_feedback_store()
@@ -1058,7 +1101,7 @@ def update_mygrain_repository_feedback(route_base=None, file_name=None, comment=
 
 def delete_mygrain_repository_feedback(route_base=None, file_name=None):
     normalized_route_base = normalize_mygrain_repository_route_base(route_base)
-    normalized_file_name = sanitize_mygrain_wav_filename(file_name)
+    normalized_file_name = sanitize_mygrain_repository_filename(normalized_route_base, file_name)
     if not normalized_file_name:
         raise ValueError("Missing repository filename.")
     store = load_mygrain_repository_feedback_store()
@@ -1068,8 +1111,8 @@ def delete_mygrain_repository_feedback(route_base=None, file_name=None):
 
 def rename_mygrain_repository_feedback(route_base=None, old_file_name=None, new_file_name=None):
     normalized_route_base = normalize_mygrain_repository_route_base(route_base)
-    normalized_old_file_name = sanitize_mygrain_wav_filename(old_file_name)
-    normalized_new_file_name = sanitize_mygrain_wav_filename(new_file_name)
+    normalized_old_file_name = sanitize_mygrain_repository_filename(normalized_route_base, old_file_name)
+    normalized_new_file_name = sanitize_mygrain_repository_filename(normalized_route_base, new_file_name)
     if not normalized_old_file_name or not normalized_new_file_name:
         raise ValueError("Missing repository filename.")
     store = load_mygrain_repository_feedback_store()
@@ -2211,8 +2254,8 @@ class DocumenterHandler(BaseHTTPRequestHandler):
         if route.get("base") == "/mygrain" and route["inner"] == "/api/patches/rename":
             self.handle_mygrain_patch_rename()
             return
-        if route.get("base") == MYGRAIN_WAVS_ROUTE and route["inner"] == "/api/upload":
-            self.handle_mygrain_wavs_upload()
+        if route.get("base") in (MYGRAIN_WAVS_ROUTE, MYGRAIN_STEMS_ROUTE) and route["inner"] == "/api/upload":
+            self.handle_mygrain_repository_upload(route["base"])
             return
         if route.get("base") == MYGRAIN_BASTARDLOOPS_ROUTE and route["inner"] == "/api/bastardloop":
             self.handle_mygrain_bastardloop()
@@ -2260,24 +2303,27 @@ class DocumenterHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc), "debug": traceback.format_exc().splitlines()}, status=500)
 
-    def handle_mygrain_wavs_upload(self):
+    def handle_mygrain_repository_upload(self, route_base):
         try:
-            ensure_mygrain_wavs_root()
+            normalized_route_base = normalize_mygrain_repository_route_base(route_base)
+            root = ensure_mygrain_repository_root(normalized_route_base)
             filename = self.headers.get("X-Filename") or ""
             parsed = urlparse(self.path)
             if not filename and parsed.query:
                 query = parse_qs(parsed.query)
                 filename = (query.get("filename") or [""])[0]
-            safe_name = unique_mygrain_wav_filename(sanitize_mygrain_wav_filename(filename))
+            safe_name = unique_mygrain_repository_filename(normalized_route_base, filename)
             content_length = int(self.headers.get("Content-Length", "0"))
             if content_length <= 0:
                 raise ValueError("Empty upload body.")
-            if content_length > MYGRAIN_WAVS_MAX_UPLOAD_BYTES:
+            if content_length > mygrain_repository_max_upload_bytes(normalized_route_base):
                 raise ValueError("Upload is too large.")
             payload = self.rfile.read(content_length)
             if len(payload) != content_length:
                 raise ValueError("Could not read the full upload body.")
-            target_path = MYGRAIN_WAVS_ROOT / safe_name
+            if normalized_route_base == MYGRAIN_STEMS_ROUTE and not payload.startswith(b"PK\x03\x04"):
+                raise ValueError("Stem upload must be a ZIP file.")
+            target_path = root / safe_name
             with open(target_path, "wb") as handle:
                 handle.write(payload)
             stat = target_path.stat()
@@ -2285,10 +2331,13 @@ class DocumenterHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "savedName": safe_name,
                 "size": stat.st_size,
-                "url": f"{MYGRAIN_WAVS_ROUTE}/{quote(safe_name)}",
+                "url": f"{normalized_route_base}/{quote(safe_name)}",
             }, status=201, extra_headers=mygrain_wavs_cors_headers())
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
+
+    def handle_mygrain_wavs_upload(self):
+        self.handle_mygrain_repository_upload(MYGRAIN_WAVS_ROUTE)
 
     def handle_mygrain_patch_upload(self):
         try:
@@ -2464,7 +2513,7 @@ class DocumenterHandler(BaseHTTPRequestHandler):
             if not filename and parsed.query:
                 query = parse_qs(parsed.query)
                 filename = (query.get("filename") or [""])[0]
-            target_name = sanitize_mygrain_wav_filename(filename)
+            target_name = sanitize_mygrain_repository_filename(route_base, filename)
             target_path = root / target_name
             if not target_path.exists():
                 raise FileNotFoundError("File not found.")
@@ -2505,11 +2554,11 @@ class DocumenterHandler(BaseHTTPRequestHandler):
                 raise ValueError("Missing source filename.")
             if not desired_name:
                 raise ValueError("Missing destination filename.")
-            source_name = sanitize_mygrain_wav_filename(current_name)
+            source_name = sanitize_mygrain_repository_filename(route_base, current_name)
             source_path = root / source_name
             if not source_path.exists():
                 raise FileNotFoundError("File not found.")
-            target_name = sanitize_mygrain_wav_filename(desired_name)
+            target_name = sanitize_mygrain_repository_filename(route_base, desired_name)
             target_name = unique_mygrain_repository_filename(route_base, target_name) if target_name != source_name else source_name
             target_path = root / target_name
             if target_path != source_path:
