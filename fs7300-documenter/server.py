@@ -200,6 +200,11 @@ MYGRAIN_BASTARDLOOP_DIVISION_SLOT_MAP = {
     "1/32": 1,
 }
 MYGRAIN_BASTARDLOOP_DEFAULT_DIVISIONS = ("1/16",)
+MYGRAIN_BASTARDLOOP_FILENAME_BPM_RE = re.compile(
+    r"(?<!\d)(?:bpm[\s._-]*([4-9]\d|[12]\d{2}|300)|([4-9]\d|[12]\d{2}|300)[\s._-]*bpm)(?!\d)",
+    re.IGNORECASE,
+)
+MYGRAIN_BASTARDLOOP_FILENAME_BPM_FALLBACK_RE = re.compile(r"(?<!\d)([4-9]\d|[12]\d{2}|300)(?!\d)")
 MYGRAIN_BASTARDLOOP_SAMPLE_CACHE = {
     source_key: {
         "expires_at": 0.0,
@@ -725,6 +730,133 @@ def resize_audio_linear(samples, target_frames):
     return resized
 
 
+def detect_bastardloop_filename_bpm(relative_path):
+    stem = pathlib.PurePosixPath(str(relative_path or "")).stem
+    if not stem:
+        return None
+    labelled = MYGRAIN_BASTARDLOOP_FILENAME_BPM_RE.search(stem)
+    if labelled:
+        candidate = labelled.group(1) or labelled.group(2)
+        return clamp_bastardloop_bpm(candidate) if candidate else None
+    fallback_matches = MYGRAIN_BASTARDLOOP_FILENAME_BPM_FALLBACK_RE.findall(stem)
+    if len(fallback_matches) == 1:
+        return clamp_bastardloop_bpm(fallback_matches[0])
+    return None
+
+
+def infer_bastardloop_bar_count(total_frames, sample_rate, source_bpm):
+    if total_frames <= 0 or sample_rate <= 0 or not source_bpm:
+        return None
+    estimated_bars = (float(total_frames) / float(sample_rate)) * (float(source_bpm) / 240.0)
+    return max(1, int(round(estimated_bars)))
+
+
+def pad_or_truncate_audio(samples, target_frames):
+    target_frames = int(target_frames)
+    if target_frames <= 0:
+        raise ValueError("Target frame count must be positive.")
+    if samples.shape[0] == target_frames:
+        return samples.astype(np.float32, copy=False)
+    if samples.shape[0] > target_frames:
+        return samples[:target_frames].astype(np.float32, copy=False)
+    padded = np.zeros((target_frames, samples.shape[1]), dtype=np.float32)
+    padded[:samples.shape[0]] = samples.astype(np.float32, copy=False)
+    return padded
+
+
+def time_stretch_audio_preserve_pitch(samples, rate):
+    rate = float(rate)
+    if rate <= 0:
+        raise ValueError("Stretch rate must be positive.")
+    if samples.ndim != 2:
+        raise ValueError("Expected stereo or mono 2D audio array.")
+    source_frames = int(samples.shape[0])
+    if source_frames <= 0:
+        return samples.astype(np.float32, copy=True)
+    target_frames = max(1, int(round(source_frames / rate)))
+    if abs(rate - 1.0) < 1e-4 or source_frames < 64:
+        return pad_or_truncate_audio(samples.astype(np.float32, copy=True), target_frames)
+
+    base_fft = min(2048, source_frames)
+    n_fft = 1 << int(math.floor(math.log2(base_fft))) if base_fft >= 2 else base_fft
+    if n_fft < 64:
+        return resize_audio_linear(samples.astype(np.float32, copy=False), target_frames)
+    hop_length = max(16, n_fft // 4)
+    noverlap = n_fft - hop_length
+
+    stretched_channels = []
+    for channel_index in range(samples.shape[1]):
+        channel = samples[:, channel_index].astype(np.float32, copy=False)
+        _, _, stft_matrix = signal.stft(
+            channel,
+            fs=1.0,
+            window="hann",
+            nperseg=n_fft,
+            noverlap=noverlap,
+            boundary="zeros",
+            padded=True,
+        )
+        if stft_matrix.shape[1] < 2:
+            stretched_channels.append(resize_audio_linear(channel[:, np.newaxis], target_frames)[:, 0])
+            continue
+
+        time_steps = np.arange(0, stft_matrix.shape[1] - 1, rate, dtype=np.float64)
+        if time_steps.size == 0:
+            time_steps = np.array([0.0], dtype=np.float64)
+        stretched = np.zeros((stft_matrix.shape[0], len(time_steps)), dtype=np.complex64)
+        phase_acc = np.angle(stft_matrix[:, 0]).astype(np.float64)
+        stretched[:, 0] = stft_matrix[:, 0]
+        phase_advance = hop_length * 2.0 * math.pi * np.arange(stft_matrix.shape[0], dtype=np.float64) / max(1, n_fft)
+
+        for output_index, step in enumerate(time_steps[1:], start=1):
+            frame_index = min(int(math.floor(step)), stft_matrix.shape[1] - 2)
+            frac = float(step - frame_index)
+            column_a = stft_matrix[:, frame_index]
+            column_b = stft_matrix[:, frame_index + 1]
+            magnitude = (1.0 - frac) * np.abs(column_a) + frac * np.abs(column_b)
+            delta = np.angle(column_b) - np.angle(column_a) - phase_advance
+            delta -= 2.0 * math.pi * np.round(delta / (2.0 * math.pi))
+            phase_acc += phase_advance + delta
+            stretched[:, output_index] = magnitude * np.exp(1j * phase_acc)
+
+        _, stretched_channel = signal.istft(
+            stretched,
+            fs=1.0,
+            window="hann",
+            nperseg=n_fft,
+            noverlap=noverlap,
+            input_onesided=True,
+            boundary=True,
+        )
+        stretched_channels.append(pad_or_truncate_audio(stretched_channel[:, np.newaxis], target_frames)[:, 0])
+
+    stacked = np.stack(stretched_channels, axis=1).astype(np.float32, copy=False)
+    return pad_or_truncate_audio(stacked, target_frames)
+
+
+def maybe_prepare_v_bastardloop_source(samples, sample_rate, source_key, relative_path, target_bpm):
+    if source_key != "samples_vocal":
+        return samples, {}
+    source_bpm = detect_bastardloop_filename_bpm(relative_path)
+    if not source_bpm:
+        return samples, {}
+    source_bpm = clamp_bastardloop_bpm(source_bpm)
+    target_bpm = clamp_bastardloop_bpm(target_bpm, fallback=source_bpm)
+    bar_count = infer_bastardloop_bar_count(samples.shape[0], sample_rate, source_bpm)
+    if not bar_count:
+        return samples, {"sourceBpm": source_bpm}
+    target_seconds = (bar_count * 240.0) / float(target_bpm)
+    target_frames = max(1, int(round(target_seconds * sample_rate)))
+    rate = float(target_bpm) / float(source_bpm)
+    conformed = time_stretch_audio_preserve_pitch(samples, rate)
+    conformed = pad_or_truncate_audio(conformed, target_frames)
+    return conformed, {
+        "sourceBpm": source_bpm,
+        "targetBpm": target_bpm,
+        "bars": bar_count,
+    }
+
+
 def trim_or_pad_audio_preserve_pitch(samples, target_frames, rng=None, attempts=7):
     target_frames = int(target_frames)
     if target_frames <= 0:
@@ -888,6 +1020,7 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, p
     beat_frames = slot_frames * 8
     output = np.zeros((total_frames, 2), dtype=np.float32)
     selected_files = []
+    detected_source_bpms = []
 
     if enabled_divisions == ["uncut"]:
         attempts = 0
@@ -901,9 +1034,17 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, p
                 samples = audio_samples_to_float32(raw_data)
                 samples = resample_audio_channels(samples, int(source_rate), MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE)
                 samples = ensure_stereo(samples)
+                samples, prep_meta = maybe_prepare_v_bastardloop_source(
+                    samples,
+                    MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE,
+                    source_key,
+                    relative_path,
+                    bpm_value,
+                )
                 fitted, _ = trim_or_pad_audio_preserve_pitch(samples, total_frames, rng=rng)
                 output += fitted
                 selected_files.append(relative_path)
+                detected_source_bpms.append(prep_meta.get("sourceBpm"))
             except Exception:
                 continue
     else:
@@ -921,6 +1062,13 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, p
                 samples = audio_samples_to_float32(raw_data)
                 samples = resample_audio_channels(samples, int(source_rate), MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE)
                 samples = ensure_stereo(samples)
+                samples, prep_meta = maybe_prepare_v_bastardloop_source(
+                    samples,
+                    MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE,
+                    source_key,
+                    relative_path,
+                    bpm_value,
+                )
                 schedule_entry = schedule[len(selected_files)]
                 target_frames = max(1, slot_frames * int(schedule_entry["slots"]))
                 segment, _ = choose_bastardloop_segment(samples, MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE, target_frames, rng, len(selected_files), beat_frames=beat_frames)
@@ -932,6 +1080,7 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, p
             frame_end = frame_start + target_frames
             output[frame_start:frame_end] += segment[:target_frames]
             selected_files.append(relative_path)
+            detected_source_bpms.append(prep_meta.get("sourceBpm"))
 
     if len(selected_files) != len(schedule):
         raise RuntimeError(f"Could not build a full bastardloop from {source_config['label']}.")
@@ -965,6 +1114,7 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, p
         "sampleRate": MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE,
         "sourceKey": source_key,
         "sourceLabel": source_config["label"],
+        "detectedSourceBpms": [int(value) for value in detected_source_bpms if value],
         "sampleNames": sample_names,
         "selectedDivisions": enabled_divisions,
         "eventDivisions": event_divisions,
