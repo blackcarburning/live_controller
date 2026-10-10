@@ -682,6 +682,40 @@ def resize_audio_linear(samples, target_frames):
     return resized
 
 
+def trim_or_pad_audio_preserve_pitch(samples, target_frames, rng=None, attempts=7):
+    target_frames = int(target_frames)
+    if target_frames <= 0:
+        raise ValueError("Target frame count must be positive.")
+    total_frames = int(samples.shape[0])
+    channel_count = int(samples.shape[1]) if samples.ndim == 2 else 0
+    if total_frames <= 0 or channel_count <= 0:
+        return np.zeros((target_frames, max(channel_count, 2)), dtype=np.float32), 0
+    if total_frames == target_frames:
+        return samples.astype(np.float32, copy=True), 0
+    if total_frames < target_frames:
+        padded = np.zeros((target_frames, channel_count), dtype=np.float32)
+        padded[:total_frames] = samples.astype(np.float32, copy=False)
+        return padded, 0
+
+    best_score = None
+    best_start = 0
+    max_start = total_frames - target_frames
+    iterations = max(1, int(attempts))
+    for _ in range(iterations):
+        candidate_start = rng.randint(0, max_start) if rng is not None and max_start > 0 else max_start // 2
+        window = samples[candidate_start:candidate_start + target_frames]
+        rms = float(np.sqrt(np.mean(np.square(window), dtype=np.float64))) if window.size else 0.0
+        transient = float(np.max(np.abs(window))) if window.size else 0.0
+        jitter = (rng.random() * 0.025) if rng is not None else 0.0
+        score = (rms * 0.82) + (transient * 0.18) + jitter
+        if best_score is None or score > best_score:
+            best_score = score
+            best_start = candidate_start
+
+    trimmed = samples[best_start:best_start + target_frames].copy().astype(np.float32, copy=False)
+    return trimmed, best_start
+
+
 def choose_bastardloop_segment(samples, sample_rate, step_frames, rng, step_index, beat_frames=None):
     total_frames = int(samples.shape[0])
     if total_frames <= 0:
@@ -724,7 +758,7 @@ def choose_bastardloop_segment(samples, sample_rate, step_frames, rng, step_inde
         segment = np.flip(segment, axis=0).copy()
         reversed_segment = True
 
-    segment = resize_audio_linear(segment, step_frames)
+    segment, trim_start = trim_or_pad_audio_preserve_pitch(segment, step_frames, rng=rng)
 
     if rng.random() < 0.22 and segment.shape[0] > 8:
         contour = np.linspace(0.4, 1.0, segment.shape[0], dtype=np.float32)
@@ -748,6 +782,7 @@ def choose_bastardloop_segment(samples, sample_rate, step_frames, rng, step_inde
     return segment, {
         "start_frame": start_frame,
         "source_frames": source_frames,
+        "trim_start": trim_start,
         "reversed": reversed_segment,
     }
 
@@ -823,7 +858,8 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, p
                 samples = audio_samples_to_float32(raw_data)
                 samples = resample_audio_channels(samples, int(source_rate), MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE)
                 samples = ensure_stereo(samples)
-                output += resize_audio_linear(samples, total_frames)
+                fitted, _ = trim_or_pad_audio_preserve_pitch(samples, total_frames, rng=rng)
+                output += fitted
                 selected_files.append(relative_path)
             except Exception:
                 continue
