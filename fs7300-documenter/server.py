@@ -161,6 +161,12 @@ MYGRAIN_BASTARDLOOP_SOURCE_CONFIG = {
         "filename_prefix": "bastardloop-o",
         "local_dir": "SAMPLES_ORCH",
     },
+    "samples_leads": {
+        "remote": "dropbox:SAMPLES_LEADS",
+        "label": "SAMPLES_LEADS",
+        "filename_prefix": "bastardloop-l",
+        "local_dir": "SAMPLES_LEADS",
+    },
     "samples_kicks": {
         "remote": "dropbox:SAMPLES_KICKS",
         "label": "SAMPLES_KICKS",
@@ -478,6 +484,11 @@ def normalize_bastardloop_source_key(value):
         "sample_hats": "samples_hats",
         "hats": "samples_hats",
         "hat": "samples_hats",
+        "samples_leads": "samples_leads",
+        "sample_leads": "samples_leads",
+        "leads": "samples_leads",
+        "lead": "samples_leads",
+        "l": "samples_leads",
     }
     resolved = aliases.get(normalized, normalized)
     if resolved not in MYGRAIN_BASTARDLOOP_SOURCE_CONFIG:
