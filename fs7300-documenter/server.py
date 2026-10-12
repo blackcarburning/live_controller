@@ -274,7 +274,7 @@ def mygrain_wavs_cors_headers():
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, X-Filename",
-        "Access-Control-Expose-Headers": "X-Mygrain-Source-Name, X-Mygrain-Source-Key, X-Mygrain-Source-Label, X-Mygrain-Source-Path",
+        "Access-Control-Expose-Headers": "X-Mygrain-Source-Name, X-Mygrain-Source-Key, X-Mygrain-Source-Label, X-Mygrain-Source-Path, X-Mygrain-Bastardloop-Meta",
         "Access-Control-Max-Age": "86400",
     }
 
@@ -1052,7 +1052,7 @@ def resolve_bastardloop_requested_source_files(source_key, requested_files, avai
     return resolved
 
 
-def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, pattern_steps=None, source_files=None):
+def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, pattern_steps=None, source_files=None, include_bytes=False):
     ensure_mygrain_bastardloops_root()
     source_key, source_config = get_bastardloop_source_config(source_key)
     bpm_value = clamp_bastardloop_bpm(bpm)
@@ -1149,12 +1149,19 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, p
         sanitize_mygrain_wav_filename(f"{source_config['filename_prefix']}-{bpm_value}bpm-{int(time.time())}.wav")
     )
     target_path = MYGRAIN_BASTARDLOOPS_ROOT / filename
-    wavfile.write(target_path, MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE, pcm)
+    audio_bytes = None
+    if include_bytes:
+        audio_buffer = BytesIO()
+        wavfile.write(audio_buffer, MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE, pcm)
+        audio_bytes = audio_buffer.getvalue()
+        target_path.write_bytes(audio_bytes)
+    else:
+        wavfile.write(target_path, MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE, pcm)
 
     duration_seconds = total_frames / MYGRAIN_BASTARDLOOP_TARGET_SAMPLE_RATE
     sample_names = [pathlib.PurePosixPath(path).name for path in selected_files]
     event_divisions = [entry["label"] for entry in schedule]
-    return {
+    result = {
         "ok": True,
         "savedName": filename,
         "size": target_path.stat().st_size,
@@ -1176,6 +1183,34 @@ def generate_bastardloop_file(bpm, seed=None, divisions=None, source_key=None, p
         "eventDivisions": event_divisions,
         "summary": f"{duration_seconds:.2f}s · {pattern_step_count} steps · {len(schedule)} cuts · {'/'.join(enabled_divisions)} · {source_config['label']}",
     }
+    if include_bytes:
+        result["bytes"] = audio_bytes
+    return result
+
+
+def build_bastardloop_audio_response_metadata(result):
+    return {
+        "savedName": str(result.get("savedName") or "").strip(),
+        "sourceKey": str(result.get("sourceKey") or "").strip(),
+        "sourceLabel": str(result.get("sourceLabel") or "").strip(),
+        "summary": str(result.get("summary") or "").strip(),
+        "bpm": int(result.get("bpm") or 0),
+        "durationSeconds": float(result.get("durationSeconds") or 0),
+        "sampleNames": [
+            str(value or "").strip()
+            for value in (result.get("sampleNames") or [])[:64]
+            if str(value or "").strip()
+        ],
+        "samplePaths": [
+            str(value or "").strip()
+            for value in (result.get("samplePaths") or [])[:64]
+            if str(value or "").strip()
+        ],
+    }
+
+
+def encode_mygrain_header_json(payload):
+    return b64url(json.dumps(payload or {}, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
 
 def b64url(data):
     return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
@@ -2623,6 +2658,8 @@ class DocumenterHandler(BaseHTTPRequestHandler):
             source_key = payload.get("source") if isinstance(payload, dict) else None
             source_files = payload.get("sourceFiles") if isinstance(payload, dict) else None
             pattern_steps = payload.get("patternLength", payload.get("patternSteps")) if isinstance(payload, dict) else None
+            response_format = payload.get("responseFormat") if isinstance(payload, dict) else None
+            inline_audio = response_format == "audio"
             result = generate_bastardloop_file(
                 bpm,
                 seed=seed,
@@ -2630,7 +2667,21 @@ class DocumenterHandler(BaseHTTPRequestHandler):
                 source_key=source_key,
                 pattern_steps=pattern_steps,
                 source_files=source_files,
+                include_bytes=inline_audio,
             )
+            if inline_audio:
+                audio_bytes = result.pop("bytes")
+                metadata = build_bastardloop_audio_response_metadata(result)
+                self.send_response(201)
+                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(audio_bytes)))
+                self.send_header("X-Mygrain-Bastardloop-Meta", encode_mygrain_header_json(metadata))
+                for key, value in mygrain_wavs_cors_headers().items():
+                    self.send_header(key, value)
+                self.end_headers()
+                self.wfile.write(audio_bytes)
+                return
             self.send_json(result, status=201, extra_headers=mygrain_wavs_cors_headers())
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=400, extra_headers=mygrain_wavs_cors_headers())
