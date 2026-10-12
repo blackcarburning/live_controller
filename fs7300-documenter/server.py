@@ -27,6 +27,9 @@ import paramiko
 from scipy import signal
 from scipy.io import wavfile
 
+mimetypes.add_type("audio/midi", ".mid")
+mimetypes.add_type("audio/midi", ".midi")
+
 
 ROOT = pathlib.Path(__file__).resolve().parent
 DEFAULT_PORT = 8765
@@ -56,6 +59,7 @@ PROTECTED_ROUTES = [
     {"base": "/mygrain-wavs", "root": pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-loops"), "documenter_api": False, "public": True},
     {"base": "/mygrain-bastardloops", "root": pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-bastardloops"), "documenter_api": False, "public": True},
     {"base": "/mygrain-stems", "root": pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-stems"), "documenter_api": False, "public": True},
+    {"base": "/mygrain-midi", "root": pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-midi"), "documenter_api": False, "public": True},
 ]
 
 FETCH_GROUPS = [
@@ -118,6 +122,8 @@ MYGRAIN_BASTARDLOOPS_ROUTE = "/mygrain-bastardloops"
 MYGRAIN_BASTARDLOOPS_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-bastardloops")
 MYGRAIN_STEMS_ROUTE = "/mygrain-stems"
 MYGRAIN_STEMS_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-stems")
+MYGRAIN_MIDI_ROUTE = "/mygrain-midi"
+MYGRAIN_MIDI_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-midi")
 MYGRAIN_BASTARDLOOP_LOCAL_SOURCE_ROOT = pathlib.Path("/srv/sftp/mark_sftp/files/mygrain-source-mirrors")
 MYGRAIN_WAVS_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 MYGRAIN_STEMS_MAX_UPLOAD_BYTES = 512 * 1024 * 1024
@@ -280,7 +286,7 @@ def mygrain_wavs_cors_headers():
 
 
 def is_mygrain_repository_route(route_base):
-    return route_base in (MYGRAIN_WAVS_ROUTE, MYGRAIN_BASTARDLOOPS_ROUTE, MYGRAIN_STEMS_ROUTE)
+    return route_base in (MYGRAIN_WAVS_ROUTE, MYGRAIN_BASTARDLOOPS_ROUTE, MYGRAIN_STEMS_ROUTE, MYGRAIN_MIDI_ROUTE)
 
 
 def mygrain_repository_root(route_base):
@@ -290,12 +296,18 @@ def mygrain_repository_root(route_base):
         return MYGRAIN_BASTARDLOOPS_ROOT
     if route_base == MYGRAIN_STEMS_ROUTE:
         return MYGRAIN_STEMS_ROOT
+    if route_base == MYGRAIN_MIDI_ROUTE:
+        return MYGRAIN_MIDI_ROOT
     raise ValueError(f"Unknown MYGRAIN repository route: {route_base}")
 
 
 def mygrain_repository_extension(route_base):
     normalized_route_base = normalize_mygrain_repository_route_base(route_base)
-    return ".zip" if normalized_route_base == MYGRAIN_STEMS_ROUTE else ".wav"
+    if normalized_route_base == MYGRAIN_STEMS_ROUTE:
+        return ".zip"
+    if normalized_route_base == MYGRAIN_MIDI_ROUTE:
+        return ".mid"
+    return ".wav"
 
 
 def mygrain_repository_max_upload_bytes(route_base):
@@ -319,6 +331,10 @@ def ensure_mygrain_bastardloops_root():
 
 def ensure_mygrain_stems_root():
     ensure_mygrain_repository_root(MYGRAIN_STEMS_ROUTE)
+
+
+def ensure_mygrain_midi_root():
+    ensure_mygrain_repository_root(MYGRAIN_MIDI_ROUTE)
 
 
 def sanitize_mygrain_wav_filename(value):
@@ -345,10 +361,22 @@ def sanitize_mygrain_stem_filename(value):
     return f"{stem or 'mygrain-stems'}.zip"
 
 
+def sanitize_mygrain_midi_filename(value):
+    fallback = "mygrain-midi.mid"
+    name = pathlib.PurePath(str(value or fallback).replace("\\", "/")).name
+    name = name or fallback
+    stem = re.sub(r"\.mid[i]?$", "", name, flags=re.IGNORECASE)
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem)
+    stem = re.sub(r"-+", "-", stem).strip("-_.")
+    return f"{stem or 'mygrain-midi'}.mid"
+
+
 def sanitize_mygrain_repository_filename(route_base, value):
     normalized_route_base = normalize_mygrain_repository_route_base(route_base)
     if normalized_route_base == MYGRAIN_STEMS_ROUTE:
         return sanitize_mygrain_stem_filename(value)
+    if normalized_route_base == MYGRAIN_MIDI_ROUTE:
+        return sanitize_mygrain_midi_filename(value)
     return sanitize_mygrain_wav_filename(value)
 
 
@@ -377,6 +405,10 @@ def unique_mygrain_bastardloop_filename(filename):
 
 def unique_mygrain_stem_filename(filename):
     return unique_mygrain_repository_filename(MYGRAIN_STEMS_ROUTE, filename)
+
+
+def unique_mygrain_midi_filename(filename):
+    return unique_mygrain_repository_filename(MYGRAIN_MIDI_ROUTE, filename)
 
 
 def ensure_mygrain_patches_root():
@@ -2495,7 +2527,7 @@ class DocumenterHandler(BaseHTTPRequestHandler):
         if route.get("base") == "/mygrain" and route["inner"] == "/api/patches/rename":
             self.handle_mygrain_patch_rename()
             return
-        if route.get("base") in (MYGRAIN_WAVS_ROUTE, MYGRAIN_STEMS_ROUTE) and route["inner"] == "/api/upload":
+        if route.get("base") in (MYGRAIN_WAVS_ROUTE, MYGRAIN_STEMS_ROUTE, MYGRAIN_MIDI_ROUTE) and route["inner"] == "/api/upload":
             self.handle_mygrain_repository_upload(route["base"])
             return
         if route.get("base") == MYGRAIN_BASTARDLOOPS_ROUTE and route["inner"] == "/api/bastardloop":
