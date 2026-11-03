@@ -11,9 +11,6 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from xr12_connection import Xr12ConnectionAttempt
-
-
 class FakeTimer:
     def __init__(self, parent):
         self.timeout = Mock()
@@ -34,7 +31,7 @@ TREE = ast.parse(SOURCE.read_text(encoding="utf-8"))
 NAMESPACE = {
     "QObject": type("QObject", (), {"__init__": lambda self, parent: None}),
     "QTimer": FakeTimer, "time": time, "dataclass": dataclass,
-    "Xr12ConnectionAttempt": Xr12ConnectionAttempt,
+    "threading": threading,
 }
 NODES = [
     node for node in TREE.body
@@ -49,6 +46,7 @@ NODES = [
             "clamp_midi_value", "build_audience_fader_messages",
             "build_audience_mute_messages", "interpolate_midi_value",
             "FadeCommand", "Xr12AudienceState", "Xr12AudienceController",
+            "Xr12ConnectionAttempt",
         }
     )
 ]
@@ -57,6 +55,20 @@ Controller = NAMESPACE["Xr12AudienceController"]
 
 
 class Xr12ConnectionTests(unittest.TestCase):
+    def test_xr12_support_is_self_contained_in_main_script(self):
+        imports = [
+            name
+            for node in ast.walk(TREE)
+            for name in (
+                [node.module] if isinstance(node, ast.ImportFrom)
+                else [alias.name for alias in node.names] if isinstance(node, ast.Import)
+                else []
+            )
+        ]
+        self.assertNotIn("xr12_connection", imports)
+        self.assertIn("Xr12ConnectionAttempt", NAMESPACE)
+        self.assertFalse(SOURCE.with_name("xr12_connection.py").exists())
+
     def setUp(self):
         self.output = io.StringIO()
         self.redirect = redirect_stdout(self.output)
@@ -95,7 +107,7 @@ class Xr12ConnectionTests(unittest.TestCase):
         self.finish_connection()
         self.assertTrue(self.controller.available)
         self.port.open_port.assert_called_once_with(3)
-        with patch("xr12_connection.time.monotonic",
+        with patch.object(time, "monotonic",
                    return_value=max(self.controller._ch_fade_started_at) + 3.1):
             self.controller._on_fade_step()
         self.assertEqual(
@@ -115,14 +127,14 @@ class Xr12ConnectionTests(unittest.TestCase):
 
     def test_wait_times_out_at_exactly_15_seconds_without_blocking(self):
         started, release = self.block_connection()
-        with patch("xr12_connection.time.monotonic", return_value=100):
+        with patch.object(time, "monotonic", return_value=100):
             self.assertFalse(self.controller.request_open())
         self.assertTrue(started.wait(1))
-        with patch("xr12_connection.time.monotonic", return_value=114.999):
+        with patch.object(time, "monotonic", return_value=114.999):
             self.controller._poll_port_connection()
             self.assertTrue(self.controller.connection_timer.active)
             self.assertFalse(self.controller._port_timed_out)
-        with patch("xr12_connection.time.monotonic", return_value=115):
+        with patch.object(time, "monotonic", return_value=115):
             self.controller._poll_port_connection()
         self.assertTrue(self.controller._port_timed_out)
         self.assertFalse(self.controller.available)
@@ -191,10 +203,10 @@ class Xr12ConnectionTests(unittest.TestCase):
 
     def test_toggle_after_timeout_allows_new_connection(self):
         started, release = self.block_connection()
-        with patch("xr12_connection.time.monotonic", return_value=0):
+        with patch.object(time, "monotonic", return_value=0):
             self.controller.request_open()
         self.assertTrue(started.wait(1))
-        with patch("xr12_connection.time.monotonic", return_value=15):
+        with patch.object(time, "monotonic", return_value=15):
             self.controller._poll_port_connection()
         self.controller.set_enabled(False)
         self.controller.set_enabled(True)
@@ -233,7 +245,7 @@ class Xr12ConnectionTests(unittest.TestCase):
         self.controller.set_ch_enabled(1, False)
         release.set()
         self.finish_connection()
-        with patch("xr12_connection.time.monotonic",
+        with patch.object(time, "monotonic",
                    return_value=max(self.controller._ch_fade_started_at) + 3.1):
             self.controller._on_fade_step()
         self.port.send_message.assert_called_once_with([0xB0, 0, 96])
@@ -249,7 +261,7 @@ class Xr12ConnectionTests(unittest.TestCase):
         self.finish_connection()
         self.assertTrue(self.controller.fade_timer.active)
         self.assertEqual(self.controller._ch_fade_total_sec[:2], [3, 3])
-        with patch("xr12_connection.time.monotonic",
+        with patch.object(time, "monotonic",
                    return_value=self.controller._ch_fade_started_at[0] + 3.1):
             self.controller._on_fade_step()
         self.assertFalse(self.controller.fade_timer.active)
