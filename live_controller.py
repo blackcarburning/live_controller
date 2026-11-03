@@ -531,10 +531,11 @@ class Xr12AudienceState:
 
 
 class Xr12ConnectionAttempt:
-    """Bound XR12 MIDI connection attempts without blocking the application's UI."""
+    """Bound device checks on daemon threads without blocking the application's UI."""
 
-    def __init__(self, operation, dispose, timeout_seconds=15.0):
+    def __init__(self, operation, dispose, timeout_seconds=15.0, device_name="XR12"):
         self._dispose = dispose
+        self._device_name = device_name
         self._deadline = time.monotonic() + timeout_seconds
         self._timeout_seconds = timeout_seconds
         self._lock = threading.Lock()
@@ -572,7 +573,7 @@ class Xr12ConnectionAttempt:
                 return True, result, error
         self.cancel()
         return True, None, TimeoutError(
-            f"XR12 connection timed out after {self._timeout_seconds:g} seconds"
+            f"{self._device_name} connection timed out after {self._timeout_seconds:g} seconds"
         )
 
     def cancel(self):
@@ -588,7 +589,7 @@ class Xr12ConnectionAttempt:
         try:
             self._dispose(result)
         except Exception as exc:
-            print(f"XR12 connection cleanup failed: {exc}")
+            print(f"{self._device_name} connection cleanup failed: {exc}", flush=True)
 
 
 class Xr12AudienceController(QObject):
@@ -951,6 +952,7 @@ class Xr12AudienceController(QObject):
             rtmidi_module, port_index = self.rtmidi, self.port_index
 
             def open_port():
+                print("[Hardware] XR12: creating MIDI output, then opening port 3.", flush=True)
                 midiout = rtmidi_module.MidiOut()
                 try:
                     midiout.open_port(port_index)
@@ -1026,7 +1028,7 @@ class Xr12AudienceController(QObject):
 
     def _emit_status(self, text):
         if text != self._last_status_text:
-            print(text)
+            print(text, flush=True)
             self._last_status_text = text
             if self.status_callback is not None:
                 self.status_callback(text)
@@ -4147,6 +4149,7 @@ class LiveController(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"Live Controller - blackcarburning - 2025-07-26 10:54:03")
+        print("[Startup] Building the main window; hardware checks are deferred.", flush=True)
         
         # On Windows, attempt to set the process priority to high for better real-time performance.
         try:
@@ -4178,6 +4181,16 @@ class LiveController(QWidget):
         self.test_port_bpm_inputs = {}
         self.test_port_buttons = {}
         self.xr12_controller = None
+        # Session-only choices: a saved 'enabled' setting must never bypass No.
+        self.xr12_connected = False
+        self.arduino_connected = False
+        self.arduino_serial = None
+        self._arduino_chase_active = False
+        self.led2_on = False
+        self.midi_available = False
+        self._startup_probes = {}
+        self._hardware_status = {"XR12": "not checked", "Arduino": "not checked",
+                                 "Playback MIDI": "not checked"}
         self._manual_stop_requested = False
         self._playback_error_seen = False
         self._app_is_closing = False
@@ -4234,7 +4247,7 @@ class LiveController(QWidget):
         self.xr12_controller = Xr12AudienceController(
             status_callback=self._set_xr12_status_text,
             rtmidi_module=rtmidi,
-            enabled=self.config.get("xr12_audience_enabled", DEFAULT_XR12_AUDIENCE_ENABLED),
+            enabled=False,
             fade_duration_sec=self.config.get("xr12_audience_fade_duration_sec", DEFAULT_XR12_AUDIENCE_FADE_SECONDS),
             open_value=self.config.get("xr12_audience_open_value", DEFAULT_XR12_AUDIENCE_OPEN_VALUE),
             ch_enabled=[
@@ -4261,30 +4274,111 @@ class LiveController(QWidget):
         self.hotkey_listener.start()
         self.load_session()
 
-        # --- Arduino LED Controller Setup ---
-        self.led2_on = False
-        self.arduino_serial = self._connect_arduino()
-        if self.arduino_serial is not None:
-            self.send_led_command("5")  # Chase test: cycle through all LEDs to confirm they work
-            time.sleep(2.5)             # Wait for chase animation to complete
-        self.midi_available = False
-        try:
-            for port_index in [1, 2]:
-                test_out = rtmidi.MidiOut()
-                try:
-                    test_out.open_port(port_index)
-                    self.midi_available = True
-                    test_out.close_port()
-                    break
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        if not self.midi_available:
-            self.send_led_command("1")  # LED 1: no MIDI device connected
+        self._startup_poll_timer = QTimer(self)
+        self._startup_poll_timer.setInterval(50)
+        self._startup_poll_timer.timeout.connect(self._poll_startup_hardware)
+        # Run only after showMaximized() and the event loop start. No native
+        # serial/MIDI operations may run synchronously in this constructor.
+        QTimer.singleShot(0, self._configure_startup_hardware)
+        print("[Startup] Main window ready; waiting for hardware choices.", flush=True)
+
+    def _ask_hardware_connected(self, device, details):
+        print(f"[Startup] Asking whether {device} is connected.", flush=True)
+        answer = QMessageBox.question(
+            self, f"Startup hardware - {device}",
+            f"Is {device} connected and powered on?\n\n{details}\n\n"
+            "Choose No to skip this device completely for this run.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        connected = answer == QMessageBox.StandardButton.Yes
+        print(f"[Startup] {device}: {'Yes' if connected else 'No - skipping checks'}.", flush=True)
+        return connected
+
+    def _configure_startup_hardware(self):
+        """Ask independently about optional hardware before starting any checks."""
+        if self._app_is_closing:
+            return
+        self.xr12_connected = self._ask_hardware_connected(
+            "XR12 mixer", "Yes allows audience-fader control on MIDI port 3.")
+        self.arduino_connected = self._ask_hardware_connected(
+            "Arduino LED controller", "Yes scans serial ports for the LED controller.")
+        self.apply_config_to_ui()
+        self._hardware_status["XR12"] = "enabled" if self.xr12_controller.enabled else "disabled/skipped"
+        if self.xr12_connected:
+            self._open_audience_if_idle()
         else:
-            self.send_led_command("4")  # "4" turns all LEDs off
-        QTimer.singleShot(0, self._open_audience_if_idle)
+            self._set_xr12_status_text("XR12 Audience: skipped - not connected; no port 3 checks")
+            self.xr12_enabled_checkbox.setToolTip("Skipped for this run. Connect the XR12 and tick here to enable it.")
+
+        if self.arduino_connected:
+            self._hardware_status["Arduino"] = "scanning serial ports"
+            self._startup_probes["Arduino"] = Xr12ConnectionAttempt(
+                self._connect_arduino, lambda ser: ser.close(), device_name="Arduino")
+        else:
+            self._hardware_status["Arduino"] = "skipped (no serial scan)"
+
+        # Ports 1/2 are the other playback MIDI devices, NOT the XR12 (port 3).
+        # Their drivers can also stall, so this existing check must be async too.
+        self._hardware_status["Playback MIDI"] = "checking ports 1/2 in background"
+        self._startup_probes["Playback MIDI"] = Xr12ConnectionAttempt(
+            self._check_playback_midi, lambda result: None, device_name="Playback MIDI")
+        self._refresh_hardware_status()
+        self._startup_poll_timer.start()
+
+    def _check_playback_midi(self):
+        for port_index in (1, 2):
+            if self._app_is_closing:
+                break
+            test_out = None
+            try:
+                print(f"[Hardware] Playback MIDI: creating output/opening port {port_index}.", flush=True)
+                test_out = rtmidi.MidiOut()
+                test_out.open_port(port_index)
+                print(f"[Hardware] Playback MIDI: port {port_index} is available.", flush=True)
+                return True
+            except Exception as exc:
+                print(f"[Hardware] Playback MIDI port {port_index}: {exc}", flush=True)
+            finally:
+                if test_out is not None:
+                    test_out.close_port()
+        return False
+
+    def _poll_startup_hardware(self):
+        for device, probe in list(self._startup_probes.items()):
+            done, result, error = probe.poll()
+            if not done:
+                continue
+            del self._startup_probes[device]
+            if error is not None:
+                self._hardware_status[device] = f"unavailable ({error})"
+            elif device == "Arduino":
+                self.arduino_serial = result
+                self._hardware_status[device] = "connected" if result is not None else "not found"
+                if result is not None:
+                    self._arduino_chase_active = True
+                    self.send_led_command("5")  # Chase test without sleeping in the UI thread.
+                    QTimer.singleShot(2500, self._update_startup_leds)
+            else:
+                self.midi_available = bool(result)
+                self._hardware_status[device] = "available" if result else "not found"
+                if not self._arduino_chase_active:
+                    self._update_startup_leds()
+            self._refresh_hardware_status()
+        if not self._startup_probes:
+            self._startup_poll_timer.stop()
+            print("[Startup] Hardware checks finished; controller is ready.", flush=True)
+
+    def _update_startup_leds(self):
+        self._arduino_chase_active = False
+        if not self._app_is_closing:
+            self.send_led_command("4" if self.midi_available else "1")
+
+    def _refresh_hardware_status(self):
+        text = " | ".join(f"{device}: {status}" for device, status in self._hardware_status.items())
+        self.hardware_status_label.setText(text)
+        self.hardware_status_label.setToolTip(text)
+        print(f"[Startup] {text}", flush=True)
 
     def setup_ui(self):
         """Constructs the entire user interface."""
@@ -4970,6 +5064,10 @@ class LiveController(QWidget):
         # --- Final Layout Assembly ---
         self.layout.addLayout(top_bar_layout)
         self.layout.addLayout(main_layout)
+        self.hardware_status_label = QLabel("Hardware: waiting for startup choices")
+        self.hardware_status_label.setWordWrap(True)
+        self.hardware_status_label.setStyleSheet("font-size: 10px; color: #aaa;")
+        self.layout.addWidget(self.hardware_status_label)
         self.layout.addWidget(self.status_label)
         
         # --- Initial UI State ---
@@ -5131,10 +5229,19 @@ class LiveController(QWidget):
         return keys
 
     def _connect_arduino(self):
-        """Probes serial ports to find and connect to the Arduino LED controller."""
-        for port in list_ports.comports():
+        """Probe only after Yes, on a background thread; always close rejected ports."""
+        if not self.arduino_connected:
+            return None
+        print("[Hardware] Arduino: enumerating serial ports.", flush=True)
+        ports = list(list_ports.comports())
+        print(f"[Hardware] Arduino: found {len(ports)} serial port(s).", flush=True)
+        for port in ports:
+            if self._app_is_closing:
+                break
+            ser = None
             try:
-                ser = serial.Serial(port.device, ARDUINO_BAUD, timeout=1.2)
+                print(f"[Hardware] Arduino: probing {port.device} at {ARDUINO_BAUD} baud; waiting for reset/ID.", flush=True)
+                ser = serial.Serial(port.device, ARDUINO_BAUD, timeout=1.2, write_timeout=1.2)
                 time.sleep(2.0)
                 ser.reset_input_buffer()
                 ser.write(ARDUINO_PROBE_CMD)
@@ -5148,12 +5255,16 @@ class LiveController(QWidget):
                         if line:
                             identity = line
                 if identity == ARDUINO_TARGET_ID:
-                    print(f"Arduino LED controller connected on {port.device}")
-                    return ser
-                ser.close()
-            except Exception:
-                continue
-        print("Arduino LED controller not found. LED feedback will be disabled.")
+                    print(f"[Hardware] Arduino LED controller connected on {port.device}.", flush=True)
+                    connected, ser = ser, None  # Transfer ownership to the startup probe.
+                    return connected
+                print(f"[Hardware] Arduino: {port.device} did not return the expected ID (got {identity!r}).", flush=True)
+            except Exception as exc:
+                print(f"[Hardware] Arduino: {port.device} failed: {exc}", flush=True)
+            finally:
+                if ser is not None:
+                    ser.close()
+        print("[Hardware] Arduino LED controller not found. LED feedback disabled.", flush=True)
         return None
 
     def send_led_command(self, command):
@@ -5226,7 +5337,9 @@ class LiveController(QWidget):
         self.config['sync_show_host'] = self.sync_show_host_input.text().strip()
         self.config['sync_show_session'] = self.sync_show_session_input.text().strip()
         self.config['sync_show_timing_trim_ms'] = self.sync_show_trim_spinbox.value()
-        self.config['xr12_audience_enabled'] = self.xr12_enabled_checkbox.isChecked()
+        # Skipping disconnected hardware is not a change to the saved preference.
+        if self.xr12_connected:
+            self.config['xr12_audience_enabled'] = self.xr12_enabled_checkbox.isChecked()
         self.config['xr12_audience_fade_duration_sec'] = self.xr12_fade_duration_spinbox.value()
         self.config['xr12_audience_open_value'] = self.xr12_unity_spinbox.value()
         self.config['xr12_audience_closed_value'] = self.xr12_closed_value_spinbox.value()
@@ -5247,7 +5360,7 @@ class LiveController(QWidget):
             self.sync_show_session_input.setText(self.config.get('sync_show_session', DEFAULT_SYNC_SHOW_SESSION))
             trim_ms = int(self.config.get('sync_show_timing_trim_ms', DEFAULT_SYNC_TIMING_TRIM_MS))
             self.sync_show_trim_spinbox.setValue(trim_ms)
-            xr12_enabled = bool(self.config.get("xr12_audience_enabled", DEFAULT_XR12_AUDIENCE_ENABLED))
+            xr12_enabled = self.xr12_connected and bool(self.config.get("xr12_audience_enabled", DEFAULT_XR12_AUDIENCE_ENABLED))
             xr12_fade = float(self.config.get("xr12_audience_fade_duration_sec", DEFAULT_XR12_AUDIENCE_FADE_SECONDS))
             xr12_open = clamp_midi_value(self.config.get("xr12_audience_open_value", DEFAULT_XR12_AUDIENCE_OPEN_VALUE))
             xr12_closed = clamp_midi_value(self.config.get("xr12_audience_closed_value", DEFAULT_XR12_AUDIENCE_CLOSED_VALUE))
@@ -5319,6 +5432,10 @@ class LiveController(QWidget):
     def _on_xr12_enabled_toggled(self, checked):
         if self.xr12_controller is None:
             return
+        if checked:
+            # An explicit manual enable allows connection after a startup skip.
+            self.xr12_connected = True
+            self.xr12_enabled_checkbox.setToolTip("")
         self.xr12_controller.set_enabled(checked)
         self.save_config()
         if checked and not self._has_active_playback() and not self._app_is_closing:
@@ -7154,6 +7271,10 @@ class LiveController(QWidget):
         """Handles the application close event."""
         # Save the current session and config.
         self._app_is_closing = True
+        self._startup_poll_timer.stop()
+        for probe in self._startup_probes.values():
+            probe.cancel()  # Late Arduino connections are closed by the probe.
+        self._startup_probes.clear()
         self.save_session()
         self.save_config()
         
