@@ -43,6 +43,7 @@ import keyboard                # For global hotkey listening
 import psutil                  # For setting process priority
 import serial                  # For Arduino serial communication
 from serial.tools import list_ports  # For discovering serial ports
+from xr12_connection import Xr12ConnectionAttempt
 
 # --- PyQt6 Imports ---
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
@@ -387,6 +388,7 @@ class MidiTestWorker(QThread):
 
 # --- XR12 Audience MIDI Constants ---
 XR12_AUDIENCE_PORT_INDEX = 3
+XR12_CONNECTION_TIMEOUT_SECONDS = 15.0
 XR12_AUDIENCE_CHANNELS = (0, 1)
 XR12_NUM_CHANNELS = 4
 XR12_FADER_STATUS = 0xB0   # CC on MIDI channel 1 (faders: CC 0-15)
@@ -550,6 +552,12 @@ class Xr12AudienceController(QObject):
         self.midiout = None
         self.available = False
         self.last_error = ""
+        self._port_probe = None
+        self._port_timed_out = False
+        self._pending_port_command = None
+        self.connection_timer = QTimer(self)
+        self.connection_timer.setInterval(50)
+        self.connection_timer.timeout.connect(self._poll_port_connection)
         normalized_enabled = self._normalize_channel_bools(ch_enabled, DEFAULT_XR12_CH_ENABLED)
         normalized_open_values = self._normalize_channel_values(
             ch_open_values,
@@ -583,6 +591,9 @@ class Xr12AudienceController(QObject):
     def set_enabled(self, enabled):
         self.enabled = bool(enabled)
         self._cancel_fades()
+        self._cancel_port_probe()
+        self._port_timed_out = False
+        self.last_error = ""
         if not self.enabled:
             self._close_port()
             self._emit_status("XR12 Audience: disabled")
@@ -646,6 +657,8 @@ class Xr12AudienceController(QObject):
         initial_messages = []
         active_channels = []
         requested = tuple(idx for idx in channel_indexes if 0 <= idx < XR12_NUM_CHANNELS and self._ch_enabled[idx])
+        if requested and not self._ensure_port(lambda: self.request_open_channels(requested)):
+            return False
         for idx in requested:
             command = self._ch_states[idx].request_open()
             if not command.initial_messages and command.start_value == command.target_value:
@@ -661,8 +674,6 @@ class Xr12AudienceController(QObject):
         if not active_channels:
             self._emit_runtime_status()
             return True
-        if not self._ensure_port():
-            return False
         self._send_messages(initial_messages)
         self._emit_runtime_status()
         if not self._start_or_finish_fades():
@@ -673,6 +684,8 @@ class Xr12AudienceController(QObject):
         self._cancel_fades()
         active_channels = []
         initial_messages = []
+        if self._enabled_channel_indexes() and not self._ensure_port(self.request_close):
+            return False
         for idx in self._enabled_channel_indexes():
             command = self._ch_states[idx].request_close()
             if not command.initial_messages and command.start_value == command.target_value:
@@ -688,8 +701,6 @@ class Xr12AudienceController(QObject):
         if not active_channels:
             self._emit_runtime_status()
             return True
-        if not self._ensure_port():
-            return False
         self._send_messages(initial_messages)
         self._emit_runtime_status()
         if not self._start_or_finish_fades():
@@ -698,6 +709,7 @@ class Xr12AudienceController(QObject):
 
     def shutdown(self):
         self._cancel_fades()
+        self._cancel_port_probe()
         self._close_port()
 
     def send_raw_fader(self, value):
@@ -708,7 +720,7 @@ class Xr12AudienceController(QObject):
         if not channels:
             self._emit_runtime_status()
             return
-        if not self._ensure_port():
+        if not self._ensure_port(lambda: self.send_raw_fader(midi_value)):
             return
         msgs = build_audience_fader_messages(midi_value, channels=channels)
         for idx in channels:
@@ -725,7 +737,7 @@ class Xr12AudienceController(QObject):
         if not channels:
             self._emit_runtime_status()
             return
-        if not self._ensure_port():
+        if not self._ensure_port(lambda: self.send_raw_mute(midi_value)):
             return
         msgs = [[XR12_MUTE_STATUS, ch, midi_value] for ch in channels]
         for idx in channels:
@@ -796,6 +808,7 @@ class Xr12AudienceController(QObject):
         self.fade_timer.stop()
         self._fade_generation += 1
         self._ch_fade_active = [False] * XR12_NUM_CHANNELS
+        self._pending_port_command = None
 
     def _enabled_channel_indexes(self):
         return tuple(idx for idx, enabled in enumerate(self._ch_enabled) if enabled)
@@ -853,9 +866,11 @@ class Xr12AudienceController(QObject):
         prefix = "XR12 Audience: waiting for MIDI port 3"
         if self.midiout is not None and self.available:
             prefix = "XR12 Audience: connected on MIDI port 3"
+        elif self.last_error:
+            prefix = f"XR12 Audience: unavailable on MIDI port 3 ({self.last_error})"
         self._emit_status(f"{prefix} — {self._status_suffix()}")
 
-    def _ensure_port(self):
+    def _ensure_port(self, on_connected=None):
         if not self.enabled:
             self._emit_status("XR12 Audience: disabled")
             return False
@@ -866,19 +881,64 @@ class Xr12AudienceController(QObject):
                     return True
             except Exception:
                 self._close_port()
-        try:
-            self.midiout = self.rtmidi.MidiOut()
-            self.midiout.open_port(self.port_index)
-            self.available = True
-            self.last_error = ""
+        if self._port_timed_out:
             self._emit_runtime_status()
-            return True
-        except Exception as exc:
-            self.available = False
-            self.last_error = str(exc)
-            self.midiout = None
-            self._emit_status(f"XR12 Audience: unavailable on MIDI port 3 ({exc})")
             return False
+        if on_connected is not None:
+            self._pending_port_command = on_connected
+        if self._port_probe is None:
+            self.last_error = ""
+            rtmidi_module, port_index = self.rtmidi, self.port_index
+
+            def open_port():
+                midiout = rtmidi_module.MidiOut()
+                try:
+                    midiout.open_port(port_index)
+                except Exception:
+                    midiout.close_port()
+                    raise
+                return midiout
+
+            self._port_probe = Xr12ConnectionAttempt(
+                open_port, lambda midiout: midiout.close_port(),
+                timeout_seconds=XR12_CONNECTION_TIMEOUT_SECONDS,
+            )
+            self.connection_timer.start()
+            self._emit_runtime_status()
+        return False
+
+    def _poll_port_connection(self):
+        if self._port_probe is None:
+            return
+        done, midiout, error = self._port_probe.poll()
+        if not done:
+            return
+        self._port_probe = None
+        self.connection_timer.stop()
+        command = self._pending_port_command
+        self._pending_port_command = None
+        if error is not None:
+            self.available = False
+            self._port_timed_out = isinstance(error, TimeoutError)
+            self.last_error = str(error)
+            if self._port_timed_out:
+                self.last_error += "; continuing without XR12; toggle XR12 off/on to retry"
+            self._cancel_fades()
+            self._emit_runtime_status()
+            return
+        self.midiout = midiout
+        self.available = True
+        self.last_error = ""
+        self._emit_runtime_status()
+        if command is not None:
+            command()
+
+    def _cancel_port_probe(self):
+        self.connection_timer.stop()
+        if self._port_probe is not None:
+            self._port_probe.cancel()
+            self._port_probe = None
+        self._pending_port_command = None
 
     def _send_messages(self, messages):
         if not messages:

@@ -106,6 +106,10 @@ python live_fallback.py
 - In X AIR Edit / XR12 setup, enable the mixer's physical MIDI receive/control path.
 - Live Controller fades XR12 input channels 1-2 (linked audience mics) down on playback start and back to unity when idle.
 - Verified XR12 mute polarity for these controls: **CC 0 = muted**, **CC 127 = unmuted/open**.
+- XR12 MIDI discovery runs in the background so the Windows app opens without
+  the XR12 connected. XR12 MIDI connection attempts time out after **15 seconds**
+  and show an unavailable status; toggle **Enable XR12 Audience** off and on to
+  retry after connecting the hardware. Missing ports report unavailable immediately.
 
 ### Windows `live_controller.py` — LUFS audience auto gain
 
@@ -155,7 +159,8 @@ identical names on the same host API cannot be uniquely distinguished.
 Hardware-free regression checks:
 
 ```bash
-python -m py_compile live_controller.py xr12_lufs.py
+python -m py_compile live_controller.py xr12_lufs.py xr12_connection.py
+python -m unittest tests.test_xr12_connection tests.test_xr12_audience_helpers -v
 python -m unittest tests.test_xr12_lufs tests.test_xr12_lufs_integration tests.test_xr12_audience_helpers -v
 python -m unittest discover -s tests -v
 ```
