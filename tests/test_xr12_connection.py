@@ -46,7 +46,7 @@ NODES = [
             "clamp_midi_value", "build_audience_fader_messages",
             "build_audience_mute_messages", "interpolate_midi_value",
             "FadeCommand", "Xr12AudienceState", "Xr12AudienceController",
-            "Xr12ConnectionAttempt",
+            "HardwareConnectionAttempt",
         }
     )
 ]
@@ -66,7 +66,7 @@ class Xr12ConnectionTests(unittest.TestCase):
             )
         ]
         self.assertNotIn("xr12_connection", imports)
-        self.assertIn("Xr12ConnectionAttempt", NAMESPACE)
+        self.assertIn("HardwareConnectionAttempt", NAMESPACE)
         self.assertFalse(SOURCE.with_name("xr12_connection.py").exists())
 
     def setUp(self):
@@ -125,28 +125,28 @@ class Xr12ConnectionTests(unittest.TestCase):
         self.port.send_message.assert_not_called()
         self.port.close_port.assert_called_once()
 
-    def test_wait_times_out_at_exactly_15_seconds_without_blocking(self):
+    def test_wait_times_out_at_exactly_10_seconds_without_blocking(self):
         started, release = self.block_connection()
         with patch.object(time, "monotonic", return_value=100):
             self.assertFalse(self.controller.request_open())
         self.assertTrue(started.wait(1))
-        with patch.object(time, "monotonic", return_value=114.999):
+        with patch.object(time, "monotonic", return_value=109.999):
             self.controller._poll_port_connection()
             self.assertTrue(self.controller.connection_timer.active)
             self.assertFalse(self.controller._port_timed_out)
-        with patch.object(time, "monotonic", return_value=115):
+        with patch.object(time, "monotonic", return_value=110):
             self.controller._poll_port_connection()
         self.assertTrue(self.controller._port_timed_out)
         self.assertFalse(self.controller.available)
         self.assertFalse(self.controller.connection_timer.active)
-        self.assertIn("timed out after 15 seconds", self.status.call_args.args[0])
+        self.assertIn("timed out after 10 seconds", self.status.call_args.args[0])
         self.assertIn("continuing without XR12", self.status.call_args.args[0])
         self.assertIsNone(self.controller._pending_port_command)
         self.assertFalse(any(self.controller._ch_fade_active))
         for _ in range(3):
             self.assertFalse(self.controller.request_open())
         self.rtmidi.MidiOut.assert_called_once()
-        self.assertIn("timed out after 15 seconds", self.status.call_args.args[0])
+        self.assertIn("timed out after 10 seconds", self.status.call_args.args[0])
         closed = threading.Event()
         self.port.close_port.side_effect = closed.set
         release.set()
@@ -206,7 +206,7 @@ class Xr12ConnectionTests(unittest.TestCase):
         with patch.object(time, "monotonic", return_value=0):
             self.controller.request_open()
         self.assertTrue(started.wait(1))
-        with patch.object(time, "monotonic", return_value=15):
+        with patch.object(time, "monotonic", return_value=10):
             self.controller._poll_port_connection()
         self.controller.set_enabled(False)
         self.controller.set_enabled(True)
