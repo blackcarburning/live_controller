@@ -110,6 +110,8 @@ python live_fallback.py
   the XR12 connected. XR12 MIDI connection attempts time out after **15 seconds**
   and show an unavailable status; toggle **Enable XR12 Audience** off and on to
   retry after connecting the hardware. Missing ports report unavailable immediately.
+  The XR12 timeout code is included in `live_controller.py`; no separate
+  `xr12_connection.py` file is needed when copying the script to a Windows machine.
 
 ### Windows `live_controller.py` — LUFS audience auto gain
 
@@ -159,7 +161,7 @@ identical names on the same host API cannot be uniquely distinguished.
 Hardware-free regression checks:
 
 ```bash
-python -m py_compile live_controller.py xr12_lufs.py xr12_connection.py
+python -m py_compile live_controller.py xr12_lufs.py
 python -m unittest tests.test_xr12_connection tests.test_xr12_audience_helpers -v
 python -m unittest tests.test_xr12_lufs tests.test_xr12_lufs_integration tests.test_xr12_audience_helpers -v
 python -m unittest discover -s tests -v
