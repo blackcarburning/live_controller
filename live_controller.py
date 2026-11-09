@@ -592,6 +592,526 @@ class Xr12ConnectionAttempt:
             print(f"{self._device_name} connection cleanup failed: {exc}", flush=True)
 
 
+class ArduinoConnectionAttempt:
+    """Daemon operation with a visible deadline AND a native-cleanup fence.
+
+    poll() may report a timeout before a driver returns. released() is the
+    separate ownership fence: nobody may start the next Arduino operation
+    until the worker (including late-result close) has really finished.
+    This deliberately does not alter the XR12 wrapper.
+    """
+
+    def __init__(self, operation, timeout_seconds=15.0, dispose=None):
+        self._stop_event = threading.Event()
+        self._released = threading.Event()
+        self._lock = threading.Lock()
+        self._deadline = time.monotonic() + timeout_seconds
+        self._timeout_seconds = timeout_seconds
+        self._dispose = dispose or (lambda result: result.close())
+        self._result = None
+        self._error = None
+        self._done = False
+        self._worker_finished = False
+        self._taken = False
+        self._pending_cleanup = 0
+        self.details = []
+        self._thread = threading.Thread(target=self._run, args=(operation,), daemon=True)
+        self._thread.start()
+
+    def _run(self, operation):
+        result = None
+        error = None
+        try:
+            result = operation(self)
+        except Exception as exc:
+            error = exc
+        with self._lock:
+            discard = self.stopped()
+            if not discard:
+                self._result, self._error = result, error
+            self._done = True
+        if discard and result is not None:
+            self._dispose_result(result)
+        with self._lock:
+            self._worker_finished = True
+            if self._pending_cleanup == 0:
+                self._released.set()
+
+    def stopped(self):
+        return self._stop_event.is_set() or time.monotonic() >= self._deadline
+
+    def wait(self, seconds):
+        self._stop_event.wait(max(0.0, min(seconds, self._deadline - time.monotonic())))
+        return self.stopped()
+
+    def report(self, text):
+        with self._lock:
+            self.details.append(str(text))
+        print(f"[Hardware] Arduino: {text}", flush=True)
+
+    def messages(self):
+        with self._lock:
+            return list(self.details)
+
+    def released(self):
+        return self._released.is_set()
+
+    def poll(self):
+        with self._lock:
+            if self._taken:
+                return True, None, None
+            timed_out = time.monotonic() >= self._deadline
+            cancelled = self._stop_event.is_set()
+            if not timed_out and not cancelled:
+                if not self._released.is_set():
+                    return False, None, None
+                self._taken = True
+                result, self._result = self._result, None
+                return True, result, self._error
+        self.cancel()
+        self._taken = True
+        error = (TimeoutError(f"Arduino operation timed out after {self._timeout_seconds:g} seconds")
+                 if timed_out else RuntimeError("Arduino operation cancelled"))
+        return True, None, error
+
+    def cancel(self):
+        self._stop_event.set()
+        with self._lock:
+            result, self._result = self._result, None
+            if result is not None:
+                self._pending_cleanup += 1
+                self._released.clear()
+        if result is not None:
+            threading.Thread(target=self._cancel_cleanup, args=(result,), daemon=True).start()
+
+    def _cancel_cleanup(self, result):
+        try:
+            self._dispose_result(result)
+        finally:
+            with self._lock:
+                self._pending_cleanup -= 1
+                if self._worker_finished and self._pending_cleanup == 0:
+                    self._released.set()
+
+    def _dispose_result(self, result):
+        try:
+            self._dispose(result)
+        except Exception as exc:
+            self.report(f"cleanup failed: {exc}")
+
+
+def _arduino_serial_target(port):
+    """Only real COM names are selectable on Windows; LPT is never serial."""
+    name = str(port).strip()
+    if name.upper().startswith("LPT"):
+        return False
+    return bool(re.fullmatch(r"COM[0-9]+", name, re.I)) if os.name == "nt" else bool(name)
+
+
+def _arduino_windows_lpt_devices():
+    """Read present Ports-class metadata, including LPT omitted by pyserial.
+
+    SetupAPI and registry handles here are metadata only (KEY_READ). No
+    CreateFile, serial open, device reset or system configuration is performed.
+    Called solely by the background enumeration operation.
+    """
+    if os.name != "nt":
+        return []
+    import winreg
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("a", wintypes.DWORD), ("b", wintypes.WORD),
+                    ("c", wintypes.WORD), ("d", wintypes.BYTE * 8)]
+
+    class DEVINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("ClassGuid", GUID),
+                    ("DevInst", wintypes.DWORD), ("Reserved", ctypes.c_size_t)]
+
+    api = ctypes.WinDLL("setupapi", use_last_error=True)
+    get_set = api.SetupDiGetClassDevsW
+    get_set.argtypes = [ctypes.POINTER(GUID), wintypes.LPCWSTR, wintypes.HWND, wintypes.DWORD]
+    get_set.restype = wintypes.HANDLE
+    enumerate_info = api.SetupDiEnumDeviceInfo
+    enumerate_info.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(DEVINFO)]
+    enumerate_info.restype = wintypes.BOOL
+    get_property = api.SetupDiGetDeviceRegistryPropertyW
+    get_property.argtypes = [wintypes.HANDLE, ctypes.POINTER(DEVINFO), wintypes.DWORD,
+                            ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p,
+                            wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    get_property.restype = wintypes.BOOL
+    open_key = api.SetupDiOpenDevRegKey
+    open_key.argtypes = [wintypes.HANDLE, ctypes.POINTER(DEVINFO), wintypes.DWORD,
+                        wintypes.DWORD, wintypes.DWORD, wintypes.DWORD]
+    open_key.restype = wintypes.HANDLE
+    destroy = api.SetupDiDestroyDeviceInfoList
+    destroy.argtypes = [wintypes.HANDLE]
+    destroy.restype = wintypes.BOOL
+    class_id = GUID.from_buffer_copy(uuid.UUID("4d36e978-e325-11ce-bfc1-08002be10318").bytes_le)
+    invalid = ctypes.c_void_p(-1).value
+    devices = get_set(ctypes.byref(class_id), None, None, 2)  # DIGCF_PRESENT
+    if devices in (None, invalid):
+        raise ctypes.WinError(ctypes.get_last_error())
+    rows = []
+    try:
+        index = 0
+        info = DEVINFO()
+        info.cbSize = ctypes.sizeof(info)
+        while enumerate_info(devices, index, ctypes.byref(info)):
+            index += 1
+            key = open_key(devices, ctypes.byref(info), 1, 0, 1, winreg.KEY_READ)
+            if key in (None, invalid):
+                continue
+            try:
+                try:
+                    port = str(winreg.QueryValueEx(key, "PortName")[0])
+                except OSError:
+                    continue
+            finally:
+                winreg.CloseKey(key)
+            if not re.fullmatch(r"LPT[0-9]+", port, re.I):
+                continue
+            description = ctypes.create_unicode_buffer(2048)
+            if not get_property(devices, ctypes.byref(info), 12, None,
+                                description, ctypes.sizeof(description), None):
+                description.value = "Parallel printer port"
+            rows.append({"port": port, "description": description.value,
+                         "hwid": "", "serial": False})
+        error = ctypes.get_last_error()
+        if error != 259:  # ERROR_NO_MORE_ITEMS
+            raise ctypes.WinError(error)
+    finally:
+        destroy(devices)
+    return rows
+
+
+def _arduino_list_devices(attempt):
+    """Enumeration only: opening/refreshing the panel can never touch a port."""
+    rows = {}
+    warnings = []
+    try:
+        ports = list_ports.comports()
+        for info in ports:
+            if attempt.stopped():
+                return {"rows": [], "warnings": []}
+            port = str(info.device)
+            rows[port.upper()] = {"port": port,
+                                  "description": str(getattr(info, "description", "") or ""),
+                                  "hwid": str(getattr(info, "hwid", "") or ""),
+                                  "serial": _arduino_serial_target(port)}
+    except Exception as exc:
+        warnings.append(f"Serial enumeration failed: {exc}")
+    if not attempt.stopped():
+        try:
+            for row in _arduino_windows_lpt_devices():
+                rows[row["port"].upper()] = row
+        except Exception as exc:
+            warnings.append(f"LPT enumeration unavailable: {exc}")
+    ordered = sorted(rows.values(), key=lambda row: (
+        not row["serial"], re.sub(r"[0-9]+$", "", row["port"]).upper(),
+        int(re.search(r"[0-9]+$", row["port"])[0]) if re.search(r"[0-9]+$", row["port"]) else 0))
+    return {"rows": ordered, "warnings": warnings}
+
+
+class ArduinoSerialWriter:
+    """Single native writer with cancellable, generation-owned test commands.
+
+    Queue entries are (test_generation, bytes); normal LED state has generation
+    None. Cancellation removes every unsent test/chase/restore entry, including
+    restore batches already queued by the timer. An entry dispatched to the
+    native driver cannot be withdrawn, but its completion cannot revive a
+    cancelled generation or enqueue a stale restore.
+    """
+
+    def __init__(self, ser):
+        self.serial = ser
+        self._condition = threading.Condition()
+        self._commands = deque()
+        self._closing = False
+        self._off_before_close = False
+        self.released = threading.Event()
+        self.error = ""
+        self._led_state = []
+        self._generation = 0
+        self._test_generation = None
+        self._test_touched = False
+        self._test_restoring = False
+        self._led_test_deadline = None
+        self._led_test_snapshot = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _invalidate_test_locked(self):
+        """Called only while holding _condition; keep normal commands intact."""
+        touched = self._test_touched
+        snapshot = self._led_test_snapshot
+        self._generation += 1
+        self._test_generation = None
+        self._test_touched = False
+        self._test_restoring = False
+        self._led_test_deadline = None
+        self._led_test_snapshot = None
+        self._commands = deque((generation, command) for generation, command in self._commands
+                               if generation is None)
+        return touched, snapshot
+
+    def _queue_restore_locked(self, state):
+        self._generation += 1
+        self._test_generation = self._generation
+        self._test_touched = True  # A prior test already reached the driver.
+        self._test_restoring = True
+        self._led_test_snapshot = list(state)
+        self._commands.extend((self._test_generation, value.encode("utf-8"))
+                              for value in ["4"] + list(state))
+
+    def _finish_chase_locked(self, restore):
+        touched, snapshot = self._invalidate_test_locked()
+        # If 5 was still queued, nothing touched hardware: do not start the
+        # cancelled chase later and do not enqueue an unnecessary restore.
+        if restore and touched and not self._closing:
+            self._queue_restore_locked(snapshot if snapshot is not None else self._led_state)
+
+    def send(self, command):
+        with self._condition:
+            if self._closing:
+                return False
+            self._invalidate_test_locked()
+            if command == "4":
+                self._led_state.clear()
+            elif command not in self._led_state:
+                self._led_state.append(command)
+            if len(self._commands) >= 64:
+                # Commands are additive except 4. Dropping a pending 4 would
+                # leave old LEDs on, so compact to a full desired-state reset.
+                self._commands = deque((None, value.encode("utf-8"))
+                                       for value in ["4"] + self._led_state)
+            else:
+                self._commands.append((None, command.encode("utf-8")))
+            self._condition.notify()
+        return True
+
+    def test_chase(self, seconds=2.5, restore_commands=None):
+        with self._condition:
+            if self._closing or self._test_generation is not None:
+                return False
+            self._generation += 1
+            self._test_generation = self._generation
+            if restore_commands is not None:
+                self._led_state = list(restore_commands)
+            self._led_test_snapshot = list(self._led_state)
+            self._test_touched = False
+            self._test_restoring = False
+            self._led_test_deadline = time.monotonic() + seconds
+            self._commands.append((self._test_generation, b"5"))
+            self._condition.notify()
+        return True
+
+    def set_chase_restore(self, commands):
+        """Update startup's final MIDI indication without stopping its chase."""
+        with self._condition:
+            if self._closing or self._test_generation is None:
+                return False
+            self._led_state = list(commands)
+            self._led_test_snapshot = list(commands)
+            if self._test_restoring:
+                # A late MIDI result may arrive after the timed restore was
+                # queued. Replace unsent old indication commands as one new
+                # generation; an in-flight native write is left to complete.
+                self._invalidate_test_locked()
+                self._queue_restore_locked(commands)
+            self._condition.notify()
+        return True
+
+    def finish_chase(self, restore=True):
+        with self._condition:
+            self._finish_chase_locked(restore)
+            self._condition.notify()
+
+    def chase_pending(self):
+        with self._condition:
+            return self._test_generation is not None
+
+    def close(self):
+        with self._condition:
+            self._closing = True
+            self._off_before_close = True
+            self._invalidate_test_locked()
+            self._commands.clear()
+            self._condition.notify()
+
+    def _run(self):
+        try:
+            while True:
+                with self._condition:
+                    while not self._closing:
+                        if (self._led_test_deadline is not None
+                                and time.monotonic() >= self._led_test_deadline):
+                            self._finish_chase_locked(restore=True)
+                        if self._commands:
+                            break
+                        remaining = (None if self._led_test_deadline is None
+                                     else max(0.0, self._led_test_deadline - time.monotonic()))
+                        self._condition.wait(remaining)
+                    if self._closing:
+                        break
+                    generation, command = self._commands.popleft()
+                    if generation is not None:
+                        if generation != self._test_generation:
+                            continue
+                        self._test_touched = True
+                    # Dispatch is committed under this lock. Native calls run
+                    # unlocked, so Cancel/close remain responsive while blocked.
+                self.serial.write(command)
+                with self._condition:
+                    if (generation is not None and generation == self._test_generation
+                            and self._test_restoring
+                            and not any(entry_generation == generation
+                                        for entry_generation, _ in self._commands)):
+                        self._invalidate_test_locked()
+        except Exception as exc:
+            self.error = str(exc)
+        finally:
+            with self._condition:
+                self._closing = True
+                self._invalidate_test_locked()
+                self._commands.clear()
+            try:
+                if self._off_before_close:
+                    self.serial.write(b"4")
+            except Exception as exc:
+                self.error = self.error or str(exc)
+            try:
+                self.serial.close()
+            except Exception as exc:
+                self.error = self.error or f"Close failed: {exc}"
+            if self.error:
+                print(f"[Hardware] Arduino: serial writer/cleanup failed: {self.error}", flush=True)
+            self.released.set()
+
+
+class ArduinoPanel(QDialog):
+    """Modeless operator panel; the controller owns all background work."""
+
+    def __init__(self, controller):
+        super().__init__(controller)
+        self.controller = controller
+        self.setWindowTitle("Arduino — ports and LED test")
+        self.setModal(False)
+        self.resize(760, 440)
+        layout = QVBoxLayout(self)
+        expected = QLabel(f"Expected ID: {ARDUINO_TARGET_ID}  |  {ARDUINO_BAUD} baud, 8-N-1")
+        expected.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(expected)
+        self.connection_label = QLabel()
+        layout.addWidget(self.connection_label)
+        help_label = QLabel(
+            "Refresh only lists present devices; it does not open or reset hardware. "
+            "Test / Connect opens ONLY the selected COM port and verifies the exact ID. "
+            "A different selection disconnects the current Arduino first. LPT is information only.")
+        help_label.setWordWrap(True)
+        layout.addWidget(help_label)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Port", "Description", "Hardware ID", "Result"])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.itemSelectionChanged.connect(self.refresh_state)
+        layout.addWidget(self.table)
+        self.list_status = QLabel()
+        self.list_status.setWordWrap(True)
+        layout.addWidget(self.list_status)
+        self.status_label = QLabel()
+        self.status_label.setWordWrap(True)
+        self.status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.status_label)
+        actions = QHBoxLayout()
+        self.refresh_button = QPushButton("Refresh devices")
+        self.connect_button = QPushButton("Test / Connect selected")
+        self.led_button = QPushButton("LED / Chase test (2.5 s)")
+        self.disconnect_button = QPushButton("Disconnect")
+        self.cancel_button = QPushButton("Cancel operation")
+        close_button = QPushButton("Close")
+        self.refresh_button.clicked.connect(controller._refresh_arduino_devices)
+        self.connect_button.clicked.connect(self._connect_selected)
+        self.led_button.clicked.connect(controller._test_arduino_leds)
+        self.disconnect_button.clicked.connect(controller._disconnect_arduino)
+        self.cancel_button.clicked.connect(controller._cancel_arduino_operation)
+        close_button.clicked.connect(self.close)
+        for button in (self.refresh_button, self.connect_button, self.led_button,
+                       self.disconnect_button, self.cancel_button, close_button):
+            actions.addWidget(button)
+        layout.addLayout(actions)
+        self.refresh_state()
+
+    def selected_port(self):
+        item = self.table.item(self.table.currentRow(), 0)
+        return item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+
+    def set_devices(self, rows):
+        selected = self.selected_port()
+        self.table.blockSignals(True)
+        self.table.setRowCount(len(rows))
+        wanted_row = None
+        for row_index, device in enumerate(rows):
+            serial_target = device["serial"] and _arduino_serial_target(device["port"])
+            result = (self.controller._arduino_port_results.get(device["port"].upper(), "Not tested")
+                      if serial_target else "LPT / non-serial — information only")
+            for column, text in enumerate((device["port"], device["description"], device["hwid"], result)):
+                item = QTableWidgetItem(text)
+                if column == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, device["port"] if serial_target else None)
+                if not serial_target:
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable & ~Qt.ItemFlag.ItemIsEnabled)
+                self.table.setItem(row_index, column, item)
+            if serial_target and device["port"].upper() == str(selected or self.controller._arduino_last_port).upper():
+                wanted_row = row_index
+        self.table.clearSelection()
+        self.table.setCurrentCell(-1, -1)
+        if wanted_row is not None:
+            self.table.selectRow(wanted_row)
+        self.table.blockSignals(False)
+        self.refresh_state()
+
+    def _connect_selected(self):
+        port = self.selected_port()
+        if port:
+            self.controller._connect_selected_arduino(port)
+
+    def refresh_state(self):
+        owner = self.controller
+        current = owner.arduino_serial.port if owner.arduino_serial is not None else "Not connected"
+        self.connection_label.setText(f"Current: {current}  |  Saved / startup hint: {owner._arduino_last_port}")
+        reason = owner._arduino_controls_blocked()
+        busy = owner._arduino_operation is not None or owner._arduino_closing_writer is not None
+        testing = owner._arduino_chase_active
+        ready = not reason and not busy and not testing
+        self.refresh_button.setEnabled(owner._arduino_listing is None and not owner._app_is_closing)
+        self.connect_button.setEnabled(ready and bool(self.selected_port()))
+        self.led_button.setEnabled(ready and owner.arduino_serial is not None)
+        self.disconnect_button.setEnabled(ready and owner.arduino_serial is not None)
+        self.cancel_button.setEnabled(owner._arduino_operation is not None or owner._arduino_pending_port is not None or testing)
+        text = owner._arduino_panel_status
+        if reason:
+            text += "\nControls locked: " + reason
+        self.status_label.setText(text)
+        self.list_status.setText(owner._arduino_list_status)
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            port = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+            if port:
+                self.table.item(row, 3).setText(owner._arduino_port_results.get(port.upper(), "Not tested"))
+
+    def done(self, result):
+        self.controller._arduino_panel_hidden()
+        super().done(result)
+
+    def closeEvent(self, event):
+        self.controller._arduino_panel_hidden()
+        event.accept()
+
+
 class Xr12AudienceController(QObject):
     """Owns MIDI port 3 and controls XR12 audience-mic fade/mute state."""
 
@@ -4185,6 +4705,7 @@ class LiveController(QWidget):
         self.xr12_connected = False
         self.arduino_connected = False
         self.arduino_serial = None
+        self._arduino_last_port = "COM5"  # Hint only; every connection verifies ID.
         self._arduino_chase_active = False
         self.led2_on = False
         self.midi_available = False
@@ -4194,6 +4715,7 @@ class LiveController(QWidget):
         self._manual_stop_requested = False
         self._playback_error_seen = False
         self._app_is_closing = False
+        self._init_arduino_panel()
 
         # --- Sync Calibration Loop State ---
         self.calib_loop_active = False
@@ -4313,8 +4835,7 @@ class LiveController(QWidget):
 
         if self.arduino_connected:
             self._hardware_status["Arduino"] = "scanning serial ports"
-            self._startup_probes["Arduino"] = Xr12ConnectionAttempt(
-                self._connect_arduino, lambda ser: ser.close(), device_name="Arduino")
+            self._start_arduino_probe(startup=True)
         else:
             self._hardware_status["Arduino"] = "skipped (no serial scan)"
 
@@ -4324,6 +4845,7 @@ class LiveController(QWidget):
         self._startup_probes["Playback MIDI"] = Xr12ConnectionAttempt(
             self._check_playback_midi, lambda result: None, device_name="Playback MIDI")
         self._refresh_hardware_status()
+        self._startup_hardware_started = True
         self._startup_poll_timer.start()
 
     def _check_playback_midi(self):
@@ -4352,27 +4874,23 @@ class LiveController(QWidget):
             del self._startup_probes[device]
             if error is not None:
                 self._hardware_status[device] = f"unavailable ({error})"
-            elif device == "Arduino":
-                self.arduino_serial = result
-                self._hardware_status[device] = "connected" if result is not None else "not found"
-                if result is not None:
-                    self._arduino_chase_active = True
-                    self.send_led_command("5")  # Chase test without sleeping in the UI thread.
-                    QTimer.singleShot(2500, self._update_startup_leds)
             else:
                 self.midi_available = bool(result)
                 self._hardware_status[device] = "available" if result else "not found"
-                if not self._arduino_chase_active:
-                    self._update_startup_leds()
+                self._update_startup_leds()
             self._refresh_hardware_status()
-        if not self._startup_probes:
-            self._startup_poll_timer.stop()
-            print("[Startup] Hardware checks finished; controller is ready.", flush=True)
+        self._maybe_finish_startup_hardware()
 
     def _update_startup_leds(self):
-        self._arduino_chase_active = False
-        if not self._app_is_closing:
-            self.send_led_command("4" if self.midi_available else "1")
+        if self._app_is_closing or self._arduino_activity_active():
+            return
+        if self._arduino_chase_active:
+            if self._arduino_led_test_kind == "startup" and self._arduino_writer is not None:
+                state = [] if self.midi_available else ["1"]
+                if not self._arduino_writer.set_chase_restore(state):
+                    self.send_led_command("4" if self.midi_available else "1")
+            return
+        self.send_led_command("4" if self.midi_available else "1")
 
     def _refresh_hardware_status(self):
         text = " | ".join(f"{device}: {status}" for device, status in self._hardware_status.items())
@@ -4889,6 +5407,10 @@ class LiveController(QWidget):
         left_col.setSpacing(8)
         left_col.addWidget(main_controls_group)
         left_col.addWidget(zoom_group)
+        self.arduino_panel_button = QPushButton("Arduino…")
+        self.arduino_panel_button.setToolTip("List present COM/LPT devices, select the Arduino port, and test its LEDs. No hardware is opened by listing.")
+        self.arduino_panel_button.clicked.connect(self._show_arduino_panel)
+        left_col.addWidget(self.arduino_panel_button)
         left_col.addStretch(1)
 
         right_col = QVBoxLayout()
@@ -5153,6 +5675,8 @@ class LiveController(QWidget):
     def toggle_live_mode(self):
         """Toggles between LIVE and EDIT modes, enabling/disabling UI controls accordingly."""
         self.is_live_mode = self.live_mode_slider.isChecked()
+        if self.is_live_mode:
+            self._arduino_before_activity()
         is_edit_mode = not self.is_live_mode
         
         # Enable/disable all controls that should only be accessible in EDIT mode.
@@ -5228,52 +5752,479 @@ class LiveController(QWidget):
         keys.remove('z') # Reserved for Arduino LED 2 control
         return keys
 
-    def _connect_arduino(self):
-        """Probe only after Yes, on a background thread; always close rejected ports."""
-        if not self.arduino_connected:
+    def _init_arduino_panel(self):
+        self._arduino_panel = None
+        self._startup_hardware_started = False
+        self._startup_hardware_announced = False
+        self._arduino_led_test_kind = None
+        self._arduino_operation = None
+        self._arduino_operation_kind = None
+        self._arduino_operation_port = None
+        self._arduino_operation_reported = False
+        self._arduino_operation_cancelled = False
+        self._arduino_pending_port = None
+        self._arduino_writer = None
+        self._arduino_closing_writer = None
+        self._arduino_listing = None
+        self._arduino_listing_reported = False
+        self._arduino_devices = []
+        self._arduino_port_results = {}
+        self._arduino_panel_status = "No Arduino test requested."
+        self._arduino_list_status = "Devices have not been listed."
+        self._arduino_panel_timer = QTimer(self)
+        self._arduino_panel_timer.setInterval(50)
+        self._arduino_panel_timer.timeout.connect(self._poll_arduino_panel)
+        self._arduino_panel_timer.start()
+        self._arduino_led_timer = QTimer(self)
+        self._arduino_led_timer.setSingleShot(True)
+        self._arduino_led_timer.setInterval(2500)
+        self._arduino_led_timer.timeout.connect(self._finish_arduino_led_test)
+
+    def _show_arduino_panel(self):
+        if self._app_is_closing:
+            return
+        if self._arduino_panel is None:
+            self._arduino_panel = ArduinoPanel(self)
+        self._arduino_panel.set_devices(self._arduino_devices)
+        self._arduino_panel.show()
+        self._arduino_panel.raise_()
+        self._arduino_panel.activateWindow()
+        self._refresh_arduino_devices()
+
+    def _refresh_arduino_devices(self):
+        if self._app_is_closing or self._arduino_listing is not None:
+            return
+        self._arduino_list_status = "Listing present COM/LPT devices (no hardware opens)…"
+        self._arduino_listing_reported = False
+        self._arduino_listing = ArduinoConnectionAttempt(
+            _arduino_list_devices, timeout_seconds=8.0, dispose=lambda result: None)
+
+    def _arduino_activity_active(self):
+        return bool(self._has_active_playback() or self.running_test_port is not None
+                    or (self.calib_loop_worker and self.calib_loop_worker.isRunning())
+                    or self._active_sync_show_session)
+
+    def _maybe_finish_startup_hardware(self):
+        if (not self._startup_hardware_started or self._startup_hardware_announced
+                or self._startup_probes
+                or (self._arduino_operation is not None and self._arduino_operation_kind == "startup")
+                or (self._arduino_chase_active and self._arduino_led_test_kind == "startup")):
+            return
+        self._startup_hardware_announced = True
+        self._startup_poll_timer.stop()
+        print("[Startup] Hardware checks finished; controller is ready.", flush=True)
+
+    def _arduino_controls_blocked(self):
+        if self._app_is_closing:
+            return "Application is closing."
+        if self.is_live_mode:
+            return "Switch to EDIT mode to change or test Arduino hardware."
+        if self._arduino_activity_active():
+            return "Playback, a MIDI test, calibration or a live show is active."
+        return ""
+
+    def _arduino_set_status(self, text):
+        self._arduino_panel_status = text
+        if self._arduino_panel is not None:
+            self._arduino_panel.refresh_state()
+
+    def _start_arduino_probe(self, selected_port=None, startup=False):
+        if self._app_is_closing or self._arduino_operation is not None or self._arduino_closing_writer is not None:
+            self._arduino_set_status("Arduino is busy; wait until the previous driver operation and cleanup have finished.")
+            return False
+        if self._arduino_writer is not None:
+            self._arduino_set_status("Arduino already has a live connection; disconnect it before probing another port.")
+            return False
+        self._arduino_operation_kind = "startup" if startup else "manual"
+        self._arduino_operation_port = selected_port
+        self._arduino_operation_reported = False
+        self._arduino_operation_cancelled = False
+        # Snapshot worker inputs on the GUI thread. A slow native call may
+        # outlive window close, so the daemon must not retain the QWidget or
+        # read mutable GUI/controller state while cleanup is detached.
+        context = type("ArduinoProbeContext", (), {})()
+        context._app_is_closing = False  # attempt.cancel() is the shutdown signal.
+        context.arduino_connected = bool(self.arduino_connected)
+        context._arduino_last_port = self._arduino_last_port
+        operation = type(self)._connect_arduino
+        self._arduino_operation = ArduinoConnectionAttempt(
+            lambda attempt: operation(context, attempt, selected_port=selected_port))
+        target = selected_port or "remembered port, COM5, then other present serial ports"
+        self._arduino_set_status(f"Checking {target}; waiting for reset and exact ID {ARDUINO_TARGET_ID} at {ARDUINO_BAUD} baud…")
+        return True
+
+    def _connect_selected_arduino(self, port):
+        reason = self._arduino_controls_blocked()
+        if reason:
+            self._arduino_set_status(reason)
+            return False
+        if self._arduino_operation is not None or self._arduino_closing_writer is not None or self._arduino_chase_active:
+            self._arduino_set_status("Arduino is busy; cancel or wait for cleanup before another connection test.")
+            return False
+        if (not _arduino_serial_target(port)
+                or not any(row["serial"] and row["port"].upper() == port.upper()
+                           for row in self._arduino_devices)):
+            self._arduino_set_status("Select a present serial COM device. LPT devices cannot be opened or tested.")
+            return False
+        self.arduino_connected = True  # Explicit operator action after optional startup No.
+        if self.arduino_serial is not None and self.arduino_serial.port.upper() == port.upper():
+            # Already exact-ID validated: do not reset/reopen or interleave a
+            # new ID query with live LED writes. The chase is the live test.
+            self._arduino_port_results[port.upper()] = f"Connected — verified {ARDUINO_TARGET_ID} (live connection reused)"
+            text = f"{port}: reusing the existing ID-validated connection. Use LED / Chase test to check the LEDs; no reopen/reset was performed."
+            if port.upper() != self._arduino_last_port.upper():
+                try:
+                    self._save_arduino_port(port)
+                except Exception as exc:
+                    text += f" Still could not save the verified port: {exc}. Previous saved port is unchanged."
+                else:
+                    text += " Verified port saved successfully."
+            self._arduino_set_status(text)
+            return True
+        if self._arduino_writer is not None:
+            self._arduino_pending_port = port
+            self._begin_arduino_disconnect()
+            self._arduino_set_status(f"Disconnecting current Arduino; {port} will be tested only after native close finishes.")
+            return True
+        return self._start_arduino_probe(selected_port=port)
+
+    def _begin_arduino_disconnect(self):
+        self._stop_arduino_led_test(restore=False)
+        if self._arduino_writer is not None:
+            self._arduino_closing_writer = self._arduino_writer
+            port = str(self.arduino_serial.port)
+            self._arduino_port_results[port.upper()] = "Disconnecting — previously ID verified"
+            self._arduino_writer = None
+            self.arduino_serial = None
+            self._arduino_closing_writer.close()
+
+    def _disconnect_arduino(self):
+        reason = self._arduino_controls_blocked()
+        if reason:
+            self._arduino_set_status(reason)
+            return False
+        if self._arduino_operation is not None or self._arduino_closing_writer is not None:
+            self._arduino_set_status("Arduino driver is busy; cancel the operation and wait for cleanup first.")
+            return False
+        self._arduino_pending_port = None
+        self._begin_arduino_disconnect()
+        self._arduino_set_status("Disconnecting Arduino in the background; saved port is unchanged.")
+        return True
+
+    def _cancel_arduino_operation(self):
+        self._arduino_pending_port = None
+        if self._arduino_operation is not None:
+            self._arduino_operation_cancelled = True
+            self._arduino_operation.cancel()
+            self._arduino_set_status("Arduino operation cancelled; waiting for the native driver to release the port. No retry can start yet.")
+        if self._arduino_chase_active:
+            self._stop_arduino_led_test(restore=True)
+            self._arduino_set_status("LED test stopped; previous LED state restored.")
+
+    def _arduino_panel_hidden(self):
+        # Dialog lifetime never owns native handles. Closing/Escape cancels
+        # manual work, while the controller keeps polling until cleanup ends.
+        if self._arduino_listing is not None:
+            self._arduino_listing.cancel()
+        if self._arduino_operation_kind == "manual" or self._arduino_pending_port is not None:
+            self._cancel_arduino_operation()
+        else:
+            # Also invalidate any restore tail still queued after the GUI
+            # timer completed. No dialog lifetime may leave stale test work.
+            self._stop_arduino_led_test(restore=True)
+
+    def _poll_arduino_panel(self):
+        listing = self._arduino_listing
+        if listing is not None:
+            if not self._arduino_listing_reported:
+                done, result, error = listing.poll()
+                if done:
+                    self._arduino_listing_reported = True
+                    if error is not None:
+                        self._arduino_list_status = f"Device listing: {error}. Waiting for metadata cleanup if needed."
+                    elif result is not None:
+                        self._arduino_devices = result["rows"]
+                        self._arduino_list_status = (f"{len(result['rows'])} present device(s). "
+                                                     + " ".join(result["warnings"]))
+                        if self._arduino_panel is not None:
+                            self._arduino_panel.set_devices(self._arduino_devices)
+            if self._arduino_listing_reported and listing.released():
+                self._arduino_listing = None
+
+        writer = self._arduino_writer
+        if writer is not None and writer.error:
+            self._arduino_pending_port = None
+            self._arduino_panel_status = f"Arduino serial error: {writer.error}. Waiting for driver cleanup; saved port is unchanged."
+            self._hardware_status["Arduino"] = f"serial error ({writer.error})"
+            self._begin_arduino_disconnect()
+            self._refresh_hardware_status()
+
+        closing = self._arduino_closing_writer
+        if closing is not None and closing.released.is_set():
+            self._arduino_closing_writer = None
+            port = str(closing.serial.port)
+            self._arduino_port_results[port.upper()] = (f"Disconnected — {closing.error}" if closing.error
+                                                       else "Disconnected — previously ID verified")
+            pending, self._arduino_pending_port = self._arduino_pending_port, None
+            self._hardware_status["Arduino"] = "disconnected"
+            self._refresh_hardware_status()
+            if closing.error:
+                self._arduino_panel_status = f"Arduino disconnect error: {closing.error}. Saved port is unchanged."
+            elif pending is None:
+                self._arduino_panel_status = "Arduino disconnected; saved port is unchanged."
+            if pending is not None and not self._arduino_controls_blocked():
+                self._start_arduino_probe(selected_port=pending)
+            elif pending is not None:
+                self._arduino_panel_status = "Connection change cancelled because playback/live mode became active. Select Test / Connect again when idle."
+
+        probe = self._arduino_operation
+        if probe is not None:
+            # A mode/activity transition also invalidates an in-flight manual
+            # result. Never adopt a port merely because a disabled button was
+            # clicked before the transition.
+            if (self._arduino_operation_kind == "manual" and self._arduino_controls_blocked()
+                    and not self._arduino_operation_reported):
+                self._arduino_operation_cancelled = True
+                probe.cancel()
+            if not self._arduino_operation_reported:
+                done, result, error = probe.poll()
+                if done:
+                    self._arduino_operation_reported = True
+                    messages = probe.messages()
+                    failures = [message for message in messages
+                                if ": probing " not in message and ": verified " not in message]
+                    for message in failures:
+                        name = message.split(":", 1)[0].upper()
+                        if _arduino_serial_target(name):
+                            self._arduino_port_results[name] = message.split(":", 1)[-1].strip()
+                    selected = self._arduino_operation_port
+                    if result is not None and not self._arduino_operation_cancelled and not self._app_is_closing:
+                        self._accept_arduino_connection(result, startup=self._arduino_operation_kind == "startup")
+                    else:
+                        if result is not None:
+                            # Defensive ownership path if a future caller
+                            # cancels after transfer: never close in the GUI.
+                            self._arduino_closing_writer = ArduinoSerialWriter(result)
+                            self._arduino_closing_writer.close()
+                        detail = str(error) if error else ("\n".join(failures) if failures else "No matching controller found")
+                        if error is not None and failures:
+                            detail += "\n" + "\n".join(failures)
+                        if selected:
+                            self._arduino_port_results[selected.upper()] = detail
+                        self._arduino_panel_status = detail + ("; waiting for native cleanup before retry." if not probe.released() else "; saved port is unchanged.")
+                        self._hardware_status["Arduino"] = f"unavailable ({detail})"
+                        self._refresh_hardware_status()
+            if self._arduino_operation_reported and probe.released():
+                self._arduino_operation = None
+                self._arduino_operation_kind = None
+                self._arduino_operation_port = None
+                if self._arduino_writer is None and self._arduino_closing_writer is None:
+                    self._arduino_panel_status += " Driver released; another test may now be started."
+        if (self._arduino_chase_active
+                and (self._app_is_closing or self._arduino_activity_active()
+                     or (self._arduino_led_test_kind != "startup" and self.is_live_mode))):
+            self._stop_arduino_led_test(restore=False)
+        self._maybe_finish_startup_hardware()
+        if self._arduino_panel is not None and self._arduino_panel.isVisible():
+            self._arduino_panel.refresh_state()
+
+    def _accept_arduino_connection(self, ser, startup=False):
+        self.arduino_serial = ser
+        self._arduino_writer = ArduinoSerialWriter(ser)
+        self.arduino_connected = True
+        port = str(ser.port)
+        self._arduino_port_results[port.upper()] = f"Connected — verified {ARDUINO_TARGET_ID}"
+        self._hardware_status["Arduino"] = f"connected on {port}"
+        print(f"[Hardware] Arduino LED controller connected on {port}.", flush=True)
+        try:
+            self._save_arduino_port(port)
+        except Exception as exc:
+            self._arduino_panel_status = f"{port}: ID verified and connected, but could not save the port: {exc}. Previous saved port is unchanged."
+        else:
+            self._arduino_panel_status = f"{port}: ID verified; connected and saved as the startup port."
+        self._refresh_hardware_status()
+        if startup and not self._arduino_activity_active() and not self._app_is_closing:
+            # Startup Yes explicitly opts into the original 2.5-second chase,
+            # including default LIVE mode. Manual tests still require EDIT.
+            state = [] if self.midi_available else ["1"]
+            if self._arduino_writer.test_chase(restore_commands=state):
+                self._arduino_led_test_kind = "startup"
+                self._arduino_chase_active = True
+                self._arduino_led_timer.start()
+        elif not startup:
+            self.send_led_command("4" if self.midi_available else "1")
+
+    def _save_arduino_port(self, port):
+        """Merge one verified setting; never overwrite unrelated session data."""
+        data = {}
+        if os.path.exists(SESSION_FILE):
+            with open(SESSION_FILE, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            if not isinstance(data, dict):
+                raise ValueError("session.json is not an object; refusing to replace it")
+        data["arduino_last_port"] = port
+        directory = os.path.dirname(os.path.abspath(SESSION_FILE))
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\r\n",
+                                             dir=directory, prefix=".arduino-port-", suffix=".tmp", delete=False) as handle:
+                temporary = handle.name
+                json.dump(data, handle, indent=4)
+                handle.flush()
+            os.replace(temporary, SESSION_FILE)
+            temporary = None
+        finally:
+            if temporary is not None:
+                os.unlink(temporary)
+        self._arduino_last_port = port
+
+    def _test_arduino_leds(self):
+        reason = self._arduino_controls_blocked()
+        if reason:
+            self._arduino_set_status(reason)
+            return False
+        if (self._arduino_operation is not None or self._arduino_closing_writer is not None
+                or self._arduino_writer is None or self._arduino_chase_active):
+            self._arduino_set_status("Connect an Arduino and wait for other operations to finish before the LED test.")
+            return False
+        self._arduino_led_test_kind = "manual"
+        self._arduino_chase_active = True
+        if not self._arduino_writer.test_chase():
+            self._arduino_chase_active = False
+            self._arduino_led_test_kind = None
+            self._arduino_set_status("Arduino is disconnecting or a LED test is already active.")
+            return False
+        self._arduino_led_timer.start()
+        self._arduino_set_status(f"{self.arduino_serial.port}: chase command 5 sent on the live connection; LED state restores automatically after 2.5 seconds.")
+        return True
+
+    def _finish_arduino_led_test(self):
+        startup = self._arduino_led_test_kind == "startup"
+        if startup and self._arduino_writer is not None:
+            state = [] if self.midi_available else ["1"]
+            if not self._arduino_writer.set_chase_restore(state):
+                self._arduino_writer.send("4" if self.midi_available else "1")
+        self._stop_arduino_led_test(restore=True)
+        self._arduino_set_status("Startup LED chase finished; latest MIDI status restored." if startup
+                                 else "LED / chase test finished; previous LED state restored.")
+        self._maybe_finish_startup_hardware()
+
+    def _stop_arduino_led_test(self, restore=True):
+        startup = self._arduino_led_test_kind == "startup"
+        self._arduino_chase_active = False
+        self._arduino_led_test_kind = None
+        self._arduino_led_timer.stop()
+        writer = self._arduino_writer
+        if writer is not None:
+            # A restore can outlive the GUI chase flag while a native write
+            # is blocked. The writer, not that flag, owns restore completion.
+            if restore:
+                if startup:
+                    writer.set_chase_restore([] if self.midi_available else ["1"])
+                writer.finish_chase(restore=True)
+            else:
+                # Invalidate even if the GUI has already marked the chase
+                # finished: a slow driver may still have a restore tail queued.
+                writer.finish_chase(restore=False)
+
+    def _arduino_before_activity(self):
+        """Called before playback/test/show starts, not just by a poll timer."""
+        self._arduino_pending_port = None
+        if self._arduino_operation is not None:
+            self._arduino_operation_cancelled = True
+            self._arduino_operation.cancel()
+        self._stop_arduino_led_test(restore=False)
+
+    def _shutdown_arduino_panel(self):
+        self._arduino_panel_timer.stop()
+        self._arduino_pending_port = None
+        self._stop_arduino_led_test(restore=False)
+        if self._arduino_listing is not None:
+            self._arduino_listing.cancel()
+        if self._arduino_operation is not None:
+            self._arduino_operation.cancel()
+        self._begin_arduino_disconnect()
+        # Daemon workers retain their handles until their own close returns.
+        # No QThread is introduced, no GUI wait/join, no native close on UI.
+
+    def _connect_arduino(self, attempt, selected_port=None):
+        """Verify one explicit port, or preserve remembered/COM5 startup scan."""
+        def stopped():
+            return self._app_is_closing or attempt.stopped()
+
+        if not self.arduino_connected or stopped():
             return None
-        print("[Hardware] Arduino: enumerating serial ports.", flush=True)
-        ports = list(list_ports.comports())
-        print(f"[Hardware] Arduino: found {len(ports)} serial port(s).", flush=True)
+        if selected_port is not None:
+            if not _arduino_serial_target(selected_port):
+                attempt.report(f"{selected_port}: not a serial COM target (LPT is information only)")
+                return None
+            # Manual selection MUST NOT enumerate or fall back to any other
+            # device. A stale/unplugged selection produces that port's error.
+            ports = [selected_port]
+        else:
+            print("[Hardware] Arduino: enumerating serial ports.", flush=True)
+            ports = [str(info.device) for info in list_ports.comports()
+                     if _arduino_serial_target(info.device)]
+            preferred = [getattr(self, "_arduino_last_port", "COM5"), "COM5"]
+            priority = {name.upper(): index for index, name in reversed(list(enumerate(preferred)))}
+            ports.sort(key=lambda port: priority.get(port.upper(), len(preferred)))
+            print(f"[Hardware] Arduino: found {len(ports)} serial port(s).", flush=True)
         for port in ports:
-            if self._app_is_closing:
-                break
+            if stopped():
+                return None
             ser = None
             try:
-                print(f"[Hardware] Arduino: probing {port.device} at {ARDUINO_BAUD} baud; waiting for reset/ID.", flush=True)
-                ser = serial.Serial(port.device, ARDUINO_BAUD, timeout=1.2, write_timeout=1.2)
-                time.sleep(2.0)
+                attempt.report(f"{port}: probing at {ARDUINO_BAUD} baud; waiting for reset/ID")
+                ser = serial.Serial(port, ARDUINO_BAUD, timeout=0.1, write_timeout=1.2)
+                if stopped() or attempt.wait(2.0) or stopped():
+                    return None
                 ser.reset_input_buffer()
+                if stopped():
+                    return None
                 ser.write(ARDUINO_PROBE_CMD)
-                ser.flush()
-                time.sleep(0.3)
+                # Do not flush: some Windows drivers can block indefinitely.
+                if stopped() or attempt.wait(0.3) or stopped():
+                    return None
                 identity = None
-                end_time = time.time() + 1.2
-                while time.time() < end_time:
+                end_time = time.monotonic() + 1.2
+                while time.monotonic() < end_time and not stopped():
                     if ser.in_waiting:
                         line = ser.readline().decode(errors="ignore").strip()
                         if line:
                             identity = line
+                        if identity == ARDUINO_TARGET_ID:
+                            break
+                    elif attempt.wait(0.02):
+                        break
+                if stopped():
+                    return None
                 if identity == ARDUINO_TARGET_ID:
-                    print(f"[Hardware] Arduino LED controller connected on {port.device}.", flush=True)
-                    connected, ser = ser, None  # Transfer ownership to the startup probe.
+                    attempt.report(f"{port}: verified {ARDUINO_TARGET_ID}")
+                    connected, ser = ser, None  # Attempt owns until GUI transfer.
                     return connected
-                print(f"[Hardware] Arduino: {port.device} did not return the expected ID (got {identity!r}).", flush=True)
+                attempt.report(f"{port}: expected {ARDUINO_TARGET_ID}; received {identity!r}" if identity
+                               else f"{port}: no ID response; expected {ARDUINO_TARGET_ID} at {ARDUINO_BAUD} baud")
             except Exception as exc:
-                print(f"[Hardware] Arduino: {port.device} failed: {exc}", flush=True)
+                attempt.report(f"{port}: open/probe failed: {exc}")
             finally:
                 if ser is not None:
-                    ser.close()
-        print("[Hardware] Arduino LED controller not found. LED feedback disabled.", flush=True)
+                    try:
+                        ser.close()
+                    except Exception as exc:
+                        attempt.report(f"{port}: cleanup failed: {exc}")
+        if not stopped():
+            print("[Hardware] Arduino LED controller not found. LED feedback disabled.", flush=True)
         return None
 
     def send_led_command(self, command):
-        """Sends a single-character LED command to the Arduino."""
-        if self.arduino_serial is not None and self.arduino_serial.is_open:
-            try:
-                self.arduino_serial.write(command.encode("utf-8"))
-            except serial.SerialException as e:
-                print(f"Arduino serial error: {e}")
+        """Queue LED writes; a slow native driver must never block the UI."""
+        writer = self._arduino_writer
+        if writer is not None and not self._app_is_closing:
+            # Activity/hotkey LED updates supersede a test's timed restore.
+            if self._arduino_chase_active:
+                self._stop_arduino_led_test(restore=False)
+            writer.send(command)
+
     
     def load_config(self):
         """Loads general application configuration from config.json."""
@@ -5630,31 +6581,59 @@ class LiveController(QWidget):
             json.dump(data, f, indent=4)
 
     def save_session(self):
-        """Saves the current setlist and settings to session.json."""
-        session_data = {
-            'setlist_name': self.title_label.text(), 
-            'tracks': self.tracks,
-            'undo_history': list(self.undo_history),
-            'test_track_path': self.test_track_path,
-            'test_track_bpm': self.test_track_bpm_input.text(),
-            'midi_offset': self.midi_offset_slider.value(),
-            'timing_method': "high_precision" if self.high_precision_timing_radio.isChecked() else "standard",
-            'count_in_duration': int(self.count_in_combo.currentText()),
-            'table_font_size': self.current_table_font_size,
-            'count_in_bg_color': self.count_in_bg_color,
-            'count_in_font_size': self.count_in_font_size,
-            'track_play_bg_color': self.track_play_bg_color,
-            'track_play_font_size': self.track_play_font_size,
-            'streamdeck_font_size': self.streamdeck_font_spinbox.value(),
-            'scrub_locked': self.scrub_lock_checkbox.isChecked(),
-            'loop_enabled': self.loop_checkbox.isChecked(),
-            'loop_bpm': self.loop_bpm_spinbox.value(),
-            'loop_start_bar': self.loop_start_bar_spinbox.value(),
-            'loop_end_bar': self.loop_end_bar_spinbox.value(),
-        }
-        with open(SESSION_FILE, 'w') as f:
-            json.dump(session_data, f, indent=4)
-    
+        """Merge valid session data; report failures without damaging the file."""
+        temporary = None
+        try:
+            session_data = {}
+            if os.path.exists(SESSION_FILE):
+                with open(SESSION_FILE, 'r', encoding='utf-8') as f:
+                    session_data = json.load(f)
+                if not isinstance(session_data, dict):
+                    raise ValueError("session.json is not an object; refusing to replace it")
+            session_data.update({
+                'arduino_last_port': self._arduino_last_port,
+                'setlist_name': self.title_label.text(),
+                'tracks': self.tracks,
+                'undo_history': list(self.undo_history),
+                'test_track_path': self.test_track_path,
+                'test_track_bpm': self.test_track_bpm_input.text(),
+                'midi_offset': self.midi_offset_slider.value(),
+                'timing_method': "high_precision" if self.high_precision_timing_radio.isChecked() else "standard",
+                'count_in_duration': int(self.count_in_combo.currentText()),
+                'table_font_size': self.current_table_font_size,
+                'count_in_bg_color': self.count_in_bg_color,
+                'count_in_font_size': self.count_in_font_size,
+                'track_play_bg_color': self.track_play_bg_color,
+                'track_play_font_size': self.track_play_font_size,
+                'streamdeck_font_size': self.streamdeck_font_spinbox.value(),
+                'scrub_locked': self.scrub_lock_checkbox.isChecked(),
+                'loop_enabled': self.loop_checkbox.isChecked(),
+                'loop_bpm': self.loop_bpm_spinbox.value(),
+                'loop_start_bar': self.loop_start_bar_spinbox.value(),
+                'loop_end_bar': self.loop_end_bar_spinbox.value(),
+            })
+            directory = os.path.dirname(os.path.abspath(SESSION_FILE))
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', newline='\r\n',
+                                             dir=directory, prefix='.arduino-session-', suffix='.tmp', delete=False) as f:
+                temporary = f.name
+                json.dump(session_data, f, indent=4)
+                f.flush()
+            os.replace(temporary, SESSION_FILE)
+            temporary = None
+        except Exception as exc:
+            message = f"Session save failed; existing session.json was preserved: {exc}"
+            print(f"[Session] {message}", flush=True)
+            if hasattr(self, 'status_label'):
+                self.status_label.setText(message)
+            return False
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError as exc:
+                    print(f"[Session] Could not remove temporary save file: {exc}", flush=True)
+        return True
+
     def load_session(self):
         """Loads the last session from session.json on startup."""
         if not os.path.exists(SESSION_FILE): 
@@ -5668,6 +6647,11 @@ class LiveController(QWidget):
             with open(SESSION_FILE, 'r') as f: 
                 session_data = json.load(f)
             
+            # A saved port is only a discovery hint, never a substitute for ID.
+            saved_port = session_data.get('arduino_last_port')
+            if isinstance(saved_port, str) and saved_port.strip():
+                self._arduino_last_port = saved_port.strip()
+
             # Restore all settings from the session data.
             self.midi_offset_slider.setValue(session_data.get('midi_offset', DEFAULT_MIDI_OFFSET_MS))
             self.count_in_combo.setCurrentText(str(session_data.get('count_in_duration', DEFAULT_COUNT_IN_SECONDS)))
@@ -6522,6 +7506,7 @@ class LiveController(QWidget):
 
     def start_playback(self, row_index):
         """Initiates playback for a selected track."""
+        self._arduino_before_activity()
         if (self.worker and self.worker.isRunning()) or (self.test_worker and self.test_worker.isRunning()):
             self.show_danger_message(); return
         if self.tracks[row_index]['type'] == 'divider': return
@@ -6549,6 +7534,7 @@ class LiveController(QWidget):
 
     def start_countdown(self, row_index):
         """Starts the visual countdown timer for the first track."""
+        self._arduino_before_activity()
         if self.xr12_controller is not None:
             self.xr12_controller.request_close()
         self.send_led_command("3")  # LED 3: track 1 count-in started
@@ -6580,6 +7566,7 @@ class LiveController(QWidget):
 
     def execute_playback(self, track_data, bpm, row_index=None):
         """Creates and starts a MidiSyncWorker to handle playback."""
+        self._arduino_before_activity()
         self._manual_stop_requested = False
         self._playback_error_seen = False
         if self.require_midi_checkbox.isChecked() and not self.midi_available:
@@ -6682,6 +7669,7 @@ class LiveController(QWidget):
         The HTTP request is sent on a daemon thread so it cannot block or crash
         the main playback loop.
         """
+        self._arduino_before_activity()
         # Basic validation: show_file must be a bare filename ending in .json,
         # with no directory separators or path-traversal sequences.
         show_file = show_file.strip()
@@ -6922,6 +7910,7 @@ class LiveController(QWidget):
 
     def run_port_test(self, port_num):
         """Starts or stops a MIDI port test."""
+        self._arduino_before_activity()
         if self.worker and self.worker.isRunning():
             self.show_danger_message(); return
 
@@ -7105,6 +8094,7 @@ class LiveController(QWidget):
 
     def play_test_track(self):
         """Plays the selected test track with the performance MIDI ports enabled."""
+        self._arduino_before_activity()
         if (self.worker and self.worker.isRunning()) or (self.test_worker and self.test_worker.isRunning()):
             self.show_danger_message(); return
         if not self.test_track_path:
@@ -7143,6 +8133,7 @@ class LiveController(QWidget):
 
     def _start_calib_loop(self):
         """Validates preconditions and starts the calibration loop."""
+        self._arduino_before_activity()
         if not self.test_track_path:
             self.status_label.setText("Status: No test track selected for calibration.")
             return
@@ -7272,12 +8263,18 @@ class LiveController(QWidget):
         # Save the current session and config.
         self._app_is_closing = True
         self._startup_poll_timer.stop()
+        self._shutdown_arduino_panel()
         for probe in self._startup_probes.values():
             probe.cancel()  # Late Arduino connections are closed by the probe.
         self._startup_probes.clear()
-        self.save_session()
-        self.save_config()
-        
+        for name, save in (("session", self.save_session), ("config", self.save_config)):
+            try:
+                save()
+            except Exception as exc:
+                # Configuration/session storage must never bypass normal
+                # hotkey, playback, XR12 and Arduino shutdown cleanup.
+                print(f"[Shutdown] Could not save {name}: {exc}", flush=True)
+
         # Stop background threads gracefully.
         self.hotkey_listener.stop()
         self.hotkey_listener.wait()
@@ -7285,10 +8282,7 @@ class LiveController(QWidget):
         if self.xr12_controller is not None:
             self.xr12_controller.shutdown()
 
-        # Close the Arduino serial connection if open.
-        if self.arduino_serial is not None and self.arduino_serial.is_open:
-            self.send_led_command("4")  # Turn all LEDs off before closing
-            self.arduino_serial.close()
+        # Arduino shutdown is detached above; native writes/close never run here.
         
         event.accept()
 
