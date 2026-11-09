@@ -118,190 +118,97 @@ winmm = ctypes.windll.winmm
 # --- Dark Theme Stylesheet ---
 # A global stylesheet to provide a consistent dark theme for the application.
 DARK_STYLESHEET = """
-/* Operator chrome only: audience overlay colours remain configurable. */
 QWidget {
-    background-color: #10161f; color: #e3eaf3;
+    background-color: #1e1e1e;
+    color: #d4d4d4;
     font-family: 'Segoe UI';
-    selection-background-color: #246173; selection-color: #f3fbff;
-}
-QDialog { background-color: #10161f; }
-QWidget[uiSurface="card"], QWidget[uiSurface="header"], QWidget[uiSurface="footer"] {
-    background-color: #171f2b; border: 1px solid #2b394b; border-radius: 10px;
-}
-QLabel { background-color: transparent; border: none; }
-QLabel[uiRole="title"] { color: #f3f7fc; font-size: 20px; font-weight: 600; }
-QLabel[uiRole="muted"] { color: #9aadc2; }
-QLabel[uiRole="status"] { color: #adbed1; font-size: 11px; padding: 2px 4px; }
-QLabel[uiRole="active"] {
-    color: #79e2b2; background-color: #183c35; border: 1px solid #326858;
-    border-radius: 7px; padding: 5px 10px; font-weight: 700;
 }
 QGroupBox {
-    background-color: #171f2b; border: 1px solid #2b394b; border-radius: 9px;
-    margin-top: 10px; padding-top: 3px; font-size: 12px; font-weight: 600;
+    font-size: 12px;
+    font-weight: bold;
+    border: 1px solid #444;
+    border-radius: 8px;
+    margin-top: 6px;
 }
 QGroupBox::title {
-    subcontrol-origin: margin; subcontrol-position: top left;
-    left: 10px; padding: 0 5px; color: #b9cadd;
+    subcontrol-origin: margin;
+    subcontrol-position: top center;
+    padding: 0 10px;
+}
+QLabel {
+    background-color: transparent;
 }
 QPushButton {
-    background-color: #243143; color: #e3eaf3; border: 1px solid #3a4b60;
-    border-radius: 6px; padding: 5px 10px; min-height: 18px;
-    font-size: 12px; font-weight: 500;
+    background-color: #333;
+    color: #d4d4d4;
+    border: 1px solid #555;
+    padding: 8px;
+    border-radius: 6px;
+    font-size: 16px;
 }
-QPushButton:hover { background-color: #304359; border-color: #658298; }
-QPushButton:pressed { background-color: #192533; border-color: #62c5d7; }
-QPushButton:focus { border-color: #6bd2e3; }
-QPushButton:checked { background-color: #234d5c; border-color: #54bdce; }
-QPushButton[uiRole="primary"] { background-color: #205666; border-color: #378393; color: #effcff; }
-QPushButton[uiRole="primary"]:hover { background-color: #296b7d; border-color: #68c9d8; }
-QPushButton[uiRole="positive"] { background-color: #244a40; border-color: #3f7863; color: #c4f2de; }
-QPushButton[uiRole="positive"]:hover { background-color: #2b5b4e; border-color: #70b399; }
-QPushButton[uiRole="stop"] {
-    background-color: #9d3346; color: #ffffff; border-color: #d76679;
-    font-size: 14px; font-weight: 700; min-height: 27px; padding: 7px 16px;
+QPushButton:hover {
+    background-color: #454545;
 }
-QPushButton[uiRole="stop"]:hover { background-color: #b53d52; border-color: #ff9cab; }
-QPushButton[uiRole="stop"]:pressed { background-color: #7e2938; }
-QPushButton[uiRole="remove"] {
-    background-color: #472a35; color: #f4b0bc; border-color: #764151;
-    min-height: 0; padding: 0; font-size: 11px; font-weight: 700;
+QPushButton:pressed {
+    background-color: #555;
 }
-QPushButton[uiRole="remove"]:hover { background-color: #85364a; color: white; }
-QPushButton[uiRole]:focus { border-color: #89e5ef; }
-QPushButton:disabled, QPushButton[uiRole]:disabled {
-    background-color: #1b2532; color: #77879a; border-color: #2d3949;
+QPushButton:disabled {
+    background-color: #2a2a2a;
+    color: #5a5a5a;
 }
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
-    background-color: #111a26; color: #e3eaf3; border: 1px solid #3a4b60;
-    border-radius: 5px; padding: 4px 6px; min-height: 18px;
+QLineEdit, QComboBox, QSpinBox {
+    background-color: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 5px;
+    font-size: 12px;
 }
-QLineEdit:hover, QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover { border-color: #5d778f; }
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus { border-color: #62c5d7; }
-QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {
-    background-color: #151e2a; color: #8291a5; border-color: #2c394a;
+QComboBox::drop-down {
+    border: none;
 }
-QComboBox { padding-right: 23px; }
-QComboBox::drop-down { width: 21px; border: none; border-left: 1px solid #33465a; }
-QComboBox QAbstractItemView {
-    background-color: #1b2838; color: #e3eaf3; border: 1px solid #4c657d;
-    selection-background-color: #285e70; selection-color: #ffffff; outline: none;
-}
-QSpinBox::up-button, QDoubleSpinBox::up-button,
-QSpinBox::down-button, QDoubleSpinBox::down-button { width: 16px; border: none; }
 QTableWidget {
-    background-color: #141d29; alternate-background-color: #192433;
-    color: #e3eaf3; gridline-color: #2a394b;
-    border: 1px solid #33455b; border-radius: 7px;
-    selection-background-color: #274b60; selection-color: #f5fbff;
+    background-color: #2a2a2a;
+    gridline-color: #444;
+    border: 1px solid #444;
 }
-QTableWidget::item { padding: 3px 5px; border-bottom: 1px solid #283548; }
-QTableWidget::item:selected { background-color: #274b60; color: #f5fbff; }
-QTableWidget QLineEdit {
-    background-color: #141d29; border: 1px solid #293a4e;
-    border-radius: 3px; padding: 2px 4px; min-height: 0;
-}
-QTableWidget QLineEdit:focus { border-color: #62c5d7; }
-QTableWidget QLineEdit:disabled { color: #d7e1ee; background-color: #141d29; border-color: #223144; }
 QHeaderView::section {
-    background-color: #202e40; color: #c7d6e7;
-    padding: 7px 3px; border: none; border-right: 1px solid #34465c;
-    border-bottom: 1px solid #40566e; font-size: 11px; font-weight: 600;
+    background-color: #333;
+    color: #d4d4d4;
+    padding: 3px;
+    border: 1px solid #444;
+    font-size: 9pt;
 }
-QTableCornerButton::section { background-color: #202e40; border: none; }
-QScrollArea { border: none; background-color: #10161f; }
-QScrollBar:vertical { background: #121b27; width: 11px; margin: 1px; border: none; }
-QScrollBar::handle:vertical { background: #43566c; min-height: 28px; border-radius: 4px; }
-QScrollBar::handle:vertical:hover { background: #658199; }
-QScrollBar:horizontal { background: #121b27; height: 11px; margin: 1px; border: none; }
-QScrollBar::handle:horizontal { background: #43566c; min-width: 28px; border-radius: 4px; }
-QScrollBar::handle:horizontal:hover { background: #658199; }
-QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; border: none; }
-QScrollBar::add-page, QScrollBar::sub-page { background: none; }
-QTabWidget::pane { border: 1px solid #2c3c50; border-radius: 7px; background-color: #111a26; top: -1px; }
-QTabBar::tab {
-    background-color: #192433; color: #9db1c8; border: 1px solid #2d3e52;
-    border-bottom: 2px solid #2d3e52; padding: 7px 11px; margin-right: 3px;
-    border-top-left-radius: 5px; border-top-right-radius: 5px;
+QTableWidget::item {
+    padding-left: 5px;
+    padding-right: 5px;
 }
-QTabBar::tab:selected { background-color: #223547; color: #e7fbff; border-bottom-color: #61c4d5; }
-QTabBar::tab:hover { background-color: #2a3d51; color: #ffffff; }
-QTabBar::tab:disabled { color: #66778d; }
-QSlider::groove:horizontal { border: none; background: #314158; height: 5px; border-radius: 2px; }
-QSlider::sub-page:horizontal { background: #4492a3; border-radius: 2px; }
-QSlider::handle:horizontal { background: #b9e9ee; border: 1px solid #68c9d8; width: 14px; margin: -5px 0; border-radius: 7px; }
-QSlider::handle:horizontal:hover { background: #efffff; }
-QSlider::handle:horizontal:disabled { background: #55677c; border-color: #65778b; }
-QSlider::sub-page:horizontal:disabled { background: #3c5067; }
-QCheckBox, QRadioButton { spacing: 6px; background-color: transparent; }
-QCheckBox:disabled, QRadioButton:disabled { color: #8291a5; }
-QCheckBox:focus, QRadioButton:focus { color: #a0e8f2; }
+QTableWidget::item:selected {
+    background-color: #3d3d3d;
+    color: #d4d4d4;
+}
+QSlider::groove:horizontal {
+    border: 1px solid #444;
+    background: #333;
+    height: 8px;
+    border-radius: 4px;
+}
+QSlider::handle:horizontal {
+    background: #d4d4d4;
+    border: 1px solid #d4d4d4;
+    width: 18px;
+    margin: -5px 0;
+    border-radius: 9px;
+}
 QCheckBox::indicator, QRadioButton::indicator {
-    width: 15px; height: 15px; background-color: #111a26;
-    border: 1px solid #637b94; border-radius: 4px;
+    width: 16px;
+    height: 16px;
+    border: 1px solid #555;
+    border-radius: 4px;
 }
-QRadioButton::indicator { border-radius: 8px; }
-QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: #7ddbe8; }
-QCheckBox::indicator:checked { background-color: #64c2d2; border: 2px solid #a7e5ed; }
-QRadioButton::indicator:checked { background-color: #64c2d2; border: 3px solid #b1e8ef; }
-QCheckBox::indicator:disabled, QRadioButton::indicator:disabled { background-color: #17212e; border-color: #485b70; }
-QCheckBox::indicator:checked:disabled, QRadioButton::indicator:checked:disabled { background-color: #4b8392; border-color: #7ba7b3; }
-QToolTip { background-color: #243449; color: #eff6ff; border: 1px solid #5b7893; padding: 6px; }
-QMenu { background-color: #1b2838; color: #e3eaf3; border: 1px solid #40566e; padding: 4px; }
-QMenu::item { padding: 6px 18px; }
-QMenu::item:selected { background-color: #285e70; }
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+    background-color: #3498db;
+}
 """
-
-
-def _ui_role(widget, role):
-    """Tag operator chrome for semantic styling without changing widget state."""
-    widget.setProperty("uiRole", role)
-    return widget
-
-
-def _ui_surface(widget, surface="card"):
-    """Style a specific container; borders never leak into its child labels."""
-    widget.setProperty("uiSurface", surface)
-    widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-    return widget
-
-
-def _ui_scroll_page(*groups):
-    """Presentation-only utility page; keeps original controls and signals intact."""
-    page = QWidget()
-    page_layout = QVBoxLayout(page)
-    page_layout.setContentsMargins(8, 5, 8, 8)
-    page_layout.setSpacing(8)
-    for group in groups:
-        page_layout.addWidget(group)
-    page_layout.addStretch(1)
-    scroll = QScrollArea()
-    scroll.setWidgetResizable(True)
-    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-    scroll.setWidget(page)
-    return scroll
-
-
-
-def _ui_fit_dialog(dialog, width, height):
-    """Keep initial dialog chrome on the available screen without changing state."""
-    screen = dialog.screen()
-    if screen is not None:
-        area = screen.availableGeometry()
-        width = min(width, max(640, area.width() - 36))
-        height = min(height, max(480, area.height() - 52))
-    dialog.resize(width, height)
-
-
-def _ui_scroll_layout(layout):
-    """Scroll an existing numeric column, preserving its controls and signals."""
-    content = QWidget()
-    content.setLayout(layout)
-    scroll = QScrollArea()
-    scroll.setWidgetResizable(True)
-    scroll.setMinimumWidth(285)
-    scroll.setWidget(content)
-    return scroll
 
 def _lc_send_ipc_command(pipe_path, command_str):
     """Sends a JSON command string to mpv via its Windows named pipe."""
@@ -1119,7 +1026,7 @@ class ArduinoPanel(QDialog):
         self.status_label.setWordWrap(True)
         self.status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.status_label)
-        actions = QGridLayout()
+        actions = QHBoxLayout()
         self.refresh_button = QPushButton("Refresh devices")
         self.connect_button = QPushButton("Test / Connect selected")
         self.led_button = QPushButton("LED / Chase test (2.5 s)")
@@ -1134,7 +1041,7 @@ class ArduinoPanel(QDialog):
         close_button.clicked.connect(self.close)
         for button in (self.refresh_button, self.connect_button, self.led_button,
                        self.disconnect_button, self.cancel_button, close_button):
-            actions.addWidget(button, actions.count() // 3, actions.count() % 3)
+            actions.addWidget(button)
         layout.addLayout(actions)
         self.refresh_state()
 
@@ -2690,7 +2597,7 @@ class ZoomScaleDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Video Zoom / Scale Configuration (Edit Mode)")
         self.setModal(True)
-        _ui_fit_dialog(self, 1100, 720)
+        self.resize(1100, 720)
 
         self._current_config = dict(current_config)
         self.result_config = None
@@ -2719,14 +2626,14 @@ class ZoomScaleDialog(QDialog):
         self._select_btn = QPushButton("Select Video…")
         self._select_btn.clicked.connect(self._select_video)
         self._video_label = QLabel("No video selected.")
-        self._video_label.setStyleSheet("font-style: italic; color: #9aadc2;")
+        self._video_label.setStyleSheet("font-style: italic; color: #888;")
 
         self._play_btn = QPushButton("▶  Play")
         self._play_btn.clicked.connect(self._play)
         self._pause_btn = QPushButton("⏸  Pause / Freeze")
         self._pause_btn.clicked.connect(self._pause)
         self._capture_btn = QPushButton("📷  Capture Frame  →")
-        self._capture_btn.setStyleSheet("background-color: #205666; color: #effcff; border: 1px solid #378393; font-weight: bold; padding: 5px 10px;")
+        self._capture_btn.setStyleSheet("background-color: #007acc; color: white; font-weight: bold; padding: 4px 8px;")
         self._capture_btn.clicked.connect(self._capture_frame)
         self._capture_btn.setToolTip(
             "Pause the mpv preview and snapshot the current frame into the canvas.\n"
@@ -2817,7 +2724,7 @@ class ZoomScaleDialog(QDialog):
         # OK / Cancel
         btn_row = QHBoxLayout()
         self._ok_btn = QPushButton("✔  OK — Save Settings")
-        self._ok_btn.setStyleSheet("background-color: #255b4b; color: #e8fff5; border: 1px solid #65a58c; font-weight: bold; padding: 6px;")
+        self._ok_btn.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold; padding: 6px;")
         self._ok_btn.clicked.connect(self._ok)
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.clicked.connect(self._cancel)
@@ -2836,8 +2743,7 @@ class ZoomScaleDialog(QDialog):
 
         # Status bar
         self._status = QLabel("Select a video to begin, or adjust the values directly.")
-        self._status.setStyleSheet("font-style: normal; color: #9aadc2; font-size: 12px;")
-        self._status.setWordWrap(True)
+        self._status.setStyleSheet("font-style: italic; color: #888; font-size: 12px;")
         root.addWidget(self._status)
 
         # Live coordinate readout during handle drag
@@ -2880,7 +2786,7 @@ class ZoomScaleDialog(QDialog):
         if not path:
             return
         self._video_label.setText(os.path.basename(path))
-        self._video_label.setStyleSheet("color: #e3eaf3;")
+        self._video_label.setStyleSheet("color: #d4d4d4;")
         self._launch_mpv(path)
 
     def _launch_mpv(self, video_path):
@@ -3251,7 +3157,7 @@ class MultiZoomScaleDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Multi-Zone Crop / Stretch Compositor")
         self.setModal(True)
-        _ui_fit_dialog(self, 1280, 820)
+        self.resize(1280, 820)
 
         self._cfg = _migrate_zoom_config(current_config)
         self.result_config = None
@@ -3311,14 +3217,14 @@ class MultiZoomScaleDialog(QDialog):
         self._select_btn = QPushButton("Select Video…")
         self._select_btn.clicked.connect(self._select_video)
         self._video_label = QLabel("No video selected.")
-        self._video_label.setStyleSheet("font-style: italic; color: #9aadc2;")
+        self._video_label.setStyleSheet("font-style: italic; color: #888;")
         self._play_btn   = QPushButton("▶  Play")
         self._play_btn.clicked.connect(self._play)
         self._pause_btn  = QPushButton("⏸  Pause")
         self._pause_btn.clicked.connect(self._pause)
         self._capture_btn = QPushButton("📷  Capture Frame  →")
         self._capture_btn.setStyleSheet(
-            "background-color: #205666; color: #effcff; border: 1px solid #378393; font-weight: bold; padding: 5px 10px;")
+            "background-color: #007acc; color: white; font-weight: bold; padding: 4px 8px;")
         self._capture_btn.clicked.connect(self._capture_frame)
         self._capture_btn.setToolTip(
             "Pause mpv and snapshot the current frame into all zone canvases.")
@@ -3397,7 +3303,7 @@ class MultiZoomScaleDialog(QDialog):
             "Click to reload the preview once.")
         self._ext_live_refresh_btn.clicked.connect(self._on_live_refresh_clicked)
         self._ext_preview_label = QLabel(f"Target display: {self._output_display_num}")
-        self._ext_preview_label.setStyleSheet("color: #9aadc2; font-style: italic;")
+        self._ext_preview_label.setStyleSheet("color: #888; font-style: italic;")
         ext_bar.addWidget(self._ext_source_combo)
         ext_bar.addWidget(self._ext_toggle_btn)
         ext_bar.addWidget(self._ext_live_refresh_btn)
@@ -3558,7 +3464,7 @@ class MultiZoomScaleDialog(QDialog):
             right.addWidget(border_grp)
             right.addWidget(pos_grp)
             right.addStretch()
-            body.addWidget(_ui_scroll_layout(right), 1)
+            body.addLayout(right, 1)
             tl.addLayout(body, 1)
 
             self._tabs.addTab(tab_w, f"Zone {i + 1}")
@@ -3714,7 +3620,7 @@ class MultiZoomScaleDialog(QDialog):
         comp_right.addWidget(comp_scale_grp)
         comp_right.addWidget(self._comp_reset_btn)
         comp_right.addStretch()
-        comp_body.addWidget(_ui_scroll_layout(comp_right), 1)
+        comp_body.addLayout(comp_right, 1)
         comp_layout.addLayout(comp_body, 1)
 
         self._tabs.addTab(comp_tab, "Composite Output")
@@ -3770,7 +3676,7 @@ class MultiZoomScaleDialog(QDialog):
         self._final_canvas = QLabel()
         self._final_canvas.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._final_canvas.setMinimumSize(400, 200)
-        self._final_canvas.setStyleSheet("background: #0c131d; border: 1px solid #35485f;")
+        self._final_canvas.setStyleSheet("background: #111; border: 1px solid #444;")
         self._final_canvas.setText("Capture a frame and click 'Refresh Final Preview'")
         final_layout.addWidget(self._final_canvas, 1)
         self._tabs.addTab(final_tab, "Final Preview")
@@ -3802,14 +3708,13 @@ class MultiZoomScaleDialog(QDialog):
         # ---- Status bar + OK / Cancel ----
         self._status = QLabel(
             "Select a video/capture frame to edit. External preview is optional and opens on the selected final-output display.")
-        self._status.setStyleSheet("font-style: normal; color: #9aadc2; font-size: 12px;")
-        self._status.setWordWrap(True)
+        self._status.setStyleSheet("font-style: italic; color: #888; font-size: 12px;")
         root.addWidget(self._status)
 
         btn_row = QHBoxLayout()
         self._ok_btn = QPushButton("✔  OK — Save Settings")
         self._ok_btn.setStyleSheet(
-            "background-color: #255b4b; color: #e8fff5; border: 1px solid #65a58c; font-weight: bold; padding: 6px;")
+            "background-color: #27ae60; color: white; font-weight: bold; padding: 6px;")
         self._ok_btn.clicked.connect(self._ok)
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.clicked.connect(self._cancel)
@@ -4286,7 +4191,7 @@ class MultiZoomScaleDialog(QDialog):
         self._selected_video_path = path
         self._update_external_source_availability()
         self._video_label.setText(os.path.basename(path))
-        self._video_label.setStyleSheet("color: #e3eaf3;")
+        self._video_label.setStyleSheet("color: #d4d4d4;")
         self._launch_mpv(path)
         if self._ext_preview_open and self._is_external_source_video():
             self._ext_preview_start_pos = 0.0
@@ -4690,7 +4595,7 @@ class Switch(QAbstractButton):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
         # Background color changes based on checked state.
-        bg_color = QColor("#b34257") if self.isChecked() else QColor("#257c8b") # Red for LIVE, teal for EDIT
+        bg_color = QColor("#d63031") if self.isChecked() else QColor("#00b894") # Red for LIVE, Green for EDIT
         painter.setBrush(QBrush(bg_color))
         painter.drawRoundedRect(0, 0, self.width(), self.height(), self.height() / 2, self.height() / 2)
         # Draw the toggle circle.
@@ -4837,8 +4742,8 @@ class LiveController(QWidget):
         # --- FONT & COLOR DEFINITIONS ---
         self.current_table_font_size = DEFAULT_TABLE_FONT_SIZE
         self.streamdeck_font_size = DEFAULT_STREAMDECK_FONT_SIZE
-        self.playing_color = QColor("#245c50") # Restrained positive playing-track highlight
-        self.default_color = QColor("#141d29") # Default background
+        self.playing_color = QColor("#2ecc71") # Brighter Green for playing track
+        self.default_color = QColor("#2a2a2a") # Default background
         self.count_in_bg_color = DEFAULT_COUNT_IN_BG_COLOR
         self.count_in_font_size = DEFAULT_COUNT_IN_FONT_SIZE
         self.track_play_bg_color = DEFAULT_TRACK_PLAY_BG_COLOR
@@ -4996,41 +4901,34 @@ class LiveController(QWidget):
     def setup_ui(self):
         """Constructs the entire user interface."""
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(12, 10, 12, 10)
-        self.layout.setSpacing(10)
+        self.layout.setContentsMargins(6, 4, 6, 4)
+        self.layout.setSpacing(3)
         
         # --- Top Bar (Title, Mode Switch) ---
-        header = _ui_surface(QWidget(), "header")
-        top_bar_layout = QHBoxLayout(header)
-        top_bar_layout.setContentsMargins(14, 10, 14, 10)
-        top_bar_layout.setSpacing(16)
+        top_bar_layout = QHBoxLayout()
         # Left side for "ACTIVE" label
         left_container = QWidget()
-        left_container.setFixedWidth(124)
         left_layout = QHBoxLayout(left_container)
         left_layout.setContentsMargins(0,0,0,0)
         self.active_label = QLabel("ACTIVE", self)
         self.active_label.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
-        _ui_role(self.active_label, "active")
+        self.active_label.setStyleSheet("color: #27ae60;")
         self.active_label.hide()
         left_layout.addWidget(self.active_label)
         left_layout.addStretch(1)
         # Center for title and running time
         title_layout = QVBoxLayout()
-        title_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-        title_layout.setSpacing(3)
+        title_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title_label = QLabel("Untitled Setlist")
-        self.title_label.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
-        _ui_role(self.title_label, "title")
+        self.title_label.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         self.running_time_label = QLabel(f"Total Running Time (incl. {TRACK_OVERHEAD_SECONDS}s overhead/track): 00:00:00")
         self.running_time_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        _ui_role(self.running_time_label, "muted")
-        self.running_time_label.setFont(QFont("Segoe UI", 9))
+        self.running_time_label.setStyleSheet("color: #888;")
         self.export_setlist_button = QPushButton("Export Set List")
-        _ui_role(self.export_setlist_button, "primary")
+        self.export_setlist_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
         self.export_setlist_button.clicked.connect(self.export_setlist)
         self.export_streamdeck_button = QPushButton("Export Stream Deck Profile")
-        _ui_role(self.export_streamdeck_button, "primary")
+        self.export_streamdeck_button.setStyleSheet("background-color: #1a6b8a; color: white; font-size: 11px; padding: 3px 6px;")
         self.export_streamdeck_button.clicked.connect(self.export_streamdeck_profile)
         sd_font_label = QLabel("SD Font:")
         sd_font_label.setFont(QFont("Segoe UI", 9))
@@ -5039,7 +4937,7 @@ class LiveController(QWidget):
         self.streamdeck_font_spinbox.setValue(self.streamdeck_font_size)
         self.streamdeck_font_spinbox.setSuffix(" pt")
         self.streamdeck_font_spinbox.setFixedWidth(70)
-        export_buttons_layout = QVBoxLayout()
+        export_buttons_layout = QHBoxLayout()
         export_buttons_layout.setSpacing(6)
         export_buttons_layout.addWidget(self.export_setlist_button)
         export_buttons_layout.addWidget(self.export_streamdeck_button)
@@ -5047,7 +4945,7 @@ class LiveController(QWidget):
         export_buttons_layout.addWidget(self.streamdeck_font_spinbox)
         title_layout.addWidget(self.title_label)
         title_layout.addWidget(self.running_time_label)
-        # Export utilities belong with Setlist tools, not the performance header.
+        title_layout.addLayout(export_buttons_layout)
         # Right side for mode switch
         right_container = QWidget()
         right_layout = QHBoxLayout(right_container)
@@ -5066,9 +4964,9 @@ class LiveController(QWidget):
         mode_layout.addWidget(self.live_mode_label)
         right_layout.addLayout(mode_layout)
         # Add sections to top bar
-        top_bar_layout.addLayout(title_layout, 1)
-        top_bar_layout.addWidget(left_container)
-        top_bar_layout.addWidget(right_container)
+        top_bar_layout.addWidget(left_container, 1)
+        top_bar_layout.addLayout(title_layout, 2) 
+        top_bar_layout.addWidget(right_container, 1)
 
         # --- Overlay Labels (Danger, Countdown, Preparing) ---
         self.danger_label = QLabel("DANGER!!\n\nSTOP PRESSING BUTTONS!\nAND GET YOUR HAIR CUT", self)
@@ -5096,22 +4994,20 @@ class LiveController(QWidget):
         self.no_midi_label.hide()
         
         self.save_notification_label = QLabel(self)
-        self.save_notification_label.setStyleSheet("background-color: #255b4b; color: #e8fff5; border: 1px solid #75bb9f; font-size: 16px; font-weight: bold; padding: 14px; border-radius: 9px;")
+        self.save_notification_label.setStyleSheet("background-color: #27ae60; color: white; font-size: 18px; font-weight: bold; padding: 15px; border-radius: 10px;")
         self.save_notification_label.hide()
 
         # --- Main Content Area (Table and Controls) ---
         main_layout = QHBoxLayout()
-        main_layout.setSpacing(12)
         self.table = DraggableTableWidget()
-        self.table.setMinimumWidth(600)
         self.table.setColumnCount(10)
         self.table.setHorizontalHeaderLabels(["Hotkey", "Track Name", "Linked", "BPM", "Click", "Rich1", "XR12 Audience", "Sync", "Show File", "Actions"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setMinimumSectionSize(10)
-        self.table.setColumnWidth(0, 52); self.table.setColumnWidth(2, 52)
-        self.table.setColumnWidth(3, 66); self.table.setColumnWidth(4, 46)
-        self.table.setColumnWidth(5, 46); self.table.setColumnWidth(6, 98)
-        self.table.setColumnWidth(7, 44); self.table.setColumnWidth(8, 110); self.table.setColumnWidth(9, 60)
+        self.table.setColumnWidth(0, 50); self.table.setColumnWidth(2, 55)
+        self.table.setColumnWidth(3, 45); self.table.setColumnWidth(4, 45)
+        self.table.setColumnWidth(5, 45); self.table.setColumnWidth(6, 90)
+        self.table.setColumnWidth(7, 40); self.table.setColumnWidth(8, 80); self.table.setColumnWidth(9, 65)
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(False)
         self.table.rows_reordered.connect(self.reorder_tracks)
@@ -5120,17 +5016,17 @@ class LiveController(QWidget):
         # (Groups are assembled below into a scrollable panel)
         
         # --- Playback & Setlist Group ---
-        main_controls_group = QGroupBox("Setlist")
+        main_controls_group = QGroupBox("")
         main_controls_layout = QVBoxLayout()
         main_controls_layout.setContentsMargins(8, 8, 8, 8)
         main_controls_layout.setSpacing(6)
         add_buttons_layout = QHBoxLayout()
         self.add_button = QPushButton("Add Track(s)")
-        _ui_role(self.add_button, "primary")
+        self.add_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 11px; padding: 3px 6px;")
         self.add_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.add_button.clicked.connect(self.add_tracks)
         self.add_encore_button = QPushButton("Add Encore Divider")
-        _ui_role(self.add_encore_button, "primary")
+        self.add_encore_button.setStyleSheet(f"background-color: #007acc; color: white; font-size: 11px; padding: 3px 6px;")
         self.add_encore_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.add_encore_button.clicked.connect(self.add_encore_divider)
         add_buttons_layout.addWidget(self.add_button)
@@ -5141,11 +5037,11 @@ class LiveController(QWidget):
         self.undo_button.setEnabled(False)
 
         self.stop_button = QPushButton("STOP (q)")
-        _ui_role(self.stop_button, "stop")
+        self.stop_button.setStyleSheet(f"background-color: #e74c3c; color: white; font-size: 11px; font-weight: bold; padding: 3px 6px;")
         self.stop_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.stop_button.clicked.connect(self.stop_all_activity)
         self.quit_button = QPushButton("Quit")
-        _ui_role(self.quit_button, "secondary")
+        self.quit_button.setStyleSheet("font-size: 11px; padding: 3px 6px;")
         self.quit_button.clicked.connect(self.close)
         stop_quit_layout = QHBoxLayout()
         stop_quit_layout.setSpacing(4)
@@ -5159,28 +5055,20 @@ class LiveController(QWidget):
         setlist_name_layout.addWidget(self.setlist_name_input)
         setlist_name_layout.addWidget(self.rename_button)
         self.save_button = QPushButton("Save Setlist")
-        _ui_role(self.save_button, "primary")
+        self.save_button.setStyleSheet(f"background-color: #2980b9; color: white; font-size: 11px; padding: 3px 6px;")
         self.save_button.clicked.connect(self.save_setlist)
         self.load_button = QPushButton("Load Setlist")
-        _ui_role(self.load_button, "secondary")
+        self.load_button.setStyleSheet(f"background-color: #27ae60; color: white; font-size: 11px; padding: 3px 6px;")
         self.load_button.clicked.connect(self.load_setlist)
         save_load_layout = QHBoxLayout()
         save_load_layout.setSpacing(4)
         save_load_layout.addWidget(self.save_button)
         save_load_layout.addWidget(self.load_button)
-        # STOP and Quit are assembled into the fixed performance rail below.
+        main_controls_layout.addLayout(stop_quit_layout)
         main_controls_layout.addLayout(add_buttons_layout)
         main_controls_layout.addWidget(self.undo_button)
         main_controls_layout.addLayout(setlist_name_layout)
         main_controls_layout.addLayout(save_load_layout)
-        export_buttons_layout.removeWidget(sd_font_label)
-        export_buttons_layout.removeWidget(self.streamdeck_font_spinbox)
-        main_controls_layout.addLayout(export_buttons_layout)
-        streamdeck_font_layout = QHBoxLayout()
-        streamdeck_font_layout.addWidget(sd_font_label)
-        streamdeck_font_layout.addWidget(self.streamdeck_font_spinbox)
-        streamdeck_font_layout.addStretch(1)
-        main_controls_layout.addLayout(streamdeck_font_layout)
         main_controls_group.setLayout(main_controls_layout)
         
         # --- Settings Group (Compact Grid Layout) ---
@@ -5222,7 +5110,7 @@ class LiveController(QWidget):
         self.reset_offset_button = QPushButton("Reset"); self.reset_offset_button.clicked.connect(self.reset_midi_offset)
         offset_layout.addWidget(self.midi_offset_slider); offset_layout.addWidget(self.midi_offset_spinbox); offset_layout.addWidget(self.reset_offset_button)
         settings_layout.addWidget(QLabel("MIDI Offset:"), 5, 0)
-        settings_layout.addLayout(offset_layout, 6, 0, 1, 2)
+        settings_layout.addLayout(offset_layout, 5, 1)
 
         font_size_layout = QHBoxLayout()
         self.font_size_spinbox = QSpinBox()
@@ -5230,8 +5118,8 @@ class LiveController(QWidget):
         self.font_size_spinbox.setValue(self.current_table_font_size)
         self.apply_font_button = QPushButton("Apply"); self.apply_font_button.clicked.connect(self.apply_table_font_size)
         font_size_layout.addWidget(self.font_size_spinbox); font_size_layout.addWidget(self.apply_font_button)
-        settings_layout.addWidget(QLabel("List Font Size:"), 7, 0)
-        settings_layout.addLayout(font_size_layout, 7, 1)
+        settings_layout.addWidget(QLabel("List Font Size:"), 6, 0)
+        settings_layout.addLayout(font_size_layout, 6, 1)
 
         timing_group = QGroupBox("MIDI Timing Method")
         timing_layout = QHBoxLayout()
@@ -5241,7 +5129,7 @@ class LiveController(QWidget):
         timing_layout.addWidget(self.standard_timing_radio)
         timing_layout.addWidget(self.high_precision_timing_radio)
         timing_group.setLayout(timing_layout)
-        settings_layout.addWidget(timing_group, 8, 0, 1, 2)
+        settings_layout.addWidget(timing_group, 7, 0, 1, 2)
         settings_group.setLayout(settings_layout)
         
         # --- Test Track Group ---
@@ -5252,7 +5140,7 @@ class LiveController(QWidget):
         test_track_layout.setHorizontalSpacing(6)
         test_track_layout.setVerticalSpacing(4)
         self.test_file_button = QPushButton("Select Test File...")
-        _ui_role(self.test_file_button, "secondary")
+        self.test_file_button.setStyleSheet("font-size: 11px; padding: 3px 6px;")
         self.test_file_button.clicked.connect(self.select_test_file)
         self.test_file_label = QLabel("No file selected.")
         self.test_file_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -5261,14 +5149,14 @@ class LiveController(QWidget):
         self.test_track_bpm_input = QLineEdit("120")
         self.test_track_bpm_input.setFixedWidth(50)
         self.play_test_button = QPushButton("Play Test Track (t)")
-        _ui_role(self.play_test_button, "primary")
+        self.play_test_button.setStyleSheet("font-size: 11px; padding: 3px 6px;")
         self.play_test_button.clicked.connect(self.play_test_track)
         self.play_test_button.setEnabled(False)
-        test_track_layout.addWidget(self.test_file_button, 0, 0, 1, 4)
-        test_track_layout.addWidget(self.test_file_label, 1, 0, 1, 4)
-        test_track_layout.addWidget(QLabel("BPM:"), 2, 0)
-        test_track_layout.addWidget(self.test_track_bpm_input, 2, 1)
-        test_track_layout.addWidget(self.play_test_button, 2, 2, 1, 2)
+        test_track_layout.addWidget(self.test_file_button, 0, 0)
+        test_track_layout.addWidget(self.test_file_label, 0, 1, 1, 3)
+        test_track_layout.addWidget(QLabel("BPM:"), 1, 0)
+        test_track_layout.addWidget(self.test_track_bpm_input, 1, 1)
+        test_track_layout.addWidget(self.play_test_button, 1, 2, 1, 2)
         test_track_layout.setColumnStretch(1, 1)
         test_track_group.setLayout(test_track_layout)
 
@@ -5286,7 +5174,7 @@ class LiveController(QWidget):
         self.calib_loop_duration_spinbox.setToolTip("Duration of each calibration loop (1–20 seconds)")
         calib_loop_layout.addWidget(self.calib_loop_duration_spinbox)
         self.calib_loop_button = QPushButton("Start Calib Loop")
-        _ui_role(self.calib_loop_button, "primary")
+        self.calib_loop_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
         self.calib_loop_button.setToolTip(
             "Repeatedly plays the first X seconds of the test track so you can dial in the MIDI offset.\n"
             "\n"
@@ -5316,18 +5204,19 @@ class LiveController(QWidget):
         xr12_layout.setVerticalSpacing(4)
         self.xr12_enabled_checkbox = QCheckBox("Enable XR12 Audience")
         self.xr12_enabled_checkbox.toggled.connect(self._on_xr12_enabled_toggled)
-        xr12_layout.addWidget(self.xr12_enabled_checkbox, 0, 0, 1, 6)
+        xr12_layout.addWidget(self.xr12_enabled_checkbox, 0, 0, 1, 2)
         self.xr12_status_label = QLabel("XR12 Audience: waiting for MIDI port 3")
-        self.xr12_status_label.setWordWrap(True)
-        self.xr12_status_label.setMaximumHeight(44)
+        self.xr12_status_label.setWordWrap(False)
+        self.xr12_status_label.setMaximumHeight(20)
         self.xr12_status_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-        self.xr12_status_label.setStyleSheet("font-size: 11px; color: #9aadc2; font-style: normal;")
+        self.xr12_status_label.setStyleSheet("font-size: 10px; color: #888; font-style: italic;")
+        xr12_layout.addWidget(self.xr12_status_label, 0, 2, 1, 4)
         # Row 1: four channel checkboxes on one compact horizontal row
         ch_row_widget = QWidget()
-        ch_row_layout = QGridLayout(ch_row_widget)
+        ch_row_layout = QHBoxLayout(ch_row_widget)
         ch_row_layout.setContentsMargins(0, 0, 0, 0)
         ch_row_layout.setSpacing(8)
-        ch_row_layout.addWidget(QLabel("Channels:"), 0, 0)
+        ch_row_layout.addWidget(QLabel("Channels:"))
         self.xr12_ch_enabled_cbs = []
         self.xr12_ch_open_spinboxes = []  # kept for config-load compat; empty list
         for idx in range(XR12_NUM_CHANNELS):
@@ -5336,47 +5225,49 @@ class LiveController(QWidget):
                 lambda checked, ch_idx=idx: self._on_xr12_ch_enabled_toggled(ch_idx, checked)
             )
             self.xr12_ch_enabled_cbs.append(enabled_cb)
-            ch_row_layout.addWidget(enabled_cb, idx // 2, idx % 2 + 1)
-        ch_row_layout.setColumnStretch(2, 1)
-        xr12_layout.addWidget(ch_row_widget, 2, 0, 1, 6)
+            ch_row_layout.addWidget(enabled_cb)
+        ch_row_layout.addStretch(1)
+        xr12_layout.addWidget(ch_row_widget, 1, 0, 1, 6)
         # Row 2: fade duration, high/open value, low/closed value
-        xr12_layout.addWidget(QLabel("Fade:"), 3, 0, 1, 3)
+        xr12_layout.addWidget(QLabel("Fade:"), 2, 0)
         self.xr12_fade_duration_spinbox = QDoubleSpinBox()
         self.xr12_fade_duration_spinbox.setRange(0.0, 10.0)
         self.xr12_fade_duration_spinbox.setDecimals(1)
         self.xr12_fade_duration_spinbox.setSingleStep(0.5)
         self.xr12_fade_duration_spinbox.setSuffix(" s")
         self.xr12_fade_duration_spinbox.valueChanged.connect(self._on_xr12_fade_duration_changed)
-        xr12_layout.addWidget(self.xr12_fade_duration_spinbox, 3, 3, 1, 3)
-        xr12_layout.addWidget(QLabel("High/Open:"), 4, 0, 1, 3)
+        xr12_layout.addWidget(self.xr12_fade_duration_spinbox, 2, 1)
+        xr12_layout.addWidget(QLabel("High/Open:"), 2, 2)
         self.xr12_unity_spinbox = QSpinBox()
         self.xr12_unity_spinbox.setRange(0, 127)
         self.xr12_unity_spinbox.setToolTip("Shared fader level for all selected channels when audience mics are open.")
         self.xr12_unity_spinbox.valueChanged.connect(self._on_xr12_open_value_changed)
-        xr12_layout.addWidget(self.xr12_unity_spinbox, 4, 3, 1, 3)
-        xr12_layout.addWidget(QLabel("Low/Closed:"), 5, 0, 1, 3)
+        xr12_layout.addWidget(self.xr12_unity_spinbox, 2, 3)
+        xr12_layout.addWidget(QLabel("Low/Closed:"), 2, 4)
         self.xr12_closed_value_spinbox = QSpinBox()
         self.xr12_closed_value_spinbox.setRange(0, 127)
         self.xr12_closed_value_spinbox.setValue(DEFAULT_XR12_AUDIENCE_CLOSED_VALUE)
         self.xr12_closed_value_spinbox.setToolTip("Shared fader level for all selected channels when audience mics are closed. Set to 0 for silence.")
         self.xr12_closed_value_spinbox.valueChanged.connect(self._on_xr12_closed_value_changed)
-        xr12_layout.addWidget(self.xr12_closed_value_spinbox, 5, 3, 1, 3)
+        xr12_layout.addWidget(self.xr12_closed_value_spinbox, 2, 5)
         # Row 3: Fade Up/Open and Fade Down/Low buttons
         self.xr12_open_button = QPushButton("Fade Up / Open")
-        _ui_role(self.xr12_open_button, "positive")
+        self.xr12_open_button.setStyleSheet("font-size: 11px; padding: 3px 6px;")
         self.xr12_open_button.clicked.connect(self.open_xr12_audience)
+        xr12_layout.addWidget(self.xr12_open_button, 3, 0, 1, 3)
         self.xr12_close_button = QPushButton("Fade Down / Low")
-        _ui_role(self.xr12_close_button, "secondary")
+        self.xr12_close_button.setStyleSheet("font-size: 11px; padding: 3px 6px;")
         self.xr12_close_button.clicked.connect(self.mute_xr12_audience)
+        xr12_layout.addWidget(self.xr12_close_button, 3, 3, 1, 3)
         # Row 4: Advanced raw fader test (collapsed by default)
         self.xr12_advanced_toggle_button = QPushButton("Advanced Fader Test…")
         self.xr12_advanced_toggle_button.setCheckable(True)
-        _ui_role(self.xr12_advanced_toggle_button, "secondary")
+        self.xr12_advanced_toggle_button.setStyleSheet("font-size: 11px; padding: 3px 6px;")
         self.xr12_advanced_toggle_button.setToolTip(
             "Show raw XR12 fader diagnostics and manual CC send controls.\n"
             "Targets selected channels only. No mute CC messages."
         )
-        xr12_layout.addWidget(self.xr12_advanced_toggle_button, 7, 0, 1, 6)
+        xr12_layout.addWidget(self.xr12_advanced_toggle_button, 4, 0, 1, 6)
         self.xr12_advanced_widget = QWidget()
         self.xr12_advanced_widget.setVisible(False)
         advanced_xr12_layout = QGridLayout(self.xr12_advanced_widget)
@@ -5386,11 +5277,11 @@ class LiveController(QWidget):
         advanced_xr12_layout.addWidget(QLabel("Raw fader (selected ch):"), 0, 0)
         self.xr12_raw_fader_spinbox = QSpinBox()
         self.xr12_raw_fader_spinbox.setRange(0, 127)
-        advanced_xr12_layout.addWidget(self.xr12_raw_fader_spinbox, 0, 1, 1, 3)
+        advanced_xr12_layout.addWidget(self.xr12_raw_fader_spinbox, 0, 1)
         self.xr12_send_raw_fader_button = QPushButton("Send Raw Fader")
-        _ui_role(self.xr12_send_raw_fader_button, "secondary")
+        self.xr12_send_raw_fader_button.setStyleSheet("font-size: 11px; padding: 3px 6px;")
         self.xr12_send_raw_fader_button.clicked.connect(self._on_xr12_send_raw_fader)
-        advanced_xr12_layout.addWidget(self.xr12_send_raw_fader_button, 1, 0, 1, 4)
+        advanced_xr12_layout.addWidget(self.xr12_send_raw_fader_button, 0, 2, 1, 2)
         preset_layout = QHBoxLayout()
         preset_layout.setContentsMargins(0, 0, 0, 0)
         preset_layout.setSpacing(4)
@@ -5399,9 +5290,9 @@ class LiveController(QWidget):
             preset_button.setStyleSheet("font-size: 11px; padding: 2px 6px;")
             preset_button.clicked.connect(lambda checked, value=preset_value: self._on_xr12_preset_fader(value))
             preset_layout.addWidget(preset_button)
-        advanced_xr12_layout.addLayout(preset_layout, 2, 0, 1, 4)
+        advanced_xr12_layout.addLayout(preset_layout, 1, 0, 1, 4)
         self.xr12_advanced_toggle_button.toggled.connect(self.xr12_advanced_widget.setVisible)
-        xr12_layout.addWidget(self.xr12_advanced_widget, 8, 0, 1, 6)
+        xr12_layout.addWidget(self.xr12_advanced_widget, 5, 0, 1, 6)
         xr12_layout.setColumnStretch(2, 1)
         xr12_group.setLayout(xr12_layout)
 
@@ -5484,7 +5375,7 @@ class LiveController(QWidget):
         self.apply_zoom_checkbox.toggled.connect(self._update_zoom_status_label)
         self.apply_zoom_checkbox.toggled.connect(self.setting_changed)
         self.zoom_scale_button = QPushButton("Configure Multi-Zone Zoom / Scale…")
-        _ui_role(self.zoom_scale_button, "primary")
+        self.zoom_scale_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
         self.zoom_scale_button.setToolTip(
             "Open the multi-zone crop/stretch compositor.\n"
             "Configure up to 3 independent crop zones; each zone can be individually\n"
@@ -5494,40 +5385,51 @@ class LiveController(QWidget):
         )
         self.zoom_scale_button.clicked.connect(self.open_zoom_dialog)
         self.zoom_status_label = QLabel("Zoom: not configured")
-        self.zoom_status_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        self.zoom_status_label.setWordWrap(True)
-        self.zoom_status_label.setMinimumHeight(64)
-        self.zoom_status_label.setStyleSheet("font-size: 11px; color: #9aadc2; font-style: normal;")
+        self.zoom_status_label.setStyleSheet("font-size: 10px; color: #888; font-style: italic;")
         zoom_layout.addWidget(self.apply_zoom_checkbox)
         zoom_layout.addWidget(self.zoom_scale_button)
         zoom_layout.addWidget(self.zoom_status_label)
         zoom_group.setLayout(zoom_layout)
         self._update_zoom_status_label()
 
-        # --- Fixed performance rail; utilities are grouped below in tabs. ---
+        # --- Right-side panel: compact 2-column layout with scroll-area safety fallback ---
         controls_widget = QWidget()
-        controls_widget.setMinimumWidth(382)
-        controls_widget.setMaximumWidth(430)
         controls_vbox = QVBoxLayout(controls_widget)
-        controls_vbox.setContentsMargins(0, 0, 0, 0)
+        controls_vbox.setContentsMargins(6, 6, 6, 6)
         controls_vbox.setSpacing(8)
+        controls_vbox.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        transport_card = _ui_surface(QWidget())
-        transport_layout = QVBoxLayout(transport_card)
-        transport_layout.setContentsMargins(10, 8, 10, 8)
-        transport_layout.addLayout(stop_quit_layout)
-        controls_vbox.addWidget(transport_card)
+        # Upper row: left column (playback + zoom) | right column (settings + overlay colours)
+        upper_row = QHBoxLayout()
+        upper_row.setSpacing(8)
 
         left_col = QVBoxLayout()
-        left_col.setContentsMargins(0, 0, 0, 0)
-        left_col.setSpacing(6)
+        left_col.setSpacing(8)
+        left_col.addWidget(main_controls_group)
         left_col.addWidget(zoom_group)
         self.arduino_panel_button = QPushButton("Arduino…")
         self.arduino_panel_button.setToolTip("List present COM/LPT devices, select the Arduino port, and test its LEDs. No hardware is opened by listing.")
         self.arduino_panel_button.clicked.connect(self._show_arduino_panel)
-        _ui_role(self.arduino_panel_button, "secondary")
         left_col.addWidget(self.arduino_panel_button)
-        controls_vbox.addLayout(left_col)
+        left_col.addStretch(1)
+
+        right_col = QVBoxLayout()
+        right_col.setSpacing(8)
+        right_col.addWidget(settings_group)
+        right_col.addWidget(overlay_colours_group)
+        right_col.addStretch(1)
+
+        upper_row.addLayout(left_col, 1)
+        upper_row.addLayout(right_col, 1)
+        controls_vbox.addLayout(upper_row)
+
+        # Compact utility row: test track + calibration, with XR12 stacked below.
+        utility_row = QHBoxLayout()
+        utility_row.setSpacing(8)
+        utility_row.addWidget(test_track_group, 2)
+        utility_row.addWidget(calib_loop_group, 1)
+        controls_vbox.addLayout(utility_row)
+        controls_vbox.addWidget(xr12_group)
 
         # --- Scrub & Loop Group ---
         scrub_loop_group = QGroupBox("Scrub/Loop")
@@ -5540,7 +5442,7 @@ class LiveController(QWidget):
         scrub_row.setSpacing(6)
         self.scrub_pos_label = QLabel("--:--")
         self.scrub_pos_label.setFixedWidth(38)
-        self.scrub_pos_label.setStyleSheet("font-size: 11px; color: #aabbd0;")
+        self.scrub_pos_label.setStyleSheet("font-size: 10px; color: #aaa;")
         self.scrub_slider = QSlider(Qt.Orientation.Horizontal)
         self.scrub_slider.setRange(0, 1000)
         self.scrub_slider.setValue(0)
@@ -5550,54 +5452,53 @@ class LiveController(QWidget):
         self.scrub_slider.sliderReleased.connect(self._on_scrub_slider_released)
         self.scrub_dur_label = QLabel("--:--")
         self.scrub_dur_label.setFixedWidth(38)
-        self.scrub_dur_label.setStyleSheet("font-size: 11px; color: #aabbd0;")
+        self.scrub_dur_label.setStyleSheet("font-size: 10px; color: #aaa;")
         scrub_row.addWidget(self.scrub_pos_label)
         scrub_row.addWidget(self.scrub_slider, 1)
         scrub_row.addWidget(self.scrub_dur_label)
 
         # Bar-based loop controls row:
         # BPM: [120] | Bar A: [1] (00:00) | Bar B: [8] (00:15) | [□ Loop A→B]
-        loop_row = QGridLayout()
-        loop_row.setHorizontalSpacing(6)
-        loop_row.setVerticalSpacing(5)
-        loop_row.addWidget(QLabel("BPM:"), 0, 0)
+        loop_row = QHBoxLayout()
+        loop_row.setSpacing(6)
+        loop_row.addWidget(QLabel("BPM:"))
         self.loop_bpm_spinbox = QSpinBox()
         self.loop_bpm_spinbox.setRange(40, 300)
         self.loop_bpm_spinbox.setValue(120)
-        self.loop_bpm_spinbox.setFixedWidth(68)
+        self.loop_bpm_spinbox.setFixedWidth(60)
         self.loop_bpm_spinbox.setToolTip(
             "BPM of the current track. Used to convert bar numbers to playback times."
         )
         self.loop_bpm_spinbox.valueChanged.connect(self._on_loop_bar_changed)
-        loop_row.addWidget(self.loop_bpm_spinbox, 0, 1)
+        loop_row.addWidget(self.loop_bpm_spinbox)
 
-        loop_row.addWidget(QLabel("Bar A:"), 1, 0)
+        loop_row.addWidget(QLabel("Bar A:"))
         self.loop_start_bar_spinbox = QSpinBox()
         self.loop_start_bar_spinbox.setRange(1, 9999)
         self.loop_start_bar_spinbox.setValue(1)
-        self.loop_start_bar_spinbox.setFixedWidth(68)
+        self.loop_start_bar_spinbox.setFixedWidth(60)
         self.loop_start_bar_spinbox.setToolTip(
             "Loop start bar. Bar 1 corresponds to the very beginning of the track."
         )
         self.loop_start_bar_spinbox.valueChanged.connect(self._on_loop_bar_changed)
-        loop_row.addWidget(self.loop_start_bar_spinbox, 1, 1)
+        loop_row.addWidget(self.loop_start_bar_spinbox)
         self.loop_a_time_label = QLabel("(--:--)")
-        self.loop_a_time_label.setStyleSheet("font-size: 11px; color: #aabbd0;")
-        loop_row.addWidget(self.loop_a_time_label, 1, 2)
+        self.loop_a_time_label.setStyleSheet("font-size: 10px; color: #aaa;")
+        loop_row.addWidget(self.loop_a_time_label)
 
-        loop_row.addWidget(QLabel("Bar B:"), 1, 3)
+        loop_row.addWidget(QLabel("Bar B:"))
         self.loop_end_bar_spinbox = QSpinBox()
         self.loop_end_bar_spinbox.setRange(1, 9999)
         self.loop_end_bar_spinbox.setValue(8)
-        self.loop_end_bar_spinbox.setFixedWidth(68)
+        self.loop_end_bar_spinbox.setFixedWidth(60)
         self.loop_end_bar_spinbox.setToolTip(
             "Loop end bar (inclusive). The loop plays from the start of Bar A to the end of Bar B."
         )
         self.loop_end_bar_spinbox.valueChanged.connect(self._on_loop_bar_changed)
-        loop_row.addWidget(self.loop_end_bar_spinbox, 1, 4)
+        loop_row.addWidget(self.loop_end_bar_spinbox)
         self.loop_b_time_label = QLabel("(--:--)")
-        self.loop_b_time_label.setStyleSheet("font-size: 11px; color: #aabbd0;")
-        loop_row.addWidget(self.loop_b_time_label, 1, 5)
+        self.loop_b_time_label.setStyleSheet("font-size: 10px; color: #aaa;")
+        loop_row.addWidget(self.loop_b_time_label)
 
         self.loop_checkbox = QCheckBox("Loop A→B")
         self.loop_checkbox.setToolTip(
@@ -5605,8 +5506,8 @@ class LiveController(QWidget):
             "Bar positions are converted to times using the BPM above."
         )
         self.loop_checkbox.toggled.connect(self._on_loop_toggled)
-        loop_row.addWidget(self.loop_checkbox, 0, 3, 1, 3)
-        loop_row.setColumnStretch(2, 1)
+        loop_row.addWidget(self.loop_checkbox)
+        loop_row.addStretch(1)
 
         # Lock row
         self.scrub_lock_checkbox = QCheckBox("Lock scrub/loop controls")
@@ -5661,47 +5562,36 @@ class LiveController(QWidget):
         sync_show_layout.addWidget(self.sync_show_trim_spinbox, 2, 1)
         sync_show_group.setLayout(sync_show_layout)
         sync_show_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        # Included in the Settings utility page below.
+        controls_vbox.addWidget(sync_show_group)
 
-        # Utility tabs only reparent existing controls; no mode/state logic
-        # depends on page visibility. Live transport controls remain above.
+        # MIDI Port Testing spans full width at the bottom
         midi_test_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        self.utility_tabs = QTabWidget()
-        self.utility_tabs.setDocumentMode(True)
-        self.utility_tabs.addTab(_ui_scroll_page(main_controls_group), "Setlist")
-        self.utility_tabs.addTab(_ui_scroll_page(settings_group, overlay_colours_group, sync_show_group), "Settings")
-        self.utility_tabs.addTab(_ui_scroll_page(test_track_group, calib_loop_group, midi_test_group), "Testing")
-        self.utility_tabs.addTab(_ui_scroll_page(xr12_group), "XR12")
-        controls_vbox.addWidget(self.xr12_status_label)
-        audience_actions = QHBoxLayout()
-        audience_actions.setSpacing(6)
-        audience_actions.addWidget(self.xr12_open_button)
-        audience_actions.addWidget(self.xr12_close_button)
-        controls_vbox.addLayout(audience_actions)
-        controls_vbox.addWidget(self.utility_tabs, 1)
+        controls_vbox.addWidget(midi_test_group)
+        controls_vbox.addStretch(1)
 
-        # --- Assemble Main Layout: setlist takes the clear majority of space. ---
-        main_layout.addWidget(self.table, 1)
-        main_layout.addWidget(controls_widget)
-
+        # --- Assemble Main Layout ---
+        # Give the controls side more width (3/5) so they don't feel cramped;
+        # the track table takes 2/5.
+        main_layout.addWidget(self.table, 2)
+        controls_scroll_area = QScrollArea()
+        controls_scroll_area.setWidgetResizable(True)
+        controls_scroll_area.setStyleSheet("QScrollArea { border: 0; }")
+        controls_scroll_area.setWidget(controls_widget)
+        main_layout.addWidget(controls_scroll_area, 3)
+        
         # --- Status Bar ---
         self.status_label = QLabel("Status: Welcome!")
-        _ui_role(self.status_label, "status")
-
+        self.status_label.setStyleSheet("font-style: italic; color: #888; font-size: 11px;")
+        
         # --- Final Layout Assembly ---
-        self.layout.addWidget(header)
-        self.layout.addLayout(main_layout, 1)
-        footer = _ui_surface(QWidget(), "footer")
-        footer_layout = QVBoxLayout(footer)
-        footer_layout.setContentsMargins(8, 4, 8, 4)
-        footer_layout.setSpacing(1)
+        self.layout.addLayout(top_bar_layout)
+        self.layout.addLayout(main_layout)
         self.hardware_status_label = QLabel("Hardware: waiting for startup choices")
         self.hardware_status_label.setWordWrap(True)
-        _ui_role(self.hardware_status_label, "status")
-        footer_layout.addWidget(self.hardware_status_label)
-        footer_layout.addWidget(self.status_label)
-        self.layout.addWidget(footer)
-
+        self.hardware_status_label.setStyleSheet("font-size: 10px; color: #aaa;")
+        self.layout.addWidget(self.hardware_status_label)
+        self.layout.addWidget(self.status_label)
+        
         # --- Initial UI State ---
         self.live_mode_slider.setChecked(True) # Default to LIVE mode
         self.toggle_live_mode()
@@ -5845,8 +5735,8 @@ class LiveController(QWidget):
         self.set_test_controls_enabled(is_edit_mode)
 
         # Update UI text and colors to reflect the current mode.
-        self.live_mode_label.setStyleSheet("color: #ff9caf; font-weight: bold;" if self.is_live_mode else "color: #8596ac;")
-        self.edit_mode_label.setStyleSheet("color: #80d5e1; font-weight: bold;" if is_edit_mode else "color: #8596ac;")
+        self.live_mode_label.setStyleSheet("color: #d63031; font-weight: bold;" if self.is_live_mode else "color: #888;")
+        self.edit_mode_label.setStyleSheet("color: #00b894; font-weight: bold;" if is_edit_mode else "color: #888;")
         self.status_label.setText("Status: LIVE MODE - Hotkeys are active." if self.is_live_mode else "Status: EDIT MODE - Hotkeys are disabled.")
 
     def reset_midi_offset(self):
@@ -6461,17 +6351,17 @@ class LiveController(QWidget):
     def _set_xr12_status_text(self, text):
         if not hasattr(self, "xr12_status_label"):
             return
-        color = "#9aadc2"
+        color = "#888"
         if "unavailable" in text or "failed" in text:
-            color = "#e9b96e"
+            color = "#e67e22"
         elif "open @" in text or "open:" in text:
-            color = "#86d8b8"
+            color = "#27ae60"
         elif "muted" in text:
-            color = "#f497a7"
+            color = "#e74c3c"
         elif "disabled" in text:
-            color = "#9aadc2"
+            color = "#888"
         self.xr12_status_label.setText(text)
-        self.xr12_status_label.setStyleSheet(f"font-size: 11px; color: {color}; font-style: normal;")
+        self.xr12_status_label.setStyleSheet(f"font-size: 10px; color: {color}; font-style: italic;")
 
     def _has_active_playback(self):
         return (
@@ -6596,14 +6486,14 @@ class LiveController(QWidget):
         apply_scaling = self.apply_zoom_checkbox.isChecked()
         if not apply_scaling:
             self.zoom_status_label.setText("Zoom: off (unscaled)")
-            self.zoom_status_label.setStyleSheet("font-size: 11px; color: #9aadc2; font-style: normal;")
+            self.zoom_status_label.setStyleSheet("font-size: 10px; color: #888; font-style: italic;")
             return
         migrated = _migrate_zoom_config(self.zoom_config)
         zones = migrated.get("zones", [])
         enabled_zones = [z for z in zones if z.get("enabled") and z.get("crop_w", 0) > 0]
         if not enabled_zones:
             self.zoom_status_label.setText("Zoom: enabled — no zones configured")
-            self.zoom_status_label.setStyleSheet("font-size: 11px; color: #e9b96e; font-style: normal;")
+            self.zoom_status_label.setStyleSheet("font-size: 10px; color: #e67e22; font-style: italic;")
         else:
             direction = migrated.get("stack_direction", "horizontal")
             parts = []
@@ -6618,7 +6508,7 @@ class LiveController(QWidget):
                 parts.append(f"Z{idx+1}:{cw}×{ch}{scale_txt}{border_txt}{offset_txt}")
             dir_sym = "↔" if direction != "vertical" else "↕"
             self.zoom_status_label.setText(f"{dir_sym} " + "  ".join(parts))
-            self.zoom_status_label.setStyleSheet("font-size: 11px; color: #86d8b8; font-style: normal;")
+            self.zoom_status_label.setStyleSheet("font-size: 10px; color: #00b894; font-style: italic;")
 
     def open_zoom_dialog(self):
         """Opens the MultiZoomScaleDialog for configuring multi-zone crop/stretch."""
@@ -6793,7 +6683,7 @@ class LiveController(QWidget):
             self.test_track_bpm_input.setText(session_data.get('test_track_bpm', '120'))
             if self.test_track_path and os.path.exists(self.test_track_path):
                 self.test_file_label.setText(os.path.basename(self.test_track_path))
-                self.test_file_label.setStyleSheet("font-style: normal; color: #e3eaf3;")
+                self.test_file_label.setStyleSheet("font-style: normal; color: #d4d4d4;")
                 self.play_test_button.setEnabled(True)
             else:
                 self.test_track_path = None
@@ -6940,7 +6830,7 @@ class LiveController(QWidget):
                 self.table.setRowHeight(i, 25)
                 encore_item = QTableWidgetItem(item.get('text', 'ENCORE'))
                 encore_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                encore_item.setBackground(QColor("#235a6b"))
+                encore_item.setBackground(QColor("#007acc"))
                 encore_item.setForeground(QColor(Qt.GlobalColor.white))
                 font = QFont("Segoe UI", self.current_table_font_size); font.setBold(False)
                 encore_item.setFont(font)
@@ -6949,7 +6839,7 @@ class LiveController(QWidget):
                 # Create a centered remove button for the divider row.
                 remove_button = QPushButton("X"); remove_button.clicked.connect(lambda checked, i=i: self.remove_item(i))
                 remove_button.setFixedSize(20, 20)
-                _ui_role(remove_button, "remove")
+                remove_button.setStyleSheet("background-color: #c0392b; color: white; font-weight: bold; border-radius: 4px; font-size: 12px;")
                 button_container = QWidget()
                 button_layout = QHBoxLayout(button_container)
                 button_layout.addWidget(remove_button)
@@ -7044,7 +6934,7 @@ class LiveController(QWidget):
 
                 remove_button = QPushButton("X"); remove_button.clicked.connect(lambda checked, i=i: self.remove_item(i))
                 remove_button.setFixedSize(20, 20)
-                _ui_role(remove_button, "remove")
+                remove_button.setStyleSheet("background-color: #c0392b; color: white; font-weight: bold; border-radius: 4px; font-size: 12px;")
                 button_container = QWidget()
                 button_layout = QHBoxLayout(button_container)
                 button_layout.addWidget(remove_button)
@@ -7076,7 +6966,7 @@ class LiveController(QWidget):
         if row >= len(self.tracks) or self.tracks[row]['type'] == 'divider': return
         
         bg_color = self.playing_color if is_playing else self.default_color
-        fg_color = QColor("#eafff4") if is_playing else QColor("#e3eaf3")
+        fg_color = QColor("#000000") if is_playing else QColor("#d4d4d4")
         
         font_size = self.current_table_font_size
         
@@ -7094,7 +6984,7 @@ class LiveController(QWidget):
                 if col in [2, 4, 5, 6, 7]:
                     widget.setStyleSheet(f"background-color: {bg_color.name()};")
                 else: # For other widgets like QLineEdit, apply full style.
-                    style_sheet = f"QWidget {{ background-color: {bg_color.name()}; color: {fg_color.name()}; font-size: {font_size}pt; }} QLineEdit {{ border: 1px solid {bg_color.name()}; padding: 2px 4px; }} QLineEdit:focus {{ border-color: #6bd2e3; }} QPushButton[uiRole=remove] {{ background-color: #472a35; color: #f4b0bc; border: 1px solid #764151; border-radius: 4px; min-height: 0; padding: 0; font-size: 11px; }} QPushButton[uiRole=remove]:disabled {{ color: #77879a; background-color: #1b2532; border-color: #2d3949; }} QPushButton[uiRole=remove]:hover:enabled {{ background-color: #85364a; color: white; }}"
+                    style_sheet = f"background-color: {bg_color.name()}; color: {fg_color.name()}; font-size: {font_size}pt; border: none;"
                     widget.setStyleSheet(style_sheet)
                     # Explicitly set font on child QLineEdit to ensure it applies.
                     if hasattr(widget, 'findChildren'):
@@ -7706,7 +7596,7 @@ class LiveController(QWidget):
             self.highlight_row(row_index, is_playing=True)
             self.currently_playing_row = row_index
         else: # It's the test track
-            self.test_file_label.setStyleSheet("font-weight: bold; color: #86d8b8;")
+            self.test_file_label.setStyleSheet("font-weight: bold; color: #27ae60;")
 
         # Start the flashing "ACTIVE" label.
         self.active_flash_timer.start()
@@ -7968,7 +7858,7 @@ class LiveController(QWidget):
         should_autoplay_next = False
         next_row = None
         self.clear_highlight()
-        self.test_file_label.setStyleSheet("font-style: italic; color: #9aadc2;") # Reset test label style
+        self.test_file_label.setStyleSheet("font-style: italic; color: #888;") # Reset test label style
         self.status_label.setText("Status: Ready. Press a hotkey to play a track.")
         self.active_flash_timer.stop()
         self.active_label.hide()
@@ -8053,7 +7943,7 @@ class LiveController(QWidget):
         
         self.running_test_port = port_num
         self.test_port_buttons[port_num].setText("Stop Test")
-        self.test_port_buttons[port_num].setStyleSheet("background-color: #9d3346; color: white;")
+        self.test_port_buttons[port_num].setStyleSheet("background-color: #e74c3c; color: white;")
         self.set_test_controls_enabled(False, except_port=port_num)
         self.play_test_button.setEnabled(False) 
         
@@ -8196,7 +8086,7 @@ class LiveController(QWidget):
         if file_path:
             self.test_track_path = file_path
             self.test_file_label.setText(os.path.basename(file_path))
-            self.test_file_label.setStyleSheet("font-style: normal; color: #e3eaf3;")
+            self.test_file_label.setStyleSheet("font-style: normal; color: #d4d4d4;")
             self.play_test_button.setEnabled(True)
             # Also enable the calibration loop button now that a test file is available.
             if not self.is_live_mode:
@@ -8264,7 +8154,7 @@ class LiveController(QWidget):
             self.xr12_controller.request_close()
         self.calib_loop_active = True
         self.calib_loop_button.setText("Stop Calib Loop")
-        self.calib_loop_button.setStyleSheet("background-color: #9d3346; color: white; font-size: 12px; padding: 5px 10px;")
+        self.calib_loop_button.setStyleSheet("background-color: #e74c3c; color: white; font-size: 11px; padding: 3px 6px;")
         # Lock the duration spinbox while the loop is running.
         self.calib_loop_duration_spinbox.setEnabled(False)
         self._start_calib_iteration()
@@ -8349,7 +8239,7 @@ class LiveController(QWidget):
         self.active_flash_timer.stop()
         self.active_label.hide()
         self.calib_loop_button.setText("Start Calib Loop")
-        self.calib_loop_button.setStyleSheet("background-color: #205666; color: #effcff; font-size: 12px; padding: 5px 10px;")
+        self.calib_loop_button.setStyleSheet("background-color: #8e44ad; color: white; font-size: 11px; padding: 3px 6px;")
         self.calib_loop_duration_spinbox.setEnabled(True)
         self.status_label.setText("Status: Calibration loop stopped.")
         self.send_led_command("4")
