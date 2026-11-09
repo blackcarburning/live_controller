@@ -9,6 +9,14 @@ Two scripts are provided:
 | `live_fallback.py` | Windows | `keyboard` |
 | `live_controller_mac.py` | macOS 12 Monterey or later, Python 3.9+ | `pynput` |
 
+## Windows controller UI — November 9, 2026
+
+`live_controller.py` now has a larger setlist workspace, a fixed performance-control rail, and Setlist / Settings / Testing / XR12 utility tabs. STOP, Arduino access, zoom/scrub controls, XR12 feedback, and manual audience faders remain outside those tabs. The Arduino and zoom dialogs use the same updated theme; long five-zone summaries wrap without clipping.
+
+This is a presentation-only change to the verified Windows controller baseline: hardware ownership, playback, XR12/MIDI behavior, callbacks, ranges, and persistence are preserved. Real Windows offscreen-Qt checks cover both 1366×768 and 1920×1080, with separate Arduino regressions; they do **not** validate live playback or hardware.
+
+See [`checks/gui_modernisation/README.md`](checks/gui_modernisation/README.md) for reproducible offline checks, exact release hashes, rollback reference, and the broader repository test-suite limitation.
+
 ---
 
 ## macOS — `live_controller_mac.py`
