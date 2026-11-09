@@ -2,7 +2,14 @@
 
 A live performance video/audio playback controller with setlist management, global hotkeys, count-in overlays, and session persistence.
 
-Two scripts are provided:
+## Experimental Windows two-display version
+
+`live_controller_two_display.py` is a separate HDMI/DP version with five shared
+source zones, per-output routing/scaling/previews, and one audio/MIDI master.
+The original `live_controller.py` is unchanged. Run only one version at a time.
+See [two-display setup, controls and verification boundaries](TWO_DISPLAY_CONTROLLER.md).
+
+The original platform-specific scripts remain available:
 
 | Script | Platform | Hotkey library |
 |---|---|---|

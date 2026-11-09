@@ -1,0 +1,263 @@
+{
+  "status": "OFFLINE_RELEASE_PASS_LIVE_HARDWARE_UNTESTED",
+  "date": "2026-11-09",
+  "verified_utc": "2026-11-09T20:40:48.752766+00:00",
+  "offline_release_qualified": true,
+  "live_hardware_qualified": false,
+  "qualification_scope": "Selected offline regression, native own-pipe interoperability, real Qt lifecycle and isolated visual checks only; not the full repository suite or live production timing qualification.",
+  "documentation_handoff": {
+    "changed_files": [
+      "checks/two_display/STATUS.json",
+      "checks/two_display/TESTING.md",
+      "checks/two_display/SHA256SUMS",
+      "checks/two_display/RELEASE_VERIFICATION.md"
+    ],
+    "python_or_application_changes": false,
+    "original_tests_changes": false,
+    "windows_writes": false,
+    "git_mutations": false
+  },
+  "original": {
+    "lf_sha256": "605e78b10af95828d2d09df8eb14aa5c85828be4dd73bc467d96b11ff237c346",
+    "windows_crlf_sha256": "56a91df1849bc879584a1ec3cecec2cbdf8222282a21263758cb975c3363e4ee",
+    "unchanged": true
+  },
+  "candidate": {
+    "name": "live_controller_two_display.py",
+    "lf_sha256": "8d6ab7966ee7c6e42032f5ff0758124c89a11b28fa63c3289866dc281c0c78d0",
+    "lf_bytes": 462028,
+    "lf_count": 9563,
+    "lf_cr_count": 0,
+    "windows_crlf_sha256": "928410adbcfaf7b11157f3381873d5ff512b1910542f7563117151ce805b845b",
+    "windows_bytes": 471591,
+    "windows_crlf_count": 9563,
+    "installed_utc": "2026-11-09T20:38:40Z",
+    "literal_normalized_source_equality": true,
+    "delta_from_b01": "Only baseline-exact _has_active_playback restoration and six pre-activity cancellation-hook/unchanged strong-guard statement swaps; all other classes/methods exact."
+  },
+  "runtime": {
+    "platform": "Windows, 64-bit",
+    "python": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+    "qt": "6.9.0",
+    "pyqt": "6.9.1",
+    "qt_platform": "offscreen"
+  },
+  "executed_qa": {
+    "manifest_sha256": "b4e6bf2a8d9a0f6e7a52706a9c8d4919bd878f69ac167695bb886a7c0d58e0c7",
+    "python_harness_files": 13,
+    "empty_package_markers": 1,
+    "all_published_python_harnesses_match_windows_tested_bytes": true,
+    "executed_python_pins": {
+      "tests/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "tests/test_two_display_audio_gate.py": "0696e23713accaf9cd78091d414fc84a5ff709c74f317083d02613b2586498a5",
+      "tests/test_two_display_helpers.py": "3792afc52423a9c5310acc41278f1e0cfa35835965145b2af5abcf269d640e9a",
+      "tests/test_two_display_invariants.py": "a2327f5e8ebad1ac0b22847b1806f4b7de6a69087e85a767fa008580606164fc",
+      "tests/test_two_display_native_protocol.py": "b9419f2f705690ba6b28d4945766cce154fe3a3af2f72e9f0a8133b6fea83578",
+      "tests/test_two_display_qt.py": "e047b2dc1ea2d2ec224171218105b1d6debdf57f88040fd948cf4bff3ed89895",
+      "tests/test_two_display_runtime.py": "bf717a7070df7ee8806850f99d6a5c514b80ab48a9a891a7be0da8eaff621bad",
+      "tests/test_two_display_safety_delta.py": "234008a6360158d3c270eb0e4dbd9da50a675d9e9c078dbfd9ab217ceb9cba03",
+      "tests/test_two_display_support.py": "054a79dd4a8da1bb14af16758aa8346cd65919f457835c4470621966892fca85",
+      "checks/two_display/run_offline.py": "6d1118c0054a9c980cac34c713152c0bab153f2b02b4ed44730faf3b5f81803c",
+      "checks/two_display/run_arduino_regressions.py": "f86997f60a1e1102e0b232e2f35910b9c2bb8818c3014be47021ff3e2040dd1d",
+      "checks/two_display/verify_negative_controls.py": "1800852a4f3db446fc9935765b91e2c93da9a5268d56a94c1c7e2acc05bcf954",
+      "checks/two_display/verify_windows_pipe_transport.py": "e409ecace8ee5c396838cbdc5453935a6c8cebb890a5423f48f7e976290b70c7",
+      "tests/test_two_display_qt_lifecycle.py": "eaa9a0ac8e361acd5b58597a523f46bbfc05bbad93732a6fd6f28eab871b9938"
+    },
+    "post_install_selected146": {
+      "passed": 146,
+      "failures": 0,
+      "errors": 0,
+      "skips": 0,
+      "real_qt_methods": 16
+    },
+    "post_install_arduino74": {
+      "passed": 74,
+      "failures": 0,
+      "errors": 0,
+      "skips": 0,
+      "dependency_negatives": 6,
+      "original_assertions_unchanged": true
+    },
+    "post_install_native8": {
+      "passed": 8,
+      "scope": "own in-process randomized native Windows pipes only"
+    },
+    "selected_existing108": {
+      "passed": 108,
+      "scope": "5 unchanged selected existing modules, 3 mirror and 2 actual AST seams; exact final-byte nested fixture alias"
+    },
+    "windows_negative_sensitivity": {
+      "checks": 5,
+      "all_detected": true
+    },
+    "real_qthread": {
+      "scenarios": 12,
+      "test_owned_threads": 15,
+      "all_destroyed_once": true,
+      "all_gui_deliveries": true,
+      "qt_errors": 0
+    },
+    "lifecycle_trace_sha256": "14bea5504431d648da21aedb42f4668ceaac17d127ab17b927363c22e066d7b4",
+    "receipts": {
+      "selected146": {
+        "name": "receipt.json",
+        "sha256": "2fc4b77b7d6d92b558fefa7d6674c8e0ca10b3daadce4863325acf0def4081db",
+        "bytes": 19023
+      },
+      "arduino74": {
+        "name": "receipt.json",
+        "sha256": "80008eb8d87423f41343fc8c6b5b7b04cbb795584220f73411eccf0260a897cd",
+        "bytes": 11932
+      },
+      "native8": {
+        "name": "native-eight-installed.json",
+        "sha256": "e5259bf0b15f13f284ab5c942cc93c3778161141d90fa22e2e0355756da894c5",
+        "bytes": 1508
+      },
+      "selected108": {
+        "name": "selected108-final-receipt.json",
+        "sha256": "ffbdbb284061c9031889c3f5fe466d2f9ee24643bde6c6695826a9bcd3cfeb2a",
+        "bytes": 1884
+      },
+      "negative_sensitivity": {
+        "name": "receipt.json",
+        "sha256": "ce143385471c42a50065c3826821da64d3cdf7525fffdcf9b40b1783eccda24d",
+        "bytes": 3178
+      },
+      "installation": {
+        "name": "install-final-8d6ab-receipt.json",
+        "sha256": "c0daeac64f33365e9157dafd9e275e145bcef63f395dd1b2a97991d77bfbad88",
+        "bytes": 1222
+      }
+    }
+  },
+  "qt": {
+    "state": "PASS on the final installed Windows source; all 16 methods executed, zero failures/errors/skips.",
+    "authored_methods": 16,
+    "existing_widget_methods": 12,
+    "actual_qthread_methods": 4,
+    "classes": [
+      "RealQtEditorTests",
+      "RealQtMainControlsTests",
+      "RealQtThreadOwnershipTests"
+    ],
+    "existing12_file_sha256": "e047b2dc1ea2d2ec224171218105b1d6debdf57f88040fd948cf4bff3ed89895",
+    "existing12_unchanged": true,
+    "safety": "Explicit named AST extraction; cached-only functools lazy import; process-local font; synthetic data; inert players/pollers; no LiveController construction. Only Event-wait test QThreads run in new lifecycle class.",
+    "coverage": "Existing 12: five populated zones/all HDMI+DP states/main setup_ui, profiles/FPS and 1366/1920 geometry/screenshots. New 4: actual queued custom+finished signals/QTimer, close defer/idempotence, retained live owner, old-generation safety, once-only actual deletion and bounded cleanup."
+  },
+  "visual_parent_verified": {
+    "date": "2026-11-09",
+    "isolated_screenshots": 79,
+    "byte_identical_to_b01": 78,
+    "previous_representatives_still_byte_identical": 11,
+    "previous_representatives": 12,
+    "sole_changed_main_1366_inspected": true,
+    "additional_samples_inspected": 3,
+    "new_additive_clipping": false,
+    "note": "Parent inspected the sole changed main 1366 render and three final samples; prior representative inspection remains applicable to byte-identical images. Existing baseline table proportions/column widths remain exact; the small legacy track-name collapse is not a new layout regression. Raw screenshots are not published."
+  },
+  "independent_review_parent_reported": {
+    "final_seven_method_review": "APPROVED",
+    "p1_checks": 14,
+    "blocked_entry_cases": 42,
+    "live_timing_qualification": false
+  },
+  "historical_linux_snapshot": {
+    "date": "2026-11-09",
+    "position": "Before final installed Windows verification; historical snapshot, not current release gate.",
+    "source_lf_sha256": "8d6ab7966ee7c6e42032f5ff0758124c89a11b28fa63c3289866dc281c0c78d0",
+    "selected_new_tests": {
+      "authored_methods": 146,
+      "non_qt_methods": 130,
+      "qt_methods": 16,
+      "modules": 9,
+      "passed": 130,
+      "failures": 0,
+      "errors": 0,
+      "qt_class_skips": 3,
+      "pyqt6_available": false,
+      "require_qt_correctly_nonzero": true,
+      "required_missing_dependency_errors": 3,
+      "source_stable": true,
+      "audio_timing_ast_exact": true,
+      "ordered_audio_midi_matrix_cases": 72,
+      "compile_only_nonempty_python_files": 13
+    },
+    "legacy_logic": {
+      "passed": 67,
+      "failures": 0,
+      "errors": 0,
+      "skips": 0,
+      "dependency_negative_controls": 6,
+      "original_harnesses_unchanged": true,
+      "source_stable": true
+    },
+    "negative_controls": {
+      "positive_methods_passed": 6,
+      "cancellation_hook_mutation": {
+        "mutation": "restore=False -> True",
+        "rejected_before_execution": true,
+        "errors": 0
+      },
+      "close_accept_running_mutation": {
+        "failed_methods": 1,
+        "assertion_failures": 3,
+        "errors": 0
+      },
+      "early_delete_running_mutation": {
+        "failed_methods": 1,
+        "assertion_failures": 1,
+        "errors": 0
+      },
+      "old_9fa_paused": {
+        "failed_methods": 4,
+        "assertion_failures": 37,
+        "errors": 0
+      },
+      "all_detected": true
+    },
+    "interpretation": "Missing Linux PyQt was not counted as a Qt pass. Later final-source Windows verification supersedes the earlier pending Windows gate."
+  },
+  "preservation": {
+    "controller_launched": false,
+    "hardware_playback_tested": false,
+    "legacy_runtime_data_unchanged": true,
+    "original_and_monitored_legacy_runtime_data_stable": true,
+    "original_arduino_assertions_unchanged": true
+  },
+  "evidence": {
+    "summary_sha256": "b1f920ea5390040f166163a3fa2305d51472bd7cb5776339ea6b8cbdb3aea750",
+    "summary_verified_utc": "2026-11-09T20:40:48.752766+00:00",
+    "windows_actions_performed_by": "parent",
+    "raw_receipts_screenshots_configs_endpoints_identifiers_or_private_payloads_published": false
+  },
+  "manifest": {
+    "entries": 17,
+    "excludes_itself": true,
+    "python_pins_unchanged_from_executed_qa": true,
+    "executed_manifest_is_pre_documentation_snapshot": true
+  },
+  "remaining_gates": [
+    "Live mpv version and option support",
+    "Actual HDMI/DP screens and physical display hotplug",
+    "Live audio/MIDI behavior and production timing under load"
+  ],
+  "limitations": [
+    "Selected suites only; no full-repository-suite pass claim.",
+    "Offline source/AST and fake-MIDI ordering checks do not qualify production playback timing.",
+    "Native Windows checks use only their own in-process randomized pipes, not mpv or external endpoints.",
+    "No live application launch, playback or hardware qualification."
+  ],
+  "formatting_lint": {
+    "source_whitespace_clean": false,
+    "untracked_source_check": "git diff --no-index --check /dev/null live_controller_two_display.py",
+    "exit_status": 3,
+    "trailing_whitespace_warnings": 113,
+    "byte_exact_baseline_content": 110,
+    "modified_legacy_style_lines": 3,
+    "original_warnings": 115,
+    "source_cleanup_performed": false,
+    "classification": "Nonbehavioral formatting finding, not runtime test failure; parent owns exact staged check. Tracked-only diff checking is not sufficient."
+  }
+}
